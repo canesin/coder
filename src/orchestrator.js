@@ -535,12 +535,55 @@ Include a short section at the top with:
           this._saveState(state);
         }
 
-        const planPrompt = `Read ${paths.issue} and write a complete implementation plan to ${paths.plan}.
+        const planPrompt = `You are planning an implementation. Follow this structured approach:
+
+## Phase 1: Research (MANDATORY)
+Before writing any plan:
+1. Read ${paths.issue} completely
+2. Search the codebase to understand existing patterns, conventions, and architecture
+3. For any external dependencies mentioned:
+   - Verify they exist and are actively maintained
+   - Read their actual documentation (not your training data)
+   - Confirm the APIs you plan to use actually exist
+4. Identify similar existing implementations in this codebase to use as templates
+
+## Phase 2: Evaluate Approaches
+Consider at least 2 different approaches. For each:
+- Pros/cons
+- Complexity
+- Alignment with existing patterns
+
+Select the simplest approach that solves the problem.
+
+## Phase 3: Write Plan to ${paths.plan}
+
+Structure:
+1. **Summary**: One paragraph describing what will change
+2. **Approach**: Which approach and why (reference existing patterns)
+3. **Files to Modify**: List each file with specific changes
+4. **Files to Create**: Only if absolutely necessary (prefer modifying existing files)
+5. **Dependencies**: Any new dependencies with version and justification
+6. **Testing**: How to verify the implementation works
+7. **Out of Scope**: Explicitly list what this change does NOT include
+
+## Complexity Budget
+- Prefer modifying 1-3 files over touching many files
+- Prefer using existing utilities over creating new abstractions
+- Prefer inline code over new helper functions for one-time operations
+- Prefer direct solutions over configurable/extensible patterns
+
+## Anti-Patterns to AVOID
+- Do NOT add abstractions "for future flexibility"
+- Do NOT create wrapper classes/functions around simple operations
+- Do NOT add configuration options that aren't requested
+- Do NOT refactor unrelated code
+- Do NOT add error handling for impossible scenarios
 
 Constraints:
-- Do NOT implement code yet.
-- Do NOT modify any tracked files in the repository (only write/update ${paths.plan}).
-- Do NOT ask the user any questions; use repo conventions and ISSUE.md as ground truth.`;
+- Do NOT implement code yet
+- Do NOT modify any tracked files (only write ${paths.plan})
+- Do NOT invent APIs - verify they exist in actual documentation
+- Do NOT ask questions; use repo conventions and ISSUE.md as ground truth`;
 
         const cmd = heredocPipe(
           planPrompt,
@@ -627,12 +670,61 @@ Build upon existing correct work. Do not duplicate or revert it.
 
 `;
 
-      const implPrompt = `${recoveryContext}Read ${paths.plan} and ${paths.critique}. Update ${paths.plan} to address critique, then implement the feature in the repo.
+      const implPrompt = `${recoveryContext}Read ${paths.plan} and ${paths.critique}.
 
-Constraints:
-- Follow existing patterns and conventions in the repository.
-- Fix root causes; no hacks.
-- Do not bypass tests; use the repo's normal commands.`;
+## Step 1: Address Critique
+Update ${paths.plan} to address any Critical Issues or Over-Engineering Concerns from the critique.
+If critique says REJECT, revise the plan significantly before proceeding.
+
+## Step 2: Implement
+Implement the feature following the plan.
+
+## STRICT Requirements
+
+### Match Existing Patterns
+- Study similar code in this repo BEFORE writing
+- Copy the EXACT style: naming, formatting, error handling, comments
+- If the codebase doesn't have docstrings, don't add them
+- If the codebase uses terse variable names, use terse names
+
+### Minimize Changes
+- Only modify files listed in the plan
+- Only add code that directly implements the feature
+- Delete any code that becomes unused
+- Prefer fewer lines over "cleaner" abstractions
+
+### NO Tutorial Comments
+FORBIDDEN comment patterns:
+- "First, we..." / "Now we..." / "Next, we..."
+- "This function does X" (obvious from the code)
+- "Step 1:", "Step 2:", etc.
+- Comments explaining what the next line does
+- Comments that restate the function name
+
+ALLOWED comments:
+- Non-obvious business logic explanations
+- Workaround explanations with ticket/issue references
+- Performance optimization explanations
+- Regex explanations
+
+### NO Over-Engineering
+FORBIDDEN patterns:
+- Creating interfaces/base classes for single implementations
+- Adding configuration for single use cases
+- Factory functions for simple object creation
+- Wrapper functions that just call one other function
+- Error handling for impossible code paths
+- Logging for debugging that won't ship
+
+### Scope Discipline
+- If you notice something that "should" be fixed but isn't in the issue, DON'T fix it
+- If you think of a "nice to have" feature, DON'T add it
+- If code could be "cleaner" with a refactor, DON'T refactor unless required
+
+### Code Quality
+- Fix root causes, no hacks
+- Do not bypass tests
+- Use the repo's normal commands (lint, format, test)`;
 
       // Session reuse: resume from planning context if available
       let claudeFlags = `claude -p --output-format stream-json --verbose --dangerously-skip-permissions`;
@@ -690,27 +782,61 @@ Constraints:
           ? `ppcommit passed (no issues). Focus on code review.`
           : `ppcommit found issues — fix ALL of them:\n---\n${ppOutput}\n---`;
 
-        const codexPrompt = `You are reviewing uncommitted changes in this repository.
-Read ISSUE.md to understand what was requested.
+        const codexPrompt = `You are reviewing uncommitted changes for commit readiness.
+Read ISSUE.md to understand what was originally requested.
 
-Code review checklist:
-1. Verify the implementation is written to completion regarding the resolution of ISSUE.md — no partial implementations, no stubs, no TODOs left behind.
-2. Verify there are no workarounds or test bypasses — the code must solve the problem directly.
-3. Verify the code is correct, robust, and as simple as possible — no unnecessary complexity.
-4. Verify industry-standard libraries are used where appropriate instead of reinventing the wheel.
-5. Check for edge cases, off-by-one errors, and correctness issues.
+## Checklist
 
-If any of the above checks fail, fix the code.
+### 1. Scope Conformance
+- Does the change ONLY implement what ISSUE.md requested?
+- Are there any unrequested features added? (Remove them)
+- Are there any unrelated refactors? (Revert them)
+- Were more files modified than necessary? (Consolidate if possible)
 
-ppcommit (commit hygiene):
+### 2. Completeness
+- Is the implementation fully complete? No stubs, no TODOs, no placeholders
+- Are there test bypasses or skipped tests? (Fix them)
+- Does it solve the problem directly without workarounds?
+
+### 3. Code Quality
+- Is this the SIMPLEST solution that works?
+- Are there unnecessary abstractions? (Inline them)
+- Are there wrapper functions that just call one thing? (Inline them)
+- Are there interfaces/base classes with single implementations? (Remove them)
+- Are there configuration options for single use cases? (Remove them)
+
+### 4. Comment Hygiene
+Look for and REMOVE these comment patterns:
+- Tutorial-style: "First we...", "Now we...", "Step N:"
+- Restating code: "// increment counter" above counter++
+- Obvious descriptions: "// Constructor" above constructor
+- Narration: "Here we define...", "This function..."
+Keep only: non-obvious logic explanations, workaround refs, performance notes
+
+### 5. Backwards-Compat Hacks
+Look for and REMOVE these patterns:
+- Variables renamed to start with \`_\` but not used
+- Re-exports of removed items for compatibility
+- \`// removed\` or \`// deprecated\` comments for deleted code
+- Empty functions kept for interface compatibility
+If something is unused, DELETE it completely.
+
+### 6. Correctness
+- Edge cases handled appropriately
+- No off-by-one errors
+- Uses industry-standard libraries where appropriate
+- Error handling only for errors that can actually occur
+
+## ppcommit (commit hygiene)
 ${ppSection}
 ${ppBefore.exitCode === 0 ? "ppcommit is clean." : "Fix ALL ppcommit issues."} Coder will re-run built-in ppcommit checks after your changes (do not assume a ppcommit CLI exists).
 
 Then run the repo's standard lint/format/test commands and fix any failures.
 
 Hard constraints:
-- Never bypass tests or reduce coverage/quality.
-- If a command fails, fix the underlying issue and re-run until it passes.`;
+- Never bypass tests or reduce coverage/quality
+- If a command fails, fix the underlying issue and re-run until it passes
+- Remove ALL unnecessary code, comments, and abstractions`;
 
         const cmd = `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(codexPrompt)}`;
         const res = await codex.executeCommand(cmd, { timeoutMs: 1000 * 60 * 90 });

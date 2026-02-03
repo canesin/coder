@@ -100,6 +100,22 @@ const PLACEHOLDER_PATTERNS = [
   /panic!\s*\(\s*["']not implemented/i,
 ];
 
+// Backwards-compatibility hack patterns
+const COMPAT_HACK_PATTERNS = [
+  { pattern: /^\s*(?:const|let|var)\s+_[a-zA-Z]\w*\s*=\s*\w+.*;?\s*(?:\/\/.*(?:unused|compat|legacy))?$/i, name: "Unused variable with underscore prefix" },
+  { pattern: /^\s*export\s*\{[^}]*\}.*\/[/*].*(?:compat|legacy|deprecated)/i, name: "Compatibility re-export" },
+  { pattern: /\/[/*]\s*(?:removed|deprecated|legacy|for backwards? compat)/i, name: "Deprecated/removed comment marker" },
+  { pattern: /catch\s*\([^)]*\)\s*\{\s*\}/, name: "Empty catch block" },
+];
+
+// Over-engineering patterns (line-based detection)
+const OVER_ENGINEERING_PATTERNS = [
+  { pattern: /function\s+create[A-Z]\w*Factory\s*\(/i, name: "Factory function for potentially simple object" },
+  { pattern: /class\s+\w+Factory\s*[{<]/i, name: "Factory class" },
+  { pattern: /class\s+Abstract\w+\s*[{<]/i, name: "Abstract base class (verify single impl)" },
+  { pattern: /try\s*\{[^}]*try\s*\{[^}]*try\s*\{/s, name: "Excessive try-catch nesting (3+ levels)" },
+];
+
 // Secret patterns
 const SECRET_PATTERNS = [
   { pattern: /AKIA[0-9A-Z]{16}/, name: "AWS Access Key" },
@@ -162,6 +178,8 @@ function getConfig(repoDir) {
     blockLlmMarkers: getGitBool(repoDir, k(["blockLlmMarkers"]), true),
     blockPlaceholderCode: getGitBool(repoDir, k(["blockPlaceholderCode"]), true),
     blockSecrets: getGitBool(repoDir, k(["blockSecrets"]), true),
+    blockCompatHacks: getGitBool(repoDir, k(["blockCompatHacks"]), true),
+    blockOverEngineering: getGitBool(repoDir, k(["blockOverEngineering"]), true),
     treatWarningsAsErrors: getGitBool(repoDir, k(["treatWarningsAsErrors"]), false),
   };
 }
@@ -385,6 +403,48 @@ function checkSecrets(content, filePath, config, issues) {
         pushIssue(issues, {
           level: "ERROR",
           message: `Potential secret detected (${name}). Use env vars or secret management.`,
+          file: filePath,
+          line: i + 1,
+        });
+        break;
+      }
+    }
+  }
+}
+
+function checkCompatHacks(content, filePath, config, issues) {
+  if (!config.blockCompatHacks) return;
+  if (!isCodeFile(filePath)) return;
+
+  const lines = splitLines(content);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const { pattern, name } of COMPAT_HACK_PATTERNS) {
+      if (pattern.test(line)) {
+        pushIssue(issues, {
+          level: "WARNING",
+          message: `Backwards-compat hack detected: ${name}. Remove unused code entirely.`,
+          file: filePath,
+          line: i + 1,
+        });
+        break;
+      }
+    }
+  }
+}
+
+function checkOverEngineering(content, filePath, config, issues) {
+  if (!config.blockOverEngineering) return;
+  if (!isCodeFile(filePath)) return;
+
+  const lines = splitLines(content);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const { pattern, name } of OVER_ENGINEERING_PATTERNS) {
+      if (pattern.test(line)) {
+        pushIssue(issues, {
+          level: "WARNING",
+          message: `Potential over-engineering: ${name}. Prefer simpler constructs.`,
           file: filePath,
           line: i + 1,
         });
@@ -643,21 +703,34 @@ function runGeminiIssues(repoDir, files) {
 
   if (!snippets) return /** @type {any[]} */ ([]);
 
-  const prompt = `Analyze this code for signs of AI/LLM-generated code that wasn't properly reviewed.
-Look for:
-1) Overly verbose or tutorial-style comments
-2) Unnecessary abstraction layers or "future-proofing"
-3) Code that looks copy-pasted from documentation
-4) Inconsistent naming within the same file
-5) Generic placeholder implementation patterns
-6) Excessive error handling for scenarios that can't happen
+  const prompt = `Analyze this code for signs of AI/LLM-generated code that wasn't properly cleaned up.
 
+## Definite Issues (ERROR level)
+1. Tutorial-style narration comments ("First we...", "Now we...", "Step N:")
+2. Comments that restate what code does ("// increment counter" above x++)
+3. Placeholder code (pass, NotImplementedError, todo!(), unimplemented!())
+4. TODOs/FIXMEs left in the code
+
+## Likely Issues (WARNING level)
+1. Overly verbose comments explaining obvious code
+2. Unnecessary abstraction layers (factories, wrappers, adapters) for simple operations
+3. Code that looks copy-pasted from documentation with example variable names
+4. Inconsistent naming within the same file (mixedCase vs snake_case)
+5. Generic placeholder patterns (foo, bar, example, test123)
+6. Excessive error handling for scenarios that can't happen
+7. Unused imports or variables
+8. Functions that just wrap a single other function call
+9. Interfaces/abstract classes with only one implementation
+10. Configuration objects for single use cases
+
+## Code Being Analyzed
 ${snippets}
 
 Respond with ONLY a JSON array. Each item:
-{ "file": string, "line": number, "issue": string }
+{ "file": string, "line": number, "issue": string, "severity": "ERROR" | "WARNING" }
+
 If no issues found, respond with [].
-Only report clear issues, not speculation.`;
+Only report clear issues, not speculation. Be specific about what's wrong.`;
 
   const res = spawnSync("gemini", ["--yolo", "-m", "gemini-3-flash-preview", "-o", "json"], {
     cwd: repoDir,
@@ -728,21 +801,24 @@ export function runPpcommitNative(repoDir) {
       checkLlmMarkers(content, filePath, config, issues);
       checkNarrationComments(content, filePath, config, issues);
       checkPlaceholderCode(content, filePath, config, issues);
+      checkCompatHacks(content, filePath, config, issues);
+      checkOverEngineering(content, filePath, config, issues);
       checkMagicNumbers(content, filePath, config, issues);
       checkUnusedVariables(content, filePath, config, issues);
       llmFiles.push({ filePath, content });
     }
   }
 
-  // LLM analysis is best-effort (warnings only).
+  // LLM analysis is best-effort.
   const llmResults = runGeminiIssues(repoDir, llmFiles);
   for (const r of llmResults) {
     if (!r || typeof r !== "object") continue;
     const file = typeof r.file === "string" ? r.file : "";
     const line = Number.isFinite(r.line) ? r.line : 1;
     const issue = typeof r.issue === "string" ? r.issue : "";
+    const severity = r.severity === "ERROR" ? "ERROR" : "WARNING";
     if (!file || !issue) continue;
-    pushIssue(issues, { level: "WARNING", message: `LLM analysis: ${issue.slice(0, 200)}`, file, line });
+    pushIssue(issues, { level: severity, message: `LLM analysis: ${issue.slice(0, 200)}`, file, line });
   }
 
   const stdout = formatIssues(issues, config.treatWarningsAsErrors);

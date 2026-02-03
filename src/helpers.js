@@ -95,7 +95,7 @@ export function runPlanreview(repoDir, planPath, critiquePath) {
 export function runPlanreviewWithGemini(repoDir, planPath, critiquePath) {
   const planContent = readFileSync(planPath, "utf8");
 
-  const reviewPrompt = `You are a cynical, experienced senior principal engineer reviewing a technical plan.
+  const reviewPrompt = `You are a rigorous, experienced senior principal engineer reviewing a technical plan.
 
 ## CRITICAL: Verify External Dependencies
 
@@ -106,15 +106,40 @@ This plan references external libraries/crates/packages. You MUST:
 4. Check if functions/methods mentioned actually exist in those libraries
 5. Do NOT trust the plan's claims about external APIs - verify them by reading source/docs
 
+## CRITICAL: Detect Over-Engineering
+
+Flag as issues:
+1. **Unnecessary abstractions** - wrapper classes, factory patterns, or interfaces for simple operations
+2. **Premature generalization** - configuration options, plugin systems, or extensibility not required by the issue
+3. **Future-proofing** - code designed for hypothetical future requirements
+4. **Reinventing wheels** - custom implementations when standard library or existing codebase utilities exist
+5. **Excessive layering** - more than 2 levels of indirection for simple operations
+
+## CRITICAL: Scope Conformance
+
+Compare plan to original issue (ISSUE.md should exist in the repo):
+1. Does it add features NOT requested?
+2. Does it refactor code unrelated to the issue?
+3. Does it change interfaces/APIs beyond what's needed?
+4. Does it modify more files than necessary?
+
+## CRITICAL: Codebase Consistency
+
+1. Does the plan follow existing patterns in the codebase?
+2. Are naming conventions consistent with existing code?
+3. Does it use existing utilities instead of creating new ones?
+
 ## Your Mandate
 
-Be ruthlessly analytical. Find flaws, gaps, risks, and problems BEFORE implementation.
+Be analytically rigorous. Find flaws, gaps, risks, and over-engineering BEFORE implementation.
 
 Focus on:
 1. **Feasibility**: Can this actually be implemented? Are the APIs real?
 2. **Completeness**: What's missing? What edge cases are ignored?
 3. **Correctness**: Are there logical flaws or misunderstandings?
 4. **Dependencies**: Are the external library APIs correctly described?
+5. **Simplicity**: Is this the simplest solution? What can be removed?
+6. **Scope**: Does this stay within the original issue's requirements?
 
 ## The Plan to Review
 
@@ -125,7 +150,10 @@ ${planContent}
 After verifying external APIs via search, provide your critique:
 
 ### Critical Issues (Must Fix)
-Issues that would cause the plan to fail.
+Issues that would cause the plan to fail or violate constraints.
+
+### Over-Engineering Concerns
+Unnecessary complexity, abstractions, or scope creep.
 
 ### Concerns (Should Address)
 Problems that should be addressed but won't cause immediate failure.
@@ -134,9 +162,14 @@ Problems that should be addressed but won't cause immediate failure.
 Ambiguities or assumptions that need to be verified.
 
 ### Verdict
-One of: REJECT (major rework needed), REVISE (fix issues first), PROCEED WITH CAUTION (minor issues), APPROVED (rare - plan is solid)
+One of:
+- REJECT (major rework needed, scope violation, or hallucinated APIs)
+- REVISE (fix over-engineering or other issues first)
+- PROCEED WITH CAUTION (minor issues)
+- APPROVED (rare - plan is minimal, correct, and verified)
 
-Be specific. Reference what you found in your searches about the external APIs.`;
+Be specific. Reference what you found in your searches about the external APIs.
+Reference specific sections in the plan when identifying over-engineering.`;
 
   // Use gemini CLI with yolo mode and text output
   const cmd = heredocPipe(reviewPrompt, "gemini --yolo -o text");
