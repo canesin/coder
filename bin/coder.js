@@ -1,0 +1,659 @@
+#!/usr/bin/env node
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import process from "node:process";
+import readline from "node:readline/promises";
+import { parseArgs as nodeParseArgs } from "node:util";
+
+import { VibeKit } from "@vibe-kit/sdk";
+import { jsonrepair } from "jsonrepair";
+import { z } from "zod";
+
+import { HostSandboxProvider } from "../src/host-sandbox.js";
+import { closeAllLoggers, ensureLogsDir, makeJsonlLogger } from "../src/logging.js";
+import { runPpcommitNative } from "../src/ppcommit.js";
+import { runPlanreview } from "../src/helpers.js";
+import { loadState, saveState, statePathFor } from "../src/state.js";
+import { detectTestCommand, runTestCommand } from "../src/test-runner.js";
+import { sanitizeBranchForRef, worktreePath } from "../src/worktrees.js";
+
+const IssuesPayloadSchema = z.object({
+  issues: z.array(
+    z.object({
+      source: z.enum(["github", "linear"]),
+      id: z.string().min(1),
+      title: z.string().min(1),
+      repo_path: z.string().default(""),
+      difficulty: z.number().int().min(1).max(5),
+      reason: z.string().default(""),
+    }),
+  ),
+  recommended_index: z.number().int(),
+});
+
+const QuestionsPayloadSchema = z.object({
+  questions: z.tuple([z.string().min(1), z.string().min(1), z.string().min(1)]),
+});
+
+const ProjectsPayloadSchema = z.object({
+  projects: z.array(
+    z.object({
+      id: z.string().min(1),
+      name: z.string().min(1),
+      key: z.string().default(""),
+    }),
+  ),
+});
+
+function usage() {
+  return `coder (VibeKit SDK orchestrator; host sandbox)
+
+Usage:
+  coder [--workspace <path>] [--repo <path>] [--issue-index <n>] [--verbose]
+        [--test-cmd "<cmd>"] [--allow-no-tests]
+
+Defaults:
+  - Human interaction: project selection, issue selection, and Gemini's 3 clarification questions.
+  - All agent output and progress written under .coder/
+
+Required environment (agent auth):
+  GOOGLE_API_KEY or GEMINI_API_KEY
+  ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN for Claude Code)
+  OPENAI_API_KEY
+
+Optional:
+  --test-cmd          Override test command (e.g. "pnpm test" or "pytest -q")
+  --allow-no-tests    Continue even if no tests detected
+`;
+}
+
+const DEFAULT_PASS_ENV = [
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "OPENAI_API_KEY",
+  "GITHUB_TOKEN",
+  "LINEAR_API_KEY",
+];
+
+function parseArgs(argv) {
+  const { values } = nodeParseArgs({
+    args: argv.slice(2),
+    strict: true,
+    options: {
+      help: { type: "boolean", short: "h", default: false },
+      workspace: { type: "string", default: "." },
+      repo: { type: "string", default: "" },
+      "issue-index": { type: "string", default: "" },
+      "test-cmd": { type: "string", default: "" },
+      "allow-no-tests": { type: "boolean", default: false },
+      verbose: { type: "boolean", short: "v", default: false },
+      "pass-env": { type: "string", default: "" },
+    },
+  });
+
+  return {
+    help: values.help,
+    workspace: values.workspace,
+    repo: values.repo,
+    issueIndex: values["issue-index"] ? Number.parseInt(values["issue-index"], 10) : -1,
+    verbose: values.verbose,
+    issueFile: "ISSUE.md",
+    planFile: "PLAN.md",
+    critiqueFile: "PLANREVIEW.md",
+    allowNoTests: values["allow-no-tests"],
+    testCmd: values["test-cmd"],
+    passEnv: values["pass-env"]
+      ? values["pass-env"].split(",").map((s) => s.trim()).filter(Boolean)
+      : DEFAULT_PASS_ENV,
+  };
+}
+
+function requireEnvOneOf(names) {
+  for (const n of names) {
+    if (process.env[n]) return;
+  }
+  throw new Error(`Missing required env var: one of ${names.join(", ")}`);
+}
+
+function requireCommandOnPath(name) {
+  const res = spawnSync("bash", ["-lc", `command -v ${JSON.stringify(name)} >/dev/null 2>&1`], {
+    encoding: "utf8",
+  });
+  if (res.status !== 0) throw new Error(`Required command not found on PATH: ${name}`);
+}
+
+function buildSecrets(passEnv) {
+  /** @type {Record<string, string>} */
+  const secrets = {};
+  for (const key of passEnv) {
+    const val = process.env[key];
+    if (val) secrets[key] = val;
+  }
+  return secrets;
+}
+
+function extractJson(stdout) {
+  const trimmed = stdout.trim();
+  const fenced = trimmed.match(/```json\s*([\s\S]*?)\s*```/i);
+  if (fenced) return JSON.parse(jsonrepair(fenced[1].trim()));
+
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    const candidate = trimmed.slice(firstBrace, lastBrace + 1);
+    return JSON.parse(jsonrepair(candidate));
+  }
+
+  return JSON.parse(jsonrepair(trimmed));
+}
+
+async function promptText(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(question);
+    return answer.trim();
+  } finally {
+    rl.close();
+  }
+}
+
+function gitCleanOrThrow(repoDir) {
+  const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
+  if (res.status !== 0) throw new Error("Failed to run `git status`.");
+  if ((res.stdout || "").trim() !== "") {
+    throw new Error(`Repo working tree is not clean: ${repoDir}`);
+  }
+}
+
+// runPlanreview is imported from helpers.js (uses Gemini CLI)
+
+function runPpcommit(repoDir) {
+  return runPpcommitNative(repoDir);
+}
+
+function runHostTests(repoDir, args) {
+  if (args.testCmd) {
+    const res = spawnSync("bash", ["-lc", args.testCmd], {
+      cwd: repoDir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return {
+      cmd: ["bash", "-lc", args.testCmd],
+      exitCode: res.status ?? 0,
+      stdout: res.stdout || "",
+      stderr: res.stderr || "",
+    };
+  }
+
+  const detected = detectTestCommand(repoDir);
+  if (!detected) {
+    if (args.allowNoTests) return { cmd: null, exitCode: 0, stdout: "", stderr: "" };
+    throw new Error(
+      `No tests detected for repo ${repoDir}. Pass --test-cmd \"...\" or --allow-no-tests.`,
+    );
+  }
+
+  const res = runTestCommand(repoDir, detected);
+  return { cmd: detected, ...res };
+}
+
+function heredocPipe(text, pipeCmd) {
+  const marker = `CODER_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+  if (text.includes(marker)) {
+    return heredocPipe(text + "\n", pipeCmd);
+  }
+  const normalized = text.replace(/\r\n/g, "\n");
+  return `cat <<'${marker}' | ${pipeCmd}\n${normalized}\n${marker}`;
+}
+
+function renderIssuesTable(issues, recommendedIndex) {
+  const headers = [" #", "Source", "ID", "Diff", "Title", "Reason"];
+  const rows = issues.map((it, i) => [
+    i === recommendedIndex ? `\u2192${i + 1}` : ` ${i + 1}`,
+    it.source,
+    it.id,
+    `${it.difficulty}/5`,
+    it.title,
+    it.reason || "",
+  ]);
+
+  const maxColWidths = [5, 6, 24, 4, 42, 32];
+  const widths = headers.map((h, col) => {
+    const dataMax = Math.max(h.length, ...rows.map((r) => r[col].length));
+    return Math.min(dataMax, maxColWidths[col]);
+  });
+
+  const trunc = (s, w) => (s.length > w ? s.slice(0, w - 1) + "\u2026" : s.padEnd(w));
+  const hr = (l, m, r) => l + widths.map((w) => "\u2500".repeat(w + 2)).join(m) + r;
+  const fmtRow = (cells) =>
+    "\u2502" + cells.map((c, i) => ` ${trunc(c, widths[i])} `).join("\u2502") + "\u2502";
+
+  let out = "";
+  out += hr("\u250c", "\u252c", "\u2510") + "\n";
+  out += fmtRow(headers) + "\n";
+  out += hr("\u251c", "\u253c", "\u2524") + "\n";
+  for (const r of rows) out += fmtRow(r) + "\n";
+  out += hr("\u2514", "\u2534", "\u2518") + "\n";
+  out += "\u2192 = Gemini recommendation\n";
+  return out;
+}
+
+async function run() {
+  const args = parseArgs(process.argv);
+  if (args.help) {
+    process.stdout.write(usage());
+    return 0;
+  }
+
+  requireEnvOneOf(["GOOGLE_API_KEY", "GEMINI_API_KEY"]);
+  requireEnvOneOf(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
+  requireEnvOneOf(["OPENAI_API_KEY"]);
+  requireCommandOnPath("git");
+  requireCommandOnPath("gemini");
+  requireCommandOnPath("claude");
+  requireCommandOnPath("codex");
+  // planreview and ppcommit are now built-in (no external dependencies)
+
+  const workspaceDir = path.resolve(args.workspace);
+  if (!existsSync(workspaceDir)) throw new Error(`Workspace does not exist: ${workspaceDir}`);
+
+  mkdirSync(path.join(workspaceDir, ".coder"), { recursive: true });
+  ensureLogsDir(workspaceDir);
+
+  const issuePath = path.join(workspaceDir, args.issueFile);
+  const planPath = path.join(workspaceDir, args.planFile);
+  const critiquePath = path.join(workspaceDir, args.critiqueFile);
+
+  const state = loadState(workspaceDir);
+  const statePath = statePathFor(workspaceDir);
+  const log = makeJsonlLogger(workspaceDir, "coder");
+  log({ event: "start", workspaceDir, statePath });
+
+  // Best-effort checkpoint reconciliation based on artifact presence.
+  state.steps ||= {};
+  if (existsSync(issuePath)) state.steps.wroteIssue = true;
+  if (existsSync(planPath)) state.steps.wrotePlan = true;
+  if (existsSync(critiquePath)) state.steps.wroteCritique = true;
+
+  const secrets = buildSecrets(args.passEnv);
+
+  const attachAgentLogging = (name, vk) => {
+    const agentLog = makeJsonlLogger(workspaceDir, name);
+    vk.on("stdout", (d) => agentLog({ stream: "stdout", data: d }));
+    vk.on("stderr", (d) => agentLog({ stream: "stderr", data: d }));
+    vk.on("update", (d) => agentLog({ stream: "update", data: d }));
+    vk.on("error", (d) => agentLog({ stream: "error", data: d }));
+    if (args.verbose) {
+      vk.on("stdout", (d) => process.stdout.write(`[${name}] ${d}`));
+      vk.on("stderr", (d) => process.stderr.write(`[${name}] ${d}`));
+    }
+  };
+
+  // Gemini runs at workspace scope.
+  const gemini = new VibeKit()
+    .withSandbox(new HostSandboxProvider({ defaultCwd: workspaceDir, baseEnv: secrets }))
+    .withWorkingDirectory(workspaceDir)
+    .withSecrets(secrets)
+    .withAgent({
+      type: "gemini",
+      provider: "google",
+      apiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY,
+      model: "gemini-3-flash-preview",
+    });
+  attachAgentLogging("gemini", gemini);
+
+  // --- Step 0: Linear project selection ---
+  if (process.env.LINEAR_API_KEY && (!state.steps.listedProjects || !state.linearProjects)) {
+    process.stdout.write("\n[0/8] Gemini: listing Linear teams...\n");
+    const projPrompt = `Use your Linear MCP to list all teams I have access to.
+
+Return ONLY valid JSON in this schema:
+{
+  "projects": [
+    {
+      "id": "string (team ID)",
+      "name": "string (team name)",
+      "key": "string (team key, e.g. ENG)"
+    }
+  ]
+}`;
+    const projCmd = heredocPipe(projPrompt, "gemini --model gemini-3-flash-preview --yolo");
+    const projRes = await gemini.executeCommand(projCmd, { timeoutMs: 1000 * 60 * 5 });
+    if (projRes.exitCode !== 0) throw new Error("Gemini project listing failed.");
+    const projPayload = ProjectsPayloadSchema.parse(extractJson(projRes.stdout));
+    state.linearProjects = projPayload.projects;
+
+    if (state.linearProjects.length > 0) {
+      process.stdout.write("\nLinear teams:\n");
+      for (let i = 0; i < state.linearProjects.length; i++) {
+        const p = state.linearProjects[i];
+        const key = p.key ? ` (${p.key})` : "";
+        process.stdout.write(`  ${i + 1}. ${p.name}${key}\n`);
+      }
+      const raw = await promptText(
+        `\nSelect a project [1-${state.linearProjects.length}] (or Enter for all): `,
+      );
+      if (raw) {
+        const idx = Number.parseInt(raw, 10);
+        if (!Number.isInteger(idx) || idx < 1 || idx > state.linearProjects.length) {
+          throw new Error("Invalid project selection.");
+        }
+        state.selectedProject = state.linearProjects[idx - 1];
+      }
+    }
+
+    state.steps.listedProjects = true;
+    saveState(workspaceDir, state);
+  }
+
+  // --- Step 1: Gemini issues listing (structured JSON contract) ---
+  let issuesPayload;
+  if (!state.steps.listedIssues || !state.issuesPayload) {
+    process.stdout.write("\n[1/8] Gemini: listing assigned issues...\n");
+    let projectFilter = "";
+    if (state.selectedProject) {
+      projectFilter = `\nOnly include Linear issues from the "${state.selectedProject.name}" team (key: ${state.selectedProject.key}).`;
+    }
+    const listPrompt = `Use your GitHub MCP and Linear MCP to list the issues assigned to me.${projectFilter}
+
+Then, for each issue, briefly inspect the local code in the relevant repository folder(s) in this workspace (${workspaceDir}) and estimate implementation difficulty and directness (prefer small, self-contained changes).
+
+Return ONLY valid JSON in this schema:
+{
+  "issues": [
+    {
+      "source": "github" | "linear",
+      "id": "string",
+      "title": "string",
+      "repo_path": "string (relative path to repo subfolder in workspace, or empty if unknown)",
+      "difficulty": 1 | 2 | 3 | 4 | 5,
+      "reason": "short explanation"
+    }
+  ],
+  "recommended_index": number
+}`;
+
+    const cmd = heredocPipe(listPrompt, "gemini --model gemini-3-flash-preview --yolo");
+    const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
+    if (res.exitCode !== 0) throw new Error("Gemini issue listing failed.");
+    issuesPayload = IssuesPayloadSchema.parse(extractJson(res.stdout));
+    state.steps.listedIssues = true;
+    state.issuesPayload = issuesPayload;
+    saveState(workspaceDir, state);
+  } else {
+    issuesPayload = state.issuesPayload;
+  }
+
+  const issues = issuesPayload?.issues || [];
+  if (issues.length === 0) {
+    process.stdout.write("No issues returned.\n");
+    return 0;
+  }
+
+  // --- Step 1.5: choose issue and repo ---
+  if (!state.selected || !state.repoPath || !state.branch) {
+    let selected;
+    if (Number.isInteger(args.issueIndex) && args.issueIndex >= 0 && args.issueIndex < issues.length) {
+      selected = issues[args.issueIndex];
+    } else {
+      process.stdout.write("\n");
+      process.stdout.write(renderIssuesTable(issues, issuesPayload.recommended_index));
+      process.stdout.write("\n");
+      const raw = await promptText("Pick an issue number: ");
+      const idx = Number.parseInt(raw, 10);
+      if (!Number.isInteger(idx) || idx < 1 || idx > issues.length) throw new Error("Invalid issue selection.");
+      selected = issues[idx - 1];
+    }
+
+    let repoPath = (args.repo || selected.repo_path || "").trim();
+    if (!repoPath) repoPath = await promptText("Repo subfolder to work in (relative to workspace): ");
+
+    state.selected = selected;
+    state.repoPath = repoPath;
+    state.branch = sanitizeBranchForRef(`coder/${selected.source}-${selected.id}`);
+    saveState(workspaceDir, state);
+  }
+
+  const repoRoot = path.resolve(workspaceDir, state.repoPath);
+  if (!existsSync(repoRoot)) throw new Error(`Repo root does not exist: ${repoRoot}`);
+  const isGit = spawnSync("git", ["rev-parse", "--git-dir"], { cwd: repoRoot, encoding: "utf8" });
+  if (isGit.status !== 0) throw new Error(`Not a git repository: ${repoRoot}`);
+
+  // Hard gate: require repo clean before any agent writes code.
+  if (!state.steps.verifiedCleanRepo) {
+    process.stdout.write("\n[1.6/8] Verifying repo is clean...\n");
+    gitCleanOrThrow(repoRoot);
+    state.steps.verifiedCleanRepo = true;
+    saveState(workspaceDir, state);
+  }
+
+  const worktreesRoot = path.join(workspaceDir, ".coder", "worktrees", state.repoPath.replaceAll("/", "__"));
+  mkdirSync(worktreesRoot, { recursive: true });
+  const repoWorktree = worktreePath(worktreesRoot, state.branch);
+
+  // Repo-scoped agents operate from the repo root and isolate changes in a worktree.
+  const makeRepoAgent = (name, agentConfig) => {
+    const provider = new HostSandboxProvider({ defaultCwd: repoRoot, baseEnv: secrets });
+    const vk = new VibeKit()
+      .withSandbox(provider)
+      .withWorkingDirectory(repoRoot)
+      .withWorktrees({ root: worktreesRoot, cleanup: false })
+      .withSecrets(secrets)
+      .withAgent(agentConfig);
+    attachAgentLogging(name, vk);
+    return vk;
+  };
+
+  const claude = makeRepoAgent("claude", {
+    type: "claude",
+    provider: "anthropic",
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    model: "claude-opus-4-5",
+  });
+
+  const codex = makeRepoAgent("codex", {
+    type: "codex",
+    provider: "openai",
+    apiKey: process.env.OPENAI_API_KEY,
+    model: "gpt-5.2-codex",
+  });
+
+  // --- Step 2: Gemini asks 3 questions (only human interaction) ---
+  if (!state.questions || !state.answers || state.questions.length !== 3 || state.answers.length !== 3) {
+    process.stdout.write("\n[2/8] Gemini: generating 3 clarification questions...\n");
+    const qPrompt = `We chose this issue:
+- source: ${state.selected.source}
+- id: ${state.selected.id}
+- title: ${state.selected.title}
+- repo_root: ${repoRoot}
+
+Ask EXACTLY 3 clarifying questions that are essential to implement this issue correctly in this codebase.
+Return ONLY valid JSON:
+{"questions":["q1","q2","q3"]}`;
+
+    const cmd = heredocPipe(qPrompt, "gemini --model gemini-3-flash-preview --yolo");
+    const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 5 });
+    if (res.exitCode !== 0) throw new Error("Gemini questions failed.");
+    const qPayload = QuestionsPayloadSchema.parse(extractJson(res.stdout));
+
+    const answers = [];
+    for (let i = 0; i < 3; i++) {
+      process.stdout.write(`\nQ${i + 1}: ${qPayload.questions[i]}\n`);
+      answers.push(await promptText("A: "));
+    }
+
+    state.questions = qPayload.questions;
+    state.answers = answers;
+    saveState(workspaceDir, state);
+  }
+
+  // --- Step 3: Gemini drafts ISSUE.md ---
+  if (!state.steps.wroteIssue) {
+    process.stdout.write("\n[3/8] Gemini: drafting ISSUE.md...\n");
+    const issuePrompt = `Draft an ISSUE.md for the chosen issue. Use the local codebase in ${repoRoot} as ground truth.
+Be specific about what needs to change, and how to verify it.
+
+Chosen issue:
+- source: ${state.selected.source}
+- id: ${state.selected.id}
+- title: ${state.selected.title}
+- repo_root: ${repoRoot}
+
+Clarifications:
+1) ${state.questions[0]}
+   Answer: ${state.answers[0]}
+2) ${state.questions[1]}
+   Answer: ${state.answers[1]}
+3) ${state.questions[2]}
+   Answer: ${state.answers[2]}
+
+Output ONLY markdown suitable for writing directly to ISSUE.md.
+Include a short section at the top with:
+- Source
+- Issue ID
+- Repo Root (relative path if possible)
+`;
+    const cmd = heredocPipe(issuePrompt, "gemini --model gemini-3-flash-preview --yolo");
+    const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
+    if (res.exitCode !== 0) throw new Error("Gemini ISSUE.md drafting failed.");
+    writeFileSync(issuePath, res.stdout.trimEnd() + "\n");
+    process.stdout.write(`Wrote ${issuePath}\n`);
+    state.steps.wroteIssue = true;
+    saveState(workspaceDir, state);
+  }
+
+  // --- Step 4: Claude writes PLAN.md (must not modify repo) ---
+  if (!state.steps.wrotePlan) {
+    process.stdout.write("\n[4/8] Claude: writing PLAN.md...\n");
+    const planPrompt = `Read ${issuePath} and write a complete implementation plan to ${planPath}.
+
+Constraints:
+- Do NOT implement code yet.
+- Do NOT modify any tracked files in the repository (only write/update ${planPath}).
+- Do NOT ask the user any questions; use repo conventions and ISSUE.md as ground truth.`;
+
+    const cmd = heredocPipe(
+      planPrompt,
+      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-5`,
+    );
+    const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 20, branch: state.branch });
+    if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
+
+    // Hard gate: Claude must not change the repo during planning
+    const status = spawnSync("git", ["status", "--porcelain"], { cwd: repoWorktree, encoding: "utf8" });
+    if (status.status !== 0) throw new Error("Failed to check git status after planning.");
+    if ((status.stdout || "").trim() !== "") {
+      throw new Error("Planning step modified the repository. Aborting.");
+    }
+
+    if (!existsSync(planPath)) throw new Error(`PLAN.md not found: ${planPath}`);
+    state.steps.wrotePlan = true;
+    saveState(workspaceDir, state);
+  }
+
+  // --- Step 5: planreview critique ---
+  if (!state.steps.wroteCritique) {
+    process.stdout.write("\n[5/8] planreview: critiquing PLAN.md...\n");
+    const rc = runPlanreview(repoWorktree, planPath, critiquePath);
+    if (rc !== 0) process.stdout.write("WARNING: planreview exited non-zero. Continuing.\n");
+    state.steps.wroteCritique = true;
+    saveState(workspaceDir, state);
+  }
+
+  // --- Step 6: Claude updates PLAN.md and implements ---
+  if (!state.steps.implemented) {
+    process.stdout.write("\n[6/8] Claude: implementing feature...\n");
+    const implPrompt = `Read ${planPath} and ${critiquePath}. Update ${planPath} to address critique, then implement the feature in the repo.
+
+Constraints:
+- Follow existing patterns and conventions in the repository.
+- Fix root causes; no hacks.
+- Do not bypass tests; use the repo's normal commands.`;
+
+    const cmd = heredocPipe(
+      implPrompt,
+      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-5`,
+    );
+    const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 60, branch: state.branch });
+    if (res.exitCode !== 0) throw new Error("Claude implementation failed.");
+    state.steps.implemented = true;
+    saveState(workspaceDir, state);
+  }
+
+  // --- Step 7: Codex runs ppcommit, fixes, and tests ---
+  if (!state.steps.codexReviewed) {
+    process.stdout.write("\n[7/8] Codex: ppcommit + fixes + tests...\n");
+    const ppBefore = runPpcommit(repoWorktree);
+    log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
+
+    const codexPrompt = `You are reviewing uncommitted changes. Run ppcommit and fix ALL issues it reports.
+Then run the repo's standard lint/format/test commands and fix failures.
+
+Hard constraints:
+- Never bypass tests or reduce coverage/quality.
+- If a command fails, fix the underlying issue and re-run until it passes.
+
+ppcommit output:
+\n---\n${(ppBefore.stdout || ppBefore.stderr || "").trim()}\n---\n`;
+
+    const cmd = `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(codexPrompt)}`;
+    const res = await codex.executeCommand(cmd, { timeoutMs: 1000 * 60 * 90, branch: state.branch });
+    if (res.exitCode !== 0) throw new Error("Codex review/fix failed.");
+    state.steps.codexReviewed = true;
+    saveState(workspaceDir, state);
+  }
+
+  // Hard gate: ppcommit must be clean after Codex
+  process.stdout.write("\n[7.1/8] Verifying: ppcommit checks are clean...\n");
+  const ppAfter = runPpcommit(repoWorktree);
+  if (ppAfter.exitCode !== 0) {
+    process.stdout.write(ppAfter.stdout || ppAfter.stderr);
+    throw new Error("ppcommit still reports issues after Codex pass.");
+  }
+  state.steps.ppcommitClean = true;
+  saveState(workspaceDir, state);
+
+  // Hard gate: tests must pass on host
+  process.stdout.write("\n[7.2/8] Running tests on host...\n");
+  const testRes = runHostTests(repoWorktree, args);
+  if (testRes.cmd) process.stdout.write(`Test command: ${testRes.cmd.join(" ")}\n`);
+  if (testRes.exitCode !== 0) {
+    process.stdout.write(testRes.stdout);
+    process.stderr.write(testRes.stderr);
+    throw new Error("Tests failed after Codex pass.");
+  }
+  state.steps.testsPassed = true;
+  saveState(workspaceDir, state);
+
+  // --- Step 8: Claude final status update ---
+  if (!state.steps.finalized) {
+    process.stdout.write("\n[8/8] Claude: final status update...\n");
+    const statusPrompt = `Run the repo's standard tests relevant to this change and ensure they pass.
+Then update ${issuePath} with completion status and readiness to push. Do not claim tests passed unless they actually did.`;
+
+    const cmd = heredocPipe(
+      statusPrompt,
+      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-5`,
+    );
+    const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 15, branch: state.branch });
+    if (res.exitCode !== 0) throw new Error("Claude final pass failed.");
+    state.steps.finalized = true;
+    saveState(workspaceDir, state);
+  }
+
+  process.stdout.write("\nDone.\n");
+  log({ event: "done", branch: state.branch, repoWorktree });
+  await closeAllLoggers();
+  return 0;
+}
+
+run().catch(async (err) => {
+  process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+  await closeAllLoggers();
+  process.exitCode = 1;
+});

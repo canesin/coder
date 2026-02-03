@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "coder": {
+      "command": "node",
+      "args": ["/home/fcc/Programming/aitools/coder/bin/coder-mcp.js"],
+      "env": {}
+    }
+  }
+}

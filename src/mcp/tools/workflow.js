@@ -1,0 +1,207 @@
+import { z } from "zod";
+import { CoderOrchestrator } from "../../orchestrator.js";
+
+export function registerWorkflowTools(server, defaultWorkspace) {
+  // --- Step 1: coder_list_issues ---
+  server.tool(
+    "coder_list_issues",
+    "Step 1 of the coder workflow. Lists assigned issues from GitHub and Linear, " +
+      "analyzes them against the local codebase, and rates difficulty. " +
+      "Returns issues with a recommended_index. Next step: coder_draft_issue.",
+    {
+      workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+      projectFilter: z.string().optional().describe("Optional project/team name to filter issues by"),
+    },
+    async ({ workspace, projectFilter }) => {
+      const ws = workspace || defaultWorkspace;
+      const orch = new CoderOrchestrator(ws);
+      try {
+        const result = await orch.listIssues({ projectFilter });
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Failed to list issues: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // --- Step 2: coder_draft_issue ---
+  server.tool(
+    "coder_draft_issue",
+    "Step 2 of the coder workflow. Drafts ISSUE.md for the selected issue. " +
+      "Requires an issue from coder_list_issues. Pass the user's clarifications as free text. " +
+      "Next step: coder_create_plan.",
+    {
+      workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+      issue: z.object({
+        source: z.enum(["github", "linear"]).describe("Issue source"),
+        id: z.string().describe("Issue ID"),
+        title: z.string().describe("Issue title"),
+      }).describe("The selected issue from coder_list_issues"),
+      repoPath: z.string().describe("Relative path to the repo subfolder in the workspace"),
+      clarifications: z.string().default("").describe("Free-text clarifications from the user conversation"),
+      force: z.boolean().default(false).describe("Bypass artifact collision checks (use when restarting a workflow)"),
+    },
+    async ({ workspace, issue, repoPath, clarifications, force }) => {
+      const ws = workspace || defaultWorkspace;
+      const orch = new CoderOrchestrator(ws);
+      try {
+        const result = await orch.draftIssue({ issue, repoPath, clarifications, force });
+        return {
+          content: [{ type: "text", text: result.issueMd }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Failed to draft issue: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // --- Step 3: coder_create_plan ---
+  server.tool(
+    "coder_create_plan",
+    "Step 3 of the coder workflow. Has Claude write an implementation plan and runs " +
+      "built-in plan review (Gemini) to critique it. Requires coder_draft_issue to have been called first. " +
+      "Next step: coder_implement.",
+    {
+      workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+    },
+    async ({ workspace }) => {
+      const ws = workspace || defaultWorkspace;
+      const orch = new CoderOrchestrator(ws);
+      try {
+        const result = await orch.createPlan();
+        return {
+          content: [
+            { type: "text", text: `## PLAN.md\n\n${result.planMd}\n\n## PLANREVIEW.md\n\n${result.critiqueMd}` },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Failed to create plan: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // --- Step 4: coder_implement ---
+  server.tool(
+    "coder_implement",
+    "Step 4 of the coder workflow. Has Claude implement the feature based on " +
+      "PLAN.md and PLANREVIEW.md. Requires coder_create_plan to have been called " +
+      "first. Long-running. Next step: coder_review_and_test.",
+    {
+      workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+    },
+    async ({ workspace }) => {
+      const ws = workspace || defaultWorkspace;
+      const orch = new CoderOrchestrator(ws);
+      try {
+        const result = await orch.implement();
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Implementation failed: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // --- Step 5: coder_review_and_test ---
+  server.tool(
+    "coder_review_and_test",
+    "Step 5 of the coder workflow. Has Codex review changes, runs ppcommit for commit " +
+      "hygiene, and executes tests. Requires coder_implement first. Long-running. " +
+      "Next step: coder_finalize.",
+    {
+      workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+      allowNoTests: z.boolean().default(false).describe("Allow the workflow to proceed even if no test command is detected"),
+      testCmd: z.string().default("").describe("Explicit test command to run (e.g. 'npm test')"),
+      testConfigPath: z.string().default("").describe("Path to test config JSON (default: .coder/test.json)"),
+    },
+    async ({ workspace, allowNoTests, testCmd, testConfigPath }) => {
+      const ws = workspace || defaultWorkspace;
+      const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath });
+      try {
+        const result = await orch.reviewAndTest();
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Review and test failed: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // --- Step 6: coder_finalize ---
+  server.tool(
+    "coder_finalize",
+    "Step 6 (final) of the coder workflow. Runs final tests and updates ISSUE.md with " +
+      "completion status. Requires coder_review_and_test first.",
+    {
+      workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+    },
+    async ({ workspace }) => {
+      const ws = workspace || defaultWorkspace;
+      const orch = new CoderOrchestrator(ws);
+      try {
+        const result = await orch.finalize();
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Finalization failed: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // --- Step 7: coder_create_pr ---
+  server.tool(
+    "coder_create_pr",
+    "Step 7 (optional). Creates a PR from the feature branch. " +
+      "Requires coder_review_and_test or coder_finalize to have been called first.",
+    {
+      workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+      type: z.enum(["bug", "feat", "refactor"]).default("feat").describe("PR type prefix for branch naming"),
+      semanticName: z.string().default("").describe("Semantic name for the remote branch (e.g. 'add-login-page')"),
+      title: z.string().default("").describe("PR title (default: auto-generated from issue)"),
+      description: z.string().default("").describe("PR body (default: first lines of ISSUE.md)"),
+    },
+    async ({ workspace, type, semanticName, title, description }) => {
+      const ws = workspace || defaultWorkspace;
+      const orch = new CoderOrchestrator(ws);
+      try {
+        const result = await orch.createPR({
+          type,
+          semanticName: semanticName || undefined,
+          title: title || undefined,
+          description: description || undefined,
+        });
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `PR creation failed: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
