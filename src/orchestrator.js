@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { VibeKit } from "@vibe-kit/sdk";
 
 import { HostSandboxProvider } from "./host-sandbox.js";
 import { ensureLogsDir, makeJsonlLogger, closeAllLoggers } from "./logging.js";
-import { loadState, saveState } from "./state.js";
+import { loadState, saveState, loadLoopState, saveLoopState, statePathFor } from "./state.js";
 import { sanitizeBranchForRef } from "./worktrees.js";
 import { IssuesPayloadSchema, QuestionsPayloadSchema, ProjectsPayloadSchema } from "./schemas.js";
 import {
@@ -408,10 +408,10 @@ Return ONLY valid JSON in this schema:
 
   /**
    * Draft ISSUE.md for a selected issue.
-   * @param {{ issue: { source: string, id: string, title: string }, repoPath: string, clarifications: string }} params
+   * @param {{ issue: { source: string, id: string, title: string }, repoPath: string, clarifications: string, baseBranch?: string }} params
    * @returns {Promise<{ issueMd: string }>}
    */
-  async draftIssue({ issue, repoPath, clarifications, force }) {
+  async draftIssue({ issue, repoPath, clarifications, baseBranch, force }) {
     try {
       this._checkArtifactCollisions({ force });
 
@@ -433,6 +433,7 @@ Return ONLY valid JSON in this schema:
       // Store the selected issue and repo path
       state.selected = issue;
       state.repoPath = repoPath;
+      state.baseBranch = baseBranch || null;
       state.branch = sanitizeBranchForRef(`coder/${issue.source}-${issue.id}`);
       this._saveState(state);
 
@@ -447,6 +448,20 @@ Return ONLY valid JSON in this schema:
       state.steps.verifiedCleanRepo = true;
       this._saveState(state);
 
+      // Optional stacked-base checkout for dependency chains.
+      if (state.baseBranch) {
+        const baseCheckout = spawnSync("git", ["checkout", state.baseBranch], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+        if (baseCheckout.status !== 0) {
+          throw new Error(
+            `Failed to checkout base branch ${state.baseBranch} before creating ${state.branch}: ` +
+              `${baseCheckout.stderr || baseCheckout.stdout}`,
+          );
+        }
+      }
+
       // Create/checkout the feature branch
       this._ensureBranch(state);
 
@@ -456,7 +471,6 @@ Return ONLY valid JSON in this schema:
       const gemini = this._getGemini();
 
       const issuePrompt = `Draft an ISSUE.md for the chosen issue. Use the local codebase in ${repoRoot} as ground truth.
-Be specific about what needs to change, and how to verify it.
 
 Chosen issue:
 - source: ${issue.source}
@@ -468,10 +482,13 @@ Clarifications from user:
 ${clarifications || "(none provided)"}
 
 Output ONLY markdown suitable for writing directly to ISSUE.md.
-Include a short section at the top with:
-- Source
-- Issue ID
-- Repo Root (relative path if possible)
+
+## Required Sections (in order)
+1. **Metadata**: Source, Issue ID, Repo Root (relative path)
+2. **Problem**: What's wrong or missing — reference specific files/functions
+3. **Changes**: Exactly which files need to change and how
+4. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
+5. **Out of Scope**: What this does NOT include
 `;
 
       const cmd = heredocPipe(issuePrompt, "gemini --yolo");
@@ -939,10 +956,10 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
 
   /**
    * Create a pull request from the feature branch.
-   * @param {{ type?: string, semanticName?: string, title?: string, description?: string }} params
-   * @returns {Promise<{ prUrl: string, branch: string }>}
+   * @param {{ type?: string, semanticName?: string, title?: string, description?: string, base?: string }} params
+   * @returns {Promise<{ prUrl: string, branch: string, base: string | null }>}
    */
-  async createPR({ type = "feat", semanticName, title, description } = {}) {
+  async createPR({ type = "feat", semanticName, title, description, base } = {}) {
     try {
       const state = this._loadState();
       state.steps ||= {};
@@ -963,7 +980,7 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
 
       // Early return if PR already created
       if (state.steps.prCreated && state.prUrl) {
-        return { prUrl: state.prUrl, branch: state.prBranch || state.branch };
+        return { prUrl: state.prUrl, branch: state.prBranch || state.branch, base: state.prBase || state.baseBranch || null };
       }
 
       this._ensureBranch(state);
@@ -1000,6 +1017,7 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
       const remoteBranch = semanticName
         ? `${type}/${sanitizeBranchForRef(semanticName)}`
         : state.branch;
+      const baseBranch = base || state.baseBranch || null;
 
       // Push to remote
       const push = spawnSync("git", ["push", "-u", "origin", `HEAD:${remoteBranch}`], {
@@ -1035,11 +1053,9 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
       const prTitle = title || `${type}: ${state.selected?.title || semanticName || state.branch}`;
 
       // Create PR (gh pr create outputs the PR URL directly to stdout)
-      const pr = spawnSync(
-        "gh",
-        ["pr", "create", "--head", remoteBranch, "--title", prTitle, "--body", body],
-        { cwd: repoRoot, encoding: "utf8" },
-      );
+      const prArgs = ["pr", "create", "--head", remoteBranch, "--title", prTitle, "--body", body];
+      if (baseBranch) prArgs.push("--base", baseBranch);
+      const pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
       if (pr.status !== 0) {
         throw new Error(`gh pr create failed: ${pr.stderr || pr.stdout}`);
       }
@@ -1054,16 +1070,468 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
 
       state.prUrl = prUrl;
       state.prBranch = remoteBranch;
+      state.prBase = baseBranch;
       state.steps.prCreated = true;
       this._saveState(state);
 
-      this.log({ event: "pr_created", prUrl, branch: remoteBranch });
+      this.log({ event: "pr_created", prUrl, branch: remoteBranch, base: baseBranch });
 
-      return { prUrl, branch: remoteBranch };
+      return { prUrl, branch: remoteBranch, base: baseBranch };
     } catch (err) {
       this._recordError(err);
       throw err;
     }
+  }
+
+  // --- Autonomous loop helpers ---
+
+  /**
+   * Append a structured entry to .coder/logs/auto.jsonl.
+   */
+  _appendAutoLog(entry) {
+    const logPath = path.join(this.workspaceDir, ".coder", "logs", "auto.jsonl");
+    ensureLogsDir(this.workspaceDir);
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
+    appendFileSync(logPath, line + "\n");
+  }
+
+  /**
+   * Clean slate between issues: delete per-issue state/artifacts,
+   * checkout main branch, discard uncommitted changes, and destroy
+   * agent instances to prevent context pollution.
+   */
+  _resetForNextIssue(repoPath, { destructive = false } = {}) {
+    // Delete per-issue workflow state
+    const statePath = statePathFor(this.workspaceDir);
+    if (existsSync(statePath)) unlinkSync(statePath);
+
+    // Delete workflow artifacts
+    const artifacts = [this.issueFile, this.planFile, this.critiqueFile];
+    for (const name of artifacts) {
+      const p = path.join(this.workspaceDir, name);
+      if (existsSync(p)) unlinkSync(p);
+    }
+
+    // Checkout default branch and optionally clean changes in the repo
+    if (repoPath) {
+      const repoRoot = path.resolve(this.workspaceDir, repoPath);
+      if (existsSync(repoRoot)) {
+        // Determine default branch
+        let defaultBranch = "main";
+        const originHead = spawnSync("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
+          cwd: repoRoot, encoding: "utf8",
+        });
+        if (originHead.status === 0) {
+          const raw = (originHead.stdout || "").trim();
+          if (raw.startsWith("origin/") && raw.length > "origin/".length) {
+            defaultBranch = raw.slice("origin/".length);
+          }
+        } else {
+          const mainCheck = spawnSync("git", ["rev-parse", "--verify", "main"], {
+            cwd: repoRoot, encoding: "utf8",
+          });
+          defaultBranch = mainCheck.status === 0 ? "main" : "master";
+        }
+
+        const checkout = spawnSync("git", ["checkout", defaultBranch], { cwd: repoRoot, encoding: "utf8" });
+        if (checkout.status !== 0) {
+          this._appendAutoLog({
+            event: "reset_warning",
+            repoPath,
+            error: `Could not checkout ${defaultBranch}: ${checkout.stderr || checkout.stdout}`,
+          });
+        }
+
+        const status = spawnSync("git", ["status", "--porcelain"], {
+          cwd: repoRoot, encoding: "utf8",
+        });
+        if (status.status === 0) {
+          const isDirty = ((status.stdout || "").trim().length > 0);
+          if (isDirty && destructive) {
+            const restore = spawnSync("git", ["restore", "--staged", "--worktree", "."], {
+              cwd: repoRoot, encoding: "utf8",
+            });
+            if (restore.status !== 0) {
+              spawnSync("git", ["checkout", "--", "."], { cwd: repoRoot, encoding: "utf8" });
+            }
+            spawnSync("git", ["clean", "-fd"], { cwd: repoRoot, encoding: "utf8" });
+          } else if (isDirty) {
+            this._appendAutoLog({
+              event: "reset_dirty_repo",
+              repoPath,
+              mode: "safe",
+              message:
+                "Repo has uncommitted changes. Skipping destructive cleanup. " +
+                "Use coder_auto with destructiveReset=true to force cleanup.",
+            });
+          }
+        }
+      }
+    }
+
+    // Destroy agent instances — forces fresh sessions per issue
+    this._gemini = null;
+    this._claude = null;
+    this._codex = null;
+  }
+
+  // --- Autonomous loop ---
+
+  /**
+   * Use Gemini to filter issues by goal, analyze dependencies, and produce an
+   * ordered queue. Returns the raw queue array ready for loop-state.
+   */
+  async _buildAutoQueue(issues, goal, maxIssues) {
+    const gemini = this._getGemini();
+
+    const issueList = issues.map((iss) =>
+      `- [${iss.source}#${iss.id}] "${iss.title}" (difficulty: ${iss.difficulty || "?"})`
+    ).join("\n");
+
+    const prompt = `You are an engineering manager triaging a batch of issues for autonomous processing.
+
+## User's goal
+${goal}
+
+## Available issues
+${issueList}
+
+## Your task
+1. **Filter**: Only include issues relevant to the user's goal. If the goal is generic (e.g. "resolve all assigned issues"), include all issues.
+2. **Analyze dependencies**: Determine if any issue depends on another being completed first. For example, if issue A adds a monitoring API and issue B adds dashboards that consume that API, then B depends on A.
+3. **Sort**: Produce a topological order — dependencies before dependents. Among independent issues, sort by difficulty ascending (easy wins first).
+${maxIssues ? `4. **Limit**: Return at most ${maxIssues} issues.` : ""}
+
+Return ONLY valid JSON in this schema:
+{
+  "queue": [
+    {
+      "source": "github" | "linear",
+      "id": "string",
+      "title": "string",
+      "repo_path": "string",
+      "depends_on": ["source#id"],
+      "reason": "short explanation of why included and ordering rationale"
+    }
+  ],
+  "excluded": [
+    { "id": "string", "reason": "why excluded" }
+  ]
+}`;
+
+    const cmd = geminiJsonPipe(prompt);
+    const res = await this._executeWithRetry(gemini, cmd, { timeoutMs: 1000 * 60 * 5, retries: 1 });
+
+    // Best-effort parse — fall back to difficulty sort if Gemini fails
+    try {
+      if (res.exitCode !== 0) throw new Error("Gemini queue building failed");
+      const payload = extractJson(res.stdout);
+      if (!payload?.queue || !Array.isArray(payload.queue)) throw new Error("Invalid queue payload");
+
+      // Build lookups from the original issues
+      const repoPathMap = new Map(issues.map((iss) => [`${iss.source}#${iss.id}`, iss.repo_path || ""]));
+      const refsById = new Map();
+      for (const iss of issues) {
+        const key = String(iss.id);
+        const ref = `${iss.source}#${iss.id}`;
+        const refs = refsById.get(key) || [];
+        refs.push(ref);
+        refsById.set(key, refs);
+      }
+
+      const normalizeDepRef = (dep, fallbackSource) => {
+        const raw = String(dep || "").trim();
+        if (!raw) return null;
+        if (raw.includes("#")) return raw;
+        const matches = refsById.get(raw) || [];
+        if (matches.length === 1) return matches[0];
+        return `${fallbackSource}#${raw}`;
+      };
+
+      const queue = payload.queue.map((item) => ({
+        source: item.source,
+        id: item.id,
+        title: item.title,
+        repoPath: item.repo_path || repoPathMap.get(`${item.source}#${item.id}`) || "",
+        baseBranch: null,
+        status: "pending",
+        branch: null,
+        prUrl: null,
+        error: null,
+        startedAt: null,
+        completedAt: null,
+        dependsOn: Array.isArray(item.depends_on)
+          ? item.depends_on
+            .map((dep) => normalizeDepRef(dep, item.source))
+            .filter((dep) => !!dep)
+          : [],
+      }));
+
+      this._appendAutoLog({
+        event: "queue_built",
+        method: "gemini",
+        total: queue.length,
+        excluded: payload.excluded?.length || 0,
+      });
+      return queue;
+    } catch {
+      this._appendAutoLog({ event: "queue_fallback", reason: "Gemini queue building failed, using difficulty sort" });
+    }
+
+    // Fallback: difficulty sort, no dependency analysis
+    const sorted = [...issues].sort((a, b) => (a.difficulty || 3) - (b.difficulty || 3));
+    return sorted.slice(0, maxIssues || sorted.length).map((iss) => ({
+      source: iss.source,
+      id: iss.id,
+      title: iss.title,
+      repoPath: iss.repo_path || "",
+      baseBranch: null,
+      status: "pending",
+      branch: null,
+      prUrl: null,
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      dependsOn: [],
+    }));
+  }
+
+  /**
+   * Process multiple assigned issues end-to-end without human intervention.
+   * Uses the goal prompt to filter and dependency-sort the issue queue via Gemini.
+   * Issues whose dependencies failed are automatically skipped.
+   * @param {{ goal?: string, projectFilter?: string, maxIssues?: number, testCmd?: string, testConfigPath?: string, allowNoTests?: boolean, destructiveReset?: boolean }} opts
+   * @returns {Promise<{ status: string, completed: number, failed: number, skipped: number, results: Array }>}
+   */
+  async runAuto({
+    goal = "resolve all assigned issues",
+    projectFilter,
+    maxIssues,
+    testCmd,
+    testConfigPath,
+    allowNoTests,
+    destructiveReset = false,
+  } = {}) {
+    if (maxIssues !== undefined && maxIssues !== null) {
+      if (!Number.isInteger(maxIssues) || maxIssues < 1) {
+        throw new Error("maxIssues must be an integer >= 1.");
+      }
+    }
+
+    if (testCmd) this.testCmd = testCmd;
+    if (testConfigPath) this.testConfigPath = testConfigPath;
+    if (allowNoTests) this.allowNoTests = allowNoTests;
+
+    let loopState = loadLoopState(this.workspaceDir);
+
+    // Phase 1: Build queue (skip if resuming a running loop)
+    if (loopState.status !== "running" || loopState.issueQueue.length === 0) {
+      this._appendAutoLog({ event: "auto_start", goal, projectFilter, maxIssues, destructiveReset });
+
+      const listResult = await this.listIssues({ projectFilter });
+      const queue = await this._buildAutoQueue(listResult.issues, goal, maxIssues);
+
+      loopState = {
+        version: 1,
+        goal,
+        status: "running",
+        projectFilter: projectFilter || null,
+        maxIssues: maxIssues || null,
+        issueQueue: queue,
+        currentIndex: 0,
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+      };
+      saveLoopState(this.workspaceDir, loopState);
+
+      // Reset per-issue state from listIssues call
+      this._resetForNextIssue("", { destructive: destructiveReset });
+    } else {
+      this._appendAutoLog({ event: "auto_resume", currentIndex: loopState.currentIndex });
+    }
+
+    const issueRef = (entry) => `${entry.source}#${entry.id}`;
+    const refsById = new Map();
+    for (const item of loopState.issueQueue) {
+      const key = String(item.id);
+      const refs = refsById.get(key) || [];
+      refs.push(issueRef(item));
+      refsById.set(key, refs);
+    }
+    const normalizeDepRef = (dep, fallbackSource) => {
+      const raw = String(dep || "").trim();
+      if (!raw) return null;
+      if (raw.includes("#")) return raw;
+      const matches = refsById.get(raw) || [];
+      if (matches.length === 1) return matches[0];
+      return `${fallbackSource}#${raw}`;
+    };
+
+    // Track failed issue refs for dependency-aware skipping
+    const failedRefs = new Set(
+      loopState.issueQueue
+        .filter((e) => e.status === "failed")
+        .map((e) => issueRef(e)),
+    );
+
+    // Phase 2: Loop through issues
+    for (let i = loopState.currentIndex; i < loopState.issueQueue.length; i++) {
+      const entry = loopState.issueQueue[i];
+      loopState.currentIndex = i;
+
+      if (entry.status === "completed" || entry.status === "failed" || entry.status === "skipped") {
+        loopState.currentIndex = i + 1;
+        saveLoopState(this.workspaceDir, loopState);
+        continue;
+      }
+
+      const dependencyRefs = (entry.dependsOn || [])
+        .map((dep) => normalizeDepRef(dep, entry.source))
+        .filter((dep) => !!dep);
+      entry.dependsOn = dependencyRefs;
+
+      // Dependency check: skip if any dependency failed
+      if (dependencyRefs.length > 0) {
+        const blockedBy = dependencyRefs.filter((depRef) => failedRefs.has(depRef));
+        if (blockedBy.length > 0) {
+          entry.status = "skipped";
+          entry.error = `Skipped: depends on failed issue(s) ${blockedBy.join(", ")}`;
+          entry.completedAt = new Date().toISOString();
+          this._appendAutoLog({ event: "issue_skipped", index: i, id: entry.id, blockedBy });
+          loopState.currentIndex = i + 1;
+          saveLoopState(this.workspaceDir, loopState);
+          continue;
+        }
+
+        // Also skip if a dependency is still pending (shouldn't happen with topo sort, but guard)
+        const unresolved = dependencyRefs.filter((depRef) => {
+          const dep = loopState.issueQueue.find((e) => issueRef(e) === depRef);
+          return !dep || dep.status !== "completed";
+        });
+        if (unresolved.length > 0) {
+          entry.status = "skipped";
+          entry.error = `Skipped: unresolved dependencies ${unresolved.join(", ")}`;
+          entry.completedAt = new Date().toISOString();
+          this._appendAutoLog({ event: "issue_skipped", index: i, id: entry.id, unresolved });
+          loopState.currentIndex = i + 1;
+          saveLoopState(this.workspaceDir, loopState);
+          continue;
+        }
+      }
+
+      let autoBaseBranch = null;
+      if (dependencyRefs.length > 0) {
+        const depEntries = dependencyRefs
+          .map((depRef) => loopState.issueQueue.find((e) => issueRef(e) === depRef))
+          .filter((dep) => !!dep);
+        const branchDeps = depEntries.filter((dep) => dep.branch).map((dep) => dep.branch);
+        if (branchDeps.length === 0) {
+          entry.status = "skipped";
+          entry.error = "Skipped: dependencies completed but no dependency branch was available for stacked mode.";
+          entry.completedAt = new Date().toISOString();
+          this._appendAutoLog({ event: "issue_skipped", index: i, id: entry.id, reason: "missing_dependency_branch" });
+          loopState.currentIndex = i + 1;
+          saveLoopState(this.workspaceDir, loopState);
+          continue;
+        }
+        autoBaseBranch = branchDeps[0];
+        if (branchDeps.length > 1) {
+          this._appendAutoLog({
+            event: "multi_dependency_base_selected",
+            index: i,
+            id: entry.id,
+            selectedBase: autoBaseBranch,
+            availableBases: branchDeps,
+          });
+        }
+      }
+      entry.baseBranch = autoBaseBranch;
+
+      entry.status = "in_progress";
+      entry.startedAt = new Date().toISOString();
+      saveLoopState(this.workspaceDir, loopState);
+
+      this._appendAutoLog({ event: "issue_start", index: i, id: entry.id, title: entry.title });
+
+      try {
+        await this.draftIssue({
+          issue: { source: entry.source, id: entry.id, title: entry.title },
+          repoPath: entry.repoPath,
+          baseBranch: autoBaseBranch || undefined,
+          clarifications: `Auto-mode (no human in the loop). Goal: ${goal}. ` +
+            `You MUST include a concrete verification command in the Verification section. ` +
+            `Do not ask questions — use repo conventions and the codebase as ground truth.`,
+          force: true,
+        });
+
+        await this.createPlan();
+        await this.implement();
+        await this.reviewAndTest();
+        await this.finalize();
+
+        let prResult;
+        try {
+          prResult = await this.createPR({ base: autoBaseBranch || undefined });
+        } catch (prErr) {
+          this._appendAutoLog({ event: "pr_failed", index: i, error: prErr.message });
+        }
+
+        const state = this._loadState();
+        entry.branch = state.branch || null;
+        entry.prUrl = prResult?.prUrl || state.prUrl || null;
+        entry.baseBranch = autoBaseBranch || state.baseBranch || null;
+        entry.status = "completed";
+        entry.completedAt = new Date().toISOString();
+
+        this._appendAutoLog({ event: "issue_completed", index: i, id: entry.id, prUrl: entry.prUrl });
+      } catch (err) {
+        entry.status = "failed";
+        entry.error = err.message || String(err);
+        entry.completedAt = new Date().toISOString();
+        failedRefs.add(issueRef(entry));
+
+        try {
+          const state = this._loadState();
+          entry.branch = state.branch || null;
+        } catch { /* best-effort */ }
+
+        this._appendAutoLog({ event: "issue_failed", index: i, id: entry.id, error: entry.error });
+      }
+
+      this._resetForNextIssue(entry.repoPath, { destructive: destructiveReset });
+      loopState.currentIndex = i + 1;
+      saveLoopState(this.workspaceDir, loopState);
+    }
+
+    // Phase 3: Summarize
+    const completed = loopState.issueQueue.filter((e) => e.status === "completed").length;
+    const failed = loopState.issueQueue.filter((e) => e.status === "failed").length;
+    const skipped = loopState.issueQueue.filter((e) => e.status === "skipped").length;
+
+    if (loopState.issueQueue.length === 0) {
+      loopState.status = "completed";
+    } else {
+      loopState.status = failed === loopState.issueQueue.length ? "failed" : "completed";
+    }
+    loopState.completedAt = new Date().toISOString();
+    saveLoopState(this.workspaceDir, loopState);
+
+    this._appendAutoLog({
+      event: "auto_done",
+      status: loopState.status,
+      completed,
+      failed,
+      skipped,
+      total: loopState.issueQueue.length,
+    });
+
+    return {
+      status: loopState.status,
+      completed,
+      failed,
+      skipped,
+      results: loopState.issueQueue,
+    };
   }
 
   // --- Status ---
@@ -1107,11 +1575,13 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
       selected: state.selected,
       selectedProject: state.selectedProject,
       repoPath: state.repoPath,
+      baseBranch: state.baseBranch,
       branch: state.branch,
       steps: state.steps,
       lastError: state.lastError,
       prUrl: state.prUrl,
       prBranch: state.prBranch,
+      prBase: state.prBase,
       artifacts: {
         issueExists: existsSync(paths.issue),
         planExists: existsSync(paths.plan),

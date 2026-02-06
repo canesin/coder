@@ -55,7 +55,46 @@ Report the PR URL when complete.
 - You can resume a partially-completed workflow — check status first.
 - Each tool validates its preconditions and will error if called out of order.
 - For code exploration (reading files, searching code), use your own built-in
-  tools — the coder tools are only for workflow orchestration.`,
+  tools — the coder tools are only for workflow orchestration.
+
+## Autonomous Mode (\`coder_auto\`)
+
+For batch processing multiple issues without human intervention, use \`coder_auto\`.
+Pass a \`goal\` describing what to work on — the tool uses Gemini to filter relevant
+issues, analyze inter-dependencies, and produce a topological execution order
+(dependencies first, then easy-to-hard among independents).
+
+Each issue gets a fresh agent context (no context pollution between issues).
+If an issue fails, its dependents are automatically skipped.
+
+### When to use
+- Multiple issues to batch-process (e.g. "work on all monitoring-related issues")
+- Unattended runs — the loop is fully autonomous with test-driven verification
+- Well-specified issues where ISSUE.md + tests can close the feedback loop
+
+### When NOT to use
+- Issues needing human decisions or visual review
+- Issues with no testable verification criteria
+
+### Monitoring progress
+- Read \`coder://loop-state\` resource for queue status and per-issue results
+- Check \`.coder/logs/auto.jsonl\` for detailed event log
+- Call \`coder_status\` for current per-issue workflow state
+
+### Reset safety
+- \`coder_auto\` defaults to safe reset behavior (no destructive cleanup)
+- Pass \`destructiveReset: true\` only when you want stale/untracked repo
+  changes discarded between issues
+
+### Stacked dependencies
+- If issue B depends on issue A, auto-mode stacks B on top of A's branch
+- B's PR is opened with A's branch as the PR base
+- If multiple dependency branches exist, auto-mode picks the first completed
+  dependency branch as base and logs the selection
+
+### Resume behavior
+If the process crashes mid-loop, calling \`coder_auto\` again with the same
+workspace resumes from the last incomplete issue (checkpointed after each issue).`,
         },
       }],
     }),

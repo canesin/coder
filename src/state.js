@@ -50,13 +50,14 @@ const LinearProjectSchema = z.object({
   key: z.string().default(""),
 });
 
-	const StateSchema = z
-	  .object({
+const StateSchema = z
+  .object({
     version: z.number().int().default(1),
     selected: SelectedIssueSchema.nullable().default(null),
     selectedProject: LinearProjectSchema.nullable().default(null),
     linearProjects: z.array(LinearProjectSchema).nullable().default(null),
     repoPath: z.string().nullable().default(null),
+    baseBranch: z.string().nullable().default(null),
     branch: z.string().nullable().default(null),
     questions: z.array(z.string()).nullable().default(null),
     answers: z.array(z.string()).nullable().default(null),
@@ -64,10 +65,11 @@ const LinearProjectSchema = z.object({
     steps: StepsSchema,
 	    claudeSessionId: z.string().nullable().default(null),
 	    lastError: z.string().nullable().default(null),
-	    prUrl: z.string().nullable().default(null),
-	    prBranch: z.string().nullable().default(null),
-	  })
-	  .passthrough();
+    prUrl: z.string().nullable().default(null),
+    prBranch: z.string().nullable().default(null),
+    prBase: z.string().nullable().default(null),
+  })
+  .passthrough();
 
 const DEFAULT_STATE = {
   version: 1,
@@ -75,15 +77,17 @@ const DEFAULT_STATE = {
   selectedProject: null,
   linearProjects: null,
   repoPath: null,
+  baseBranch: null,
   branch: null,
   questions: null,
   answers: null,
   steps: {},
 	  claudeSessionId: null,
 	  lastError: null,
-	  prUrl: null,
-	  prBranch: null,
-	};
+  prUrl: null,
+  prBranch: null,
+  prBase: null,
+};
 
 export function statePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "state.json");
@@ -102,4 +106,52 @@ export function loadState(workspaceDir) {
 export function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
   writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
+}
+
+// --- Loop (autonomous mode) state ---
+
+const LoopIssueResultSchema = z.object({
+  source: z.enum(["github", "linear"]),
+  id: z.string().min(1),
+  title: z.string(),
+  repoPath: z.string().default(""),
+  baseBranch: z.string().nullable().default(null),
+  status: z.enum(["pending", "in_progress", "completed", "failed", "skipped"]),
+  branch: z.string().nullable().default(null),
+  prUrl: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
+  startedAt: z.string().nullable().default(null),
+  completedAt: z.string().nullable().default(null),
+  dependsOn: z.array(z.string()).default([]),
+});
+
+const LoopStateSchema = z.object({
+  version: z.number().int().default(1),
+  goal: z.string().default(""),
+  status: z.enum(["idle", "running", "paused", "completed", "failed"]).default("idle"),
+  projectFilter: z.string().nullable().default(null),
+  maxIssues: z.number().int().nullable().default(null),
+  issueQueue: z.array(LoopIssueResultSchema).default([]),
+  currentIndex: z.number().int().default(0),
+  startedAt: z.string().nullable().default(null),
+  completedAt: z.string().nullable().default(null),
+});
+
+export function loopStatePathFor(workspaceDir) {
+  return path.join(workspaceDir, ".coder", "loop-state.json");
+}
+
+export function loadLoopState(workspaceDir) {
+  const p = loopStatePathFor(workspaceDir);
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8"));
+    return LoopStateSchema.parse(raw);
+  } catch {
+    return LoopStateSchema.parse({});
+  }
+}
+
+export function saveLoopState(workspaceDir, loopState) {
+  const p = loopStatePathFor(workspaceDir);
+  writeFileSync(p, JSON.stringify(loopState, null, 2) + "\n");
 }

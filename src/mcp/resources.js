@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { statePathFor } from "../state.js";
+import { statePathFor, loopStatePathFor } from "../state.js";
 
 export function registerResources(server, defaultWorkspace) {
   server.resource(
@@ -86,6 +86,27 @@ export function registerResources(server, defaultWorkspace) {
           uri: "coder://critique",
           mimeType: "text/markdown",
           text: readFileSync(critiquePath, "utf8"),
+        }],
+      };
+    },
+  );
+
+  server.resource(
+    "loop-state",
+    "coder://loop-state",
+    { description: "Current .coder/loop-state.json — autonomous loop progress including issue queue and per-issue results" },
+    async () => {
+      const loopPath = loopStatePathFor(defaultWorkspace);
+      if (!existsSync(loopPath)) {
+        return {
+          contents: [{ uri: "coder://loop-state", mimeType: "application/json", text: "{}" }],
+        };
+      }
+      return {
+        contents: [{
+          uri: "coder://loop-state",
+          mimeType: "application/json",
+          text: readFileSync(loopPath, "utf8"),
         }],
       };
     },

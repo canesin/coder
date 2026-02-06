@@ -62,3 +62,13 @@ By default, `coder` will:
 - Plan review uses Gemini CLI with search grounding to verify external API documentation.
 - The workspace files `ISSUE.md`, `PLAN.md`, and `PLANREVIEW.md` live at the workspace root.
 - Progress + logs are written under `.coder/` (see `.coder/state.json` and `.coder/logs/*.jsonl`).
+
+## MCP Autonomous Mode
+
+When running as an MCP server (`coder-mcp`), use `coder_auto` for unattended batch execution.
+
+- `coder_auto` processes multiple assigned issues in one loop and checkpoints progress in `.coder/loop-state.json`.
+- `coder://loop-state` exposes the live queue/results for monitoring.
+- Resume behavior is crash-safe: re-running `coder_auto` resumes from the next unfinished issue.
+- Dependency-aware stacked mode is enabled: if issue `B` depends on `A`, `B` is drafted on top of `A`'s branch and its PR is created with `--base <A-branch>`.
+- Safe reset is default: repo cleanup between issues does not discard local changes unless `destructiveReset: true` is explicitly set.
