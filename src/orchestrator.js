@@ -1261,6 +1261,9 @@ Return ONLY valid JSON in this schema:
         total: queue.length,
         excluded: payload.excluded?.length || 0,
       });
+      if (maxIssues) {
+        queue.splice(maxIssues);
+      }
       return queue;
     } catch {
       this._appendAutoLog({ event: "queue_fallback", reason: "Gemini queue building failed, using difficulty sort" });
@@ -1462,6 +1465,7 @@ Return ONLY valid JSON in this schema:
           prResult = await this.createPR({ base: autoBaseBranch || undefined });
         } catch (prErr) {
           this._appendAutoLog({ event: "pr_failed", index: i, error: prErr.message });
+          throw prErr;
         }
 
         const state = this._loadState();
