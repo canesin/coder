@@ -1,13 +1,33 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import path from "node:path";
 import process from "node:process";
 
-import { VibeKit } from "@vibe-kit/sdk";
-
 import { HostSandboxProvider } from "./host-sandbox.js";
 import { ensureLogsDir, makeJsonlLogger, closeAllLoggers } from "./logging.js";
+
+/**
+ * Thin wrapper around HostSandboxProvider that exposes the executeCommand()
+ * and EventEmitter interface the orchestrator expects.
+ */
+class AgentRunner extends EventEmitter {
+  constructor(provider) {
+    super();
+    this._provider = provider;
+    this._sandbox = null;
+  }
+
+  async executeCommand(command, opts = {}) {
+    if (!this._sandbox) {
+      this._sandbox = await this._provider.create();
+      this._sandbox.on("stdout", (d) => this.emit("stdout", d));
+      this._sandbox.on("stderr", (d) => this.emit("stderr", d));
+    }
+    return this._sandbox.commands.run(command, opts);
+  }
+}
 import { loadState, saveState, loadLoopState, saveLoopState, statePathFor } from "./state.js";
 import { sanitizeBranchForRef } from "./worktrees.js";
 import { IssuesPayloadSchema, QuestionsPayloadSchema, ProjectsPayloadSchema } from "./schemas.js";
@@ -99,65 +119,33 @@ export class CoderOrchestrator {
 
   _getGemini() {
     if (!this._gemini) {
-      const geminiConfig = {
-        type: "gemini",
-        provider: "google",
-        model: "gemini-3-flash-preview",
-      };
-      const geminiKey = process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
-      if (geminiKey) geminiConfig.apiKey = geminiKey;
-
-      this._gemini = new VibeKit()
-        .withSandbox(new HostSandboxProvider({ defaultCwd: this.workspaceDir, baseEnv: this.secrets }))
-        .withWorkingDirectory(this.workspaceDir)
-        .withSecrets(this.secrets)
-        .withAgent(geminiConfig);
+      const provider = new HostSandboxProvider({ defaultCwd: this.workspaceDir, baseEnv: this.secrets });
+      this._gemini = new AgentRunner(provider);
       this._attachAgentLogging("gemini", this._gemini);
     }
     return this._gemini;
   }
 
-  _makeRepoAgent(name, agentConfig) {
+  _makeRepoAgent(name) {
     const state = this._loadState();
     const repoRoot = path.resolve(this.workspaceDir, state.repoPath);
 
     const provider = new HostSandboxProvider({ defaultCwd: repoRoot, baseEnv: this.secrets });
-    const vk = new VibeKit()
-      .withSandbox(provider)
-      .withWorkingDirectory(repoRoot)
-      .withSecrets(this.secrets)
-      .withAgent(agentConfig);
-    this._attachAgentLogging(name, vk);
-    return vk;
+    const agent = new AgentRunner(provider);
+    this._attachAgentLogging(name, agent);
+    return agent;
   }
 
   _getClaude() {
     if (!this._claude) {
-      const config = {
-        type: "claude",
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-      };
-      // Only pass explicit auth when set — otherwise the claude CLI
-      // uses its own stored OAuth session (e.g. Max plan login).
-      if (process.env.ANTHROPIC_API_KEY) config.apiKey = process.env.ANTHROPIC_API_KEY;
-      if (process.env.CLAUDE_CODE_OAUTH_TOKEN) config.oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-      this._claude = this._makeRepoAgent("claude", config);
+      this._claude = this._makeRepoAgent("claude");
     }
     return this._claude;
   }
 
   _getCodex() {
     if (!this._codex) {
-      const config = {
-        type: "codex",
-        provider: "openai",
-        model: "gpt-5.3-codex",
-      };
-      // Only pass explicit auth when set — otherwise the codex CLI
-      // uses its own stored session (e.g. Max plan login).
-      if (process.env.OPENAI_API_KEY) config.apiKey = process.env.OPENAI_API_KEY;
-      this._codex = this._makeRepoAgent("codex", config);
+      this._codex = this._makeRepoAgent("codex");
     }
     return this._codex;
   }
@@ -244,7 +232,7 @@ export class CoderOrchestrator {
 
   /**
    * Retry wrapper with exponential backoff. Does not retry timeout errors.
-   * @param {object} agent - VibeKit agent
+   * @param {object} agent - AgentRunner instance
    * @param {string} cmd - Command to execute
    * @param {{ timeoutMs?: number, retries?: number, backoffMs?: number }} opts
    */
