@@ -136,7 +136,7 @@ export class CoderOrchestrator {
       const config = {
         type: "claude",
         provider: "anthropic",
-        model: "claude-opus-4-5",
+        model: "claude-opus-4-6",
       };
       // Only pass explicit auth when set — otherwise the claude CLI
       // uses its own stored OAuth session (e.g. Max plan login).
@@ -152,7 +152,7 @@ export class CoderOrchestrator {
       const config = {
         type: "codex",
         provider: "openai",
-        model: "gpt-5.2-codex",
+        model: "gpt-5.3-codex",
       };
       // Only pass explicit auth when set — otherwise the codex CLI
       // uses its own stored session (e.g. Max plan login).
@@ -954,6 +954,13 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
         );
       }
 
+      if (!state.steps.ppcommitClean) {
+        throw new Error(
+          "Precondition failed: ppcommit has not passed. " +
+            "Run coder_review_and_test first to get a clean ppcommit check.",
+        );
+      }
+
       // Early return if PR already created
       if (state.steps.prCreated && state.prUrl) {
         return { prUrl: state.prUrl, branch: state.prBranch || state.branch };
@@ -961,6 +968,33 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
 
       this._ensureBranch(state);
       const repoRoot = this._repoRoot(state);
+
+      // Commit any uncommitted changes before pushing
+      const status = spawnSync("git", ["status", "--porcelain"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      const hasChanges = (status.stdout || "").trim().length > 0;
+      if (hasChanges) {
+        const add = spawnSync("git", ["add", "-A"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+        if (add.status !== 0) {
+          throw new Error(`git add failed: ${add.stderr}`);
+        }
+
+        const issueTitle = state.selected?.title || "coder workflow changes";
+        const commitMsg = `${type}: ${issueTitle}`;
+        const commit = spawnSync("git", ["commit", "-m", commitMsg], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+        if (commit.status !== 0) {
+          throw new Error(`git commit failed: ${commit.stderr}`);
+        }
+        this.log({ event: "committed", message: commitMsg });
+      }
 
       // Determine remote branch
       const remoteBranch = semanticName

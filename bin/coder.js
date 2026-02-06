@@ -453,14 +453,14 @@ Return ONLY valid JSON in this schema:
     provider: "anthropic",
     apiKey: process.env.ANTHROPIC_API_KEY,
     oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,
-    model: "claude-opus-4-5",
+    model: "claude-opus-4-6",
   });
 
   const codex = makeRepoAgent("codex", {
     type: "codex",
     provider: "openai",
     apiKey: process.env.OPENAI_API_KEY,
-    model: "gpt-5.2-codex",
+    model: "gpt-5.3-codex",
   });
 
   // --- Step 2: Gemini asks 3 questions (only human interaction) ---
@@ -539,7 +539,7 @@ Constraints:
 
     const cmd = heredocPipe(
       planPrompt,
-      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-5`,
+      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6`,
     );
     const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 20, branch: state.branch });
     if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
@@ -577,7 +577,7 @@ Constraints:
 
     const cmd = heredocPipe(
       implPrompt,
-      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-5`,
+      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6`,
     );
     const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 60, branch: state.branch });
     if (res.exitCode !== 0) throw new Error("Claude implementation failed.");
@@ -638,7 +638,7 @@ Then update ${issuePath} with completion status and readiness to push. Do not cl
 
     const cmd = heredocPipe(
       statusPrompt,
-      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-5`,
+      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6`,
     );
     const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 15, branch: state.branch });
     if (res.exitCode !== 0) throw new Error("Claude final pass failed.");
