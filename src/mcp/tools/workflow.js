@@ -17,7 +17,7 @@ const LoopIssueResultShape = {
 };
 
 const AutoResultShape = {
-  status: z.enum(["completed", "failed"]),
+  status: z.enum(["completed", "failed", "cancelled"]),
   completed: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
   skipped: z.number().int().nonnegative(),
@@ -152,10 +152,11 @@ export function registerWorkflowTools(server, defaultWorkspace) {
       allowNoTests: z.boolean().default(false).describe("Allow the workflow to proceed even if no test command is detected"),
       testCmd: z.string().default("").describe("Explicit test command to run (e.g. 'npm test')"),
       testConfigPath: z.string().default("").describe("Path to test config JSON (default: .coder/test.json)"),
+      strictMcpStartup: z.boolean().default(false).describe("Fail if any agent has failed MCP servers at startup"),
     },
-    async ({ workspace, allowNoTests, testCmd, testConfigPath }) => {
+    async ({ workspace, allowNoTests, testCmd, testConfigPath, strictMcpStartup }) => {
       const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath });
+      const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup });
       try {
         const result = await orch.reviewAndTest();
         return {
@@ -250,6 +251,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         testCmd: z.string().default("").describe("Explicit test command to run (e.g. 'npm test')"),
         testConfigPath: z.string().default("").describe("Path to test config JSON (default: .coder/test.json)"),
         destructiveReset: z.boolean().default(false).describe("If true, aggressively discard repo changes between issues (uses git restore/clean)"),
+        strictMcpStartup: z.boolean().default(false).describe("Fail if any agent has failed MCP servers at startup"),
       },
       outputSchema: AutoResultShape,
       annotations: {
@@ -259,9 +261,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         openWorldHint: true,
       },
     },
-    async ({ workspace, goal, projectFilter, maxIssues, allowNoTests, testCmd, testConfigPath, destructiveReset }) => {
+    async ({ workspace, goal, projectFilter, maxIssues, allowNoTests, testCmd, testConfigPath, destructiveReset, strictMcpStartup }) => {
       const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath });
+      const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup });
       try {
         const result = await orch.runAuto({
           goal,

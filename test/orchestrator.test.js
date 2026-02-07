@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -105,4 +105,28 @@ test("_buildAutoQueue normalizes invalid repo_path from Gemini output", async ()
 
   assert.equal(queue[0].repoPath, ".");
   assert.equal(queue[1].repoPath, "valid-subdir");
+});
+
+test("_executeWithRetry enforces strict MCP startup checks and does not retry", async () => {
+  const ws = makeWorkspace();
+  writeFileSync(
+    path.join(ws, ".coder", "mcp-health.json"),
+    JSON.stringify({ gemini: { ready: "foo", failed: "bar" } }, null, 2) + "\n",
+    "utf8",
+  );
+
+  const orch = new CoderOrchestrator(ws, { strictMcpStartup: true });
+  let calls = 0;
+  const fakeAgent = {
+    async executeCommand() {
+      calls += 1;
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    },
+  };
+
+  await assert.rejects(
+    async () => orch._executeWithRetry(fakeAgent, "noop", { retries: 3, agentName: "gemini" }),
+    /MCP startup failure for gemini/,
+  );
+  assert.equal(calls, 1);
 });

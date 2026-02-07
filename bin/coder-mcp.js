@@ -3,6 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerWorkflowTools } from "../src/mcp/tools/workflow.js";
 import { registerStatusTools } from "../src/mcp/tools/status.js";
+import { registerAutoStatusTools } from "../src/mcp/tools/auto-status.js";
+import { registerAutoLifecycleTools } from "../src/mcp/tools/auto-lifecycle.js";
 import { registerResources } from "../src/mcp/resources.js";
 import { registerPrompts } from "../src/mcp/prompts.js";
 
@@ -15,6 +17,8 @@ const defaultWorkspace = process.cwd();
 
 registerWorkflowTools(server, defaultWorkspace);
 registerStatusTools(server, defaultWorkspace);
+registerAutoStatusTools(server, defaultWorkspace);
+registerAutoLifecycleTools(server, defaultWorkspace);
 registerResources(server, defaultWorkspace);
 registerPrompts(server);
 

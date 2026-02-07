@@ -77,8 +77,11 @@ If an issue fails, its dependents are automatically skipped.
 - Issues with no testable verification criteria
 
 ### Monitoring progress
-- Read \`coder://loop-state\` resource for queue status and per-issue results
-- Check \`.coder/logs/auto.jsonl\` for detailed event log
+- Call \`coder_auto_status\` for a compact snapshot: run ID, queue counts, current stage,
+  heartbeat, agent activity, and MCP health. Lightweight — no orchestrator created.
+- Call \`coder_auto_events\` to read structured events from auto.jsonl with cursor-based
+  pagination (use \`afterSeq\` to poll for new events since last check).
+- Read \`coder://loop-state\` resource for the full loop-state.json
 - Call \`coder_status\` for current per-issue workflow state
 
 ### Reset safety
@@ -91,6 +94,14 @@ If an issue fails, its dependents are automatically skipped.
 - B's PR is opened with A's branch as the PR base
 - If multiple dependency branches exist, auto-mode picks the first completed
   dependency branch as base and logs the selection
+
+### Resume behavior
+### Async lifecycle (\`coder_auto_start\` / \`coder_auto_cancel\` / \`coder_auto_pause\` / \`coder_auto_resume\`)
+- \`coder_auto_start\` launches an autonomous run in the background and returns a \`runId\` immediately
+- Poll progress with \`coder_auto_status\` — check \`runStatus\`, \`currentStage\`, \`lastHeartbeatAt\`
+- \`coder_auto_cancel\` requests cooperative cancellation (takes effect between stages)
+- \`coder_auto_pause\` pauses between stages; \`coder_auto_resume\` continues
+- Only one run per workspace at a time
 
 ### Resume behavior
 If the process crashes mid-loop, calling \`coder_auto\` again with the same

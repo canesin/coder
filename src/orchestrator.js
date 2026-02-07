@@ -75,6 +75,37 @@ export class CoderOrchestrator {
     this._gemini = null;
     this._claude = null;
     this._codex = null;
+
+    // Cooperative cancel/pause flags for async lifecycle control
+    this._cancelRequested = false;
+    this._pauseRequested = false;
+
+    // MCP health option
+    this.strictMcpStartup = opts.strictMcpStartup || false;
+  }
+
+  requestCancel() { this._cancelRequested = true; }
+  requestPause() { this._pauseRequested = true; }
+  requestResume() { this._pauseRequested = false; }
+
+  /**
+   * Check MCP health for an agent. Throws if strict mode is on and the agent has failed servers.
+   * @param {string} agentName
+   */
+  _checkMcpHealth(agentName) {
+    if (!this.strictMcpStartup) return;
+    const healthPath = path.join(this.workspaceDir, ".coder", "mcp-health.json");
+    if (!existsSync(healthPath)) return;
+    try {
+      const health = JSON.parse(readFileSync(healthPath, "utf8"));
+      const entry = health[agentName];
+      if (entry && entry.failed && entry.failed !== "0" && entry.failed.toLowerCase() !== "none") {
+        throw new Error(`MCP startup failure for ${agentName}: failed servers: ${entry.failed}`);
+      }
+    } catch (err) {
+      if (err.message.startsWith("MCP startup failure")) throw err;
+      // parse error — ignore
+    }
   }
 
   // --- Agent construction ---
@@ -89,6 +120,28 @@ export class CoderOrchestrator {
       vk.on("stdout", (d) => process.stdout.write(`[${name}] ${d}`));
       vk.on("stderr", (d) => process.stderr.write(`[${name}] ${d}`));
     }
+
+    // MCP health parsing: detect startup health from stderr
+    let mcpHealthParsed = false;
+    vk.on("stderr", (d) => {
+      if (mcpHealthParsed) return;
+      const line = String(d);
+      const match = line.match(/mcp startup:\s*ready:\s*(.+?);\s*failed:\s*(.+)/i);
+      if (!match) return;
+      mcpHealthParsed = true;
+      const ready = match[1].trim();
+      const failed = match[2].trim();
+      const healthPath = path.join(this.workspaceDir, ".coder", "mcp-health.json");
+      try {
+        let health = {};
+        if (existsSync(healthPath)) {
+          try { health = JSON.parse(readFileSync(healthPath, "utf8")); } catch { /* fresh */ }
+        }
+        health[name] = { ready, failed, parsedAt: new Date().toISOString() };
+        writeFileSync(healthPath, JSON.stringify(health, null, 2) + "\n");
+      } catch { /* best-effort */ }
+      this.log({ event: "mcp_health", agent: name, ready, failed });
+    });
 
     // File-based activity tracking (Feature 7)
     // Throttled writer: max 1 write/sec to .coder/activity.json
@@ -256,20 +309,40 @@ export class CoderOrchestrator {
   }
 
   /**
+   * Execute a command via an agent, then enforce strict MCP startup health if enabled.
+   * @param {string|null} agentName
+   * @param {object} agent - AgentRunner instance
+   * @param {string} cmd - Command to execute
+   * @param {{ timeoutMs?: number }} opts
+   */
+  async _executeAgentCommand(agentName, agent, cmd, { timeoutMs = 1000 * 60 * 10 } = {}) {
+    const res = await agent.executeCommand(cmd, { timeoutMs });
+    if (agentName) this._checkMcpHealth(agentName);
+    return res;
+  }
+
+  /**
    * Retry wrapper with exponential backoff. Does not retry timeout errors.
    * @param {object} agent - AgentRunner instance
    * @param {string} cmd - Command to execute
-   * @param {{ timeoutMs?: number, retries?: number, backoffMs?: number }} opts
+   * @param {{ timeoutMs?: number, retries?: number, backoffMs?: number, agentName?: string|null }} opts
    */
-  async _executeWithRetry(agent, cmd, { timeoutMs = 1000 * 60 * 10, retries = 1, backoffMs = 5000 } = {}) {
+  async _executeWithRetry(agent, cmd, {
+    timeoutMs = 1000 * 60 * 10,
+    retries = 1,
+    backoffMs = 5000,
+    agentName = null,
+  } = {}) {
     let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await agent.executeCommand(cmd, { timeoutMs });
+        return await this._executeAgentCommand(agentName, agent, cmd, { timeoutMs });
       } catch (err) {
         lastErr = err;
         // Don't retry timeout errors (they're unlikely to succeed)
         if (err.name === "CommandTimeoutError") throw err;
+        // Strict MCP startup failures should fail fast.
+        if ((err.message || "").startsWith("MCP startup failure")) throw err;
         if (attempt < retries) {
           const delay = backoffMs * Math.pow(2, attempt);
           this.log({ event: "retry", attempt: attempt + 1, delay, error: err.message });
@@ -278,6 +351,49 @@ export class CoderOrchestrator {
       }
     }
     throw lastErr;
+  }
+
+  /**
+   * Wrap a stage of runAuto() with structured tracking.
+   * Sets currentStage/activeAgent on loopState, emits stage events, clears on completion.
+   * @param {object} loopState - The loop state object (mutated in place)
+   * @param {string} stageName - e.g. "draft", "plan", "implement"
+   * @param {string|null} agentName - e.g. "gemini", "claude", "codex", or null
+   * @param {() => Promise<any>} fn - The async work to execute
+   */
+  async _withStage(loopState, stageName, agentName, fn) {
+    if (this._cancelRequested) throw new Error("Run cancelled");
+    if (this._pauseRequested) {
+      loopState.status = "paused";
+      saveLoopState(this.workspaceDir, loopState);
+      this._appendAutoLog({ event: "auto_paused", stage: stageName });
+      while (this._pauseRequested && !this._cancelRequested) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (this._cancelRequested) throw new Error("Run cancelled");
+      loopState.status = "running";
+      saveLoopState(this.workspaceDir, loopState);
+      this._appendAutoLog({ event: "auto_resumed", stage: stageName });
+    }
+
+    const now = new Date().toISOString();
+    loopState.currentStage = stageName;
+    loopState.currentStageStartedAt = now;
+    loopState.activeAgent = agentName;
+    loopState.lastHeartbeatAt = now;
+    saveLoopState(this.workspaceDir, loopState);
+    this._appendAutoLog({ event: "stage_start", stage: stageName, agent: agentName });
+
+    try {
+      const result = await fn();
+      this._appendAutoLog({ event: "stage_done", stage: stageName });
+      return result;
+    } finally {
+      loopState.currentStage = null;
+      loopState.currentStageStartedAt = null;
+      loopState.activeAgent = null;
+      saveLoopState(this.workspaceDir, loopState);
+    }
   }
 
   /**
@@ -348,6 +464,7 @@ Return ONLY valid JSON in this schema:
           const projRes = await this._executeWithRetry(gemini, projCmd, {
             timeoutMs: 1000 * 60 * 5,
             retries: 1,
+            agentName: "gemini",
           });
           if (projRes.exitCode !== 0) {
             throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
@@ -408,6 +525,7 @@ Return ONLY valid JSON in this schema:
       const res = await this._executeWithRetry(gemini, cmd, {
         timeoutMs: 1000 * 60 * 10,
         retries: 1,
+        agentName: "gemini",
       });
       if (res.exitCode !== 0) {
         throw new Error(formatCommandFailure("Gemini issue listing failed", res));
@@ -526,7 +644,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 `;
 
       const cmd = heredocPipe(issuePrompt, "gemini --yolo");
-      const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
+      const res = await this._executeAgentCommand("gemini", gemini, cmd, { timeoutMs: 1000 * 60 * 10 });
       if (res.exitCode !== 0) {
         throw new Error(formatCommandFailure("Gemini ISSUE.md drafting failed", res));
       }
@@ -642,7 +760,7 @@ Constraints:
           planPrompt,
           `claude -p --output-format stream-json --verbose --dangerously-skip-permissions --session-id ${state.claudeSessionId}`,
         );
-        const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 20 });
+        const res = await this._executeAgentCommand("claude", claude, cmd, { timeoutMs: 1000 * 60 * 20 });
         if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
 
         // Hard gate: Claude must not change the repo during planning.
@@ -786,7 +904,7 @@ FORBIDDEN patterns:
       }
 
       const cmd = heredocPipe(implPrompt, claudeFlags);
-      const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 60 });
+      const res = await this._executeAgentCommand("claude", claude, cmd, { timeoutMs: 1000 * 60 * 60 });
       if (res.exitCode !== 0) throw new Error("Claude implementation failed.");
 
       state.steps.implemented = true;
@@ -892,7 +1010,7 @@ Hard constraints:
 - Remove ALL unnecessary code, comments, and abstractions`;
 
         const cmd = `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(codexPrompt)}`;
-        const res = await codex.executeCommand(cmd, { timeoutMs: 1000 * 60 * 90 });
+        const res = await this._executeAgentCommand("codex", codex, cmd, { timeoutMs: 1000 * 60 * 90 });
         if (res.exitCode !== 0) throw new Error("Codex review/fix failed.");
         state.steps.codexReviewed = true;
         this._saveState(state);
@@ -970,7 +1088,7 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
       }
 
       const cmd = heredocPipe(statusPrompt, claudeFlags);
-      const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 15 });
+      const res = await this._executeAgentCommand("claude", claude, cmd, { timeoutMs: 1000 * 60 * 15 });
       if (res.exitCode !== 0) throw new Error("Claude final pass failed.");
 
       state.steps.finalized = true;
@@ -1256,7 +1374,11 @@ Return ONLY valid JSON in this schema:
 }`;
 
     const cmd = geminiJsonPipe(prompt);
-    const res = await this._executeWithRetry(gemini, cmd, { timeoutMs: 1000 * 60 * 5, retries: 1 });
+    const res = await this._executeWithRetry(gemini, cmd, {
+      timeoutMs: 1000 * 60 * 5,
+      retries: 1,
+      agentName: "gemini",
+    });
 
     // Best-effort parse — fall back to difficulty sort if Gemini fails
     try {
@@ -1347,7 +1469,7 @@ Return ONLY valid JSON in this schema:
    * Uses the goal prompt to filter and dependency-sort the issue queue via Gemini.
    * Issues whose dependencies failed are automatically skipped.
    * @param {{ goal?: string, projectFilter?: string, maxIssues?: number, testCmd?: string, testConfigPath?: string, allowNoTests?: boolean, destructiveReset?: boolean }} opts
-   * @returns {Promise<{ status: string, completed: number, failed: number, skipped: number, results: Array }>}
+   * @returns {Promise<{ status: "completed"|"failed"|"cancelled", completed: number, failed: number, skipped: number, results: Array }>}
    */
   async runAuto({
     goal = "resolve all assigned issues",
@@ -1357,6 +1479,7 @@ Return ONLY valid JSON in this schema:
     testConfigPath,
     allowNoTests,
     destructiveReset = false,
+    runId: externalRunId,
   } = {}) {
     if (maxIssues !== undefined && maxIssues !== null) {
       if (!Number.isInteger(maxIssues) || maxIssues < 1) {
@@ -1379,12 +1502,17 @@ Return ONLY valid JSON in this schema:
 
       loopState = {
         version: 1,
+        runId: externalRunId || randomUUID().slice(0, 8),
         goal,
         status: "running",
         projectFilter: projectFilter || null,
         maxIssues: maxIssues || null,
         issueQueue: queue,
         currentIndex: 0,
+        currentStage: null,
+        currentStageStartedAt: null,
+        lastHeartbeatAt: null,
+        activeAgent: null,
         startedAt: new Date().toISOString(),
         completedAt: null,
       };
@@ -1420,10 +1548,44 @@ Return ONLY valid JSON in this schema:
         .map((e) => issueRef(e)),
     );
 
+    // Heartbeat: update lastHeartbeatAt every 5 seconds
+    const heartbeatInterval = setInterval(() => {
+      try {
+        loopState.lastHeartbeatAt = new Date().toISOString();
+        saveLoopState(this.workspaceDir, loopState);
+      } catch { /* best-effort */ }
+    }, 5000);
+
+    let runCancelled = false;
+
     // Phase 2: Loop through issues
+    try {
     for (let i = loopState.currentIndex; i < loopState.issueQueue.length; i++) {
       const entry = loopState.issueQueue[i];
       loopState.currentIndex = i;
+
+      // Cooperative cancel/pause check between issues
+      if (this._cancelRequested) {
+        this._appendAutoLog({ event: "auto_cancelled" });
+        runCancelled = true;
+        break;
+      }
+      if (this._pauseRequested) {
+        loopState.status = "paused";
+        saveLoopState(this.workspaceDir, loopState);
+        this._appendAutoLog({ event: "auto_paused" });
+        while (this._pauseRequested && !this._cancelRequested) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        if (this._cancelRequested) {
+          this._appendAutoLog({ event: "auto_cancelled" });
+          runCancelled = true;
+          break;
+        }
+        loopState.status = "running";
+        saveLoopState(this.workspaceDir, loopState);
+        this._appendAutoLog({ event: "auto_resumed" });
+      }
 
       if (entry.status === "completed" || entry.status === "failed" || entry.status === "skipped") {
         loopState.currentIndex = i + 1;
@@ -1500,24 +1662,28 @@ Return ONLY valid JSON in this schema:
       this._appendAutoLog({ event: "issue_start", index: i, id: entry.id, title: entry.title });
 
       try {
-        await this.draftIssue({
-          issue: { source: entry.source, id: entry.id, title: entry.title },
-          repoPath: entry.repoPath,
-          baseBranch: autoBaseBranch || undefined,
-          clarifications: `Auto-mode (no human in the loop). Goal: ${goal}. ` +
-            `You MUST include a concrete verification command in the Verification section. ` +
-            `Do not ask questions — use repo conventions and the codebase as ground truth.`,
-          force: true,
-        });
+        await this._withStage(loopState, "draft", "gemini", () =>
+          this.draftIssue({
+            issue: { source: entry.source, id: entry.id, title: entry.title },
+            repoPath: entry.repoPath,
+            baseBranch: autoBaseBranch || undefined,
+            clarifications: `Auto-mode (no human in the loop). Goal: ${goal}. ` +
+              `You MUST include a concrete verification command in the Verification section. ` +
+              `Do not ask questions — use repo conventions and the codebase as ground truth.`,
+            force: true,
+          }),
+        );
 
-        await this.createPlan();
-        await this.implement();
-        await this.reviewAndTest();
-        await this.finalize();
+        await this._withStage(loopState, "plan", "claude", () => this.createPlan());
+        await this._withStage(loopState, "implement", "claude", () => this.implement());
+        await this._withStage(loopState, "review", "codex", () => this.reviewAndTest());
+        await this._withStage(loopState, "finalize", "claude", () => this.finalize());
 
         let prResult;
         try {
-          prResult = await this.createPR({ base: autoBaseBranch || undefined });
+          prResult = await this._withStage(loopState, "pr", null, () =>
+            this.createPR({ base: autoBaseBranch || undefined }),
+          );
         } catch (prErr) {
           this._appendAutoLog({ event: "pr_failed", index: i, error: prErr.message });
           throw prErr;
@@ -1532,6 +1698,17 @@ Return ONLY valid JSON in this schema:
 
         this._appendAutoLog({ event: "issue_completed", index: i, id: entry.id, prUrl: entry.prUrl });
       } catch (err) {
+        if ((err?.message || "") === "Run cancelled") {
+          runCancelled = true;
+          entry.status = "skipped";
+          entry.error = "Skipped: run cancelled";
+          entry.completedAt = new Date().toISOString();
+          this._appendAutoLog({ event: "issue_skipped", index: i, id: entry.id, reason: "run_cancelled" });
+          loopState.currentIndex = i + 1;
+          saveLoopState(this.workspaceDir, loopState);
+          break;
+        }
+
         entry.status = "failed";
         entry.error = err.message || String(err);
         entry.completedAt = new Date().toISOString();
@@ -1549,6 +1726,9 @@ Return ONLY valid JSON in this schema:
       loopState.currentIndex = i + 1;
       saveLoopState(this.workspaceDir, loopState);
     }
+    } finally {
+      clearInterval(heartbeatInterval);
+    }
 
     // Phase 3: Summarize
     const completed = loopState.issueQueue.filter((e) => e.status === "completed").length;
@@ -1557,6 +1737,8 @@ Return ONLY valid JSON in this schema:
 
     if (loopState.issueQueue.length === 0) {
       loopState.status = "completed";
+    } else if (runCancelled) {
+      loopState.status = "cancelled";
     } else {
       loopState.status = failed === loopState.issueQueue.length ? "failed" : "completed";
     }
@@ -1617,6 +1799,18 @@ Return ONLY valid JSON in this schema:
       }
     }
 
+    // Read loop state for heartbeat/stage fields
+    const loopState = loadLoopState(this.workspaceDir);
+
+    // Read MCP health file if it exists
+    const mcpHealthPath = path.join(this.workspaceDir, ".coder", "mcp-health.json");
+    let mcpHealth = null;
+    if (existsSync(mcpHealthPath)) {
+      try {
+        mcpHealth = JSON.parse(readFileSync(mcpHealthPath, "utf8"));
+      } catch { /* best-effort */ }
+    }
+
     return {
       version: state.version,
       selected: state.selected,
@@ -1635,6 +1829,11 @@ Return ONLY valid JSON in this schema:
         critiqueExists: existsSync(paths.critique),
       },
       agentActivity,
+      currentStage: loopState.currentStage,
+      currentStageStartedAt: loopState.currentStageStartedAt,
+      lastHeartbeatAt: loopState.lastHeartbeatAt,
+      activeAgent: loopState.activeAgent,
+      mcpHealth,
     };
   }
 

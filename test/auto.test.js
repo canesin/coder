@@ -223,3 +223,35 @@ test("runAuto validates maxIssues >= 1", async () => {
   const orch = new FakeAutoOrchestrator(ws);
   await assert.rejects(async () => orch.runAuto({ maxIssues: 0 }), /maxIssues must be an integer >= 1/);
 });
+
+test("runAuto cancel request marks run as cancelled (not completed)", async () => {
+  const ws = makeWorkspace();
+  seedLoopState(ws, {
+    version: 1,
+    goal: "cancel",
+    status: "running",
+    projectFilter: null,
+    maxIssues: null,
+    issueQueue: [
+      loopEntry({ source: "github", id: "1", status: "pending" }),
+      loopEntry({ source: "github", id: "2", status: "pending" }),
+    ],
+    currentIndex: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  });
+
+  const orch = new FakeAutoOrchestrator(ws);
+  orch.requestCancel();
+  const result = await orch.runAuto();
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.completed, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(result.skipped, 0);
+
+  const persisted = loadLoopState(ws);
+  assert.equal(persisted.status, "cancelled");
+  assert.equal(persisted.issueQueue[0].status, "pending");
+  assert.equal(persisted.issueQueue[1].status, "pending");
+});

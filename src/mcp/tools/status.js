@@ -15,6 +15,14 @@ const AgentActivityShape = z.record(
   }).passthrough(),
 ).nullable();
 
+const McpHealthShape = z.record(
+  z.object({
+    ready: z.string().optional(),
+    failed: z.string().optional(),
+    parsedAt: z.string().optional(),
+  }).passthrough(),
+).nullable();
+
 const StatusResultShape = {
   version: z.number().int(),
   selected: z.object(SelectedIssueShape).nullable(),
@@ -37,6 +45,11 @@ const StatusResultShape = {
     critiqueExists: z.boolean(),
   }),
   agentActivity: AgentActivityShape,
+  currentStage: z.string().nullable(),
+  currentStageStartedAt: z.string().nullable(),
+  lastHeartbeatAt: z.string().nullable(),
+  activeAgent: z.string().nullable(),
+  mcpHealth: McpHealthShape,
 };
 const StatusResultSchema = z.object(StatusResultShape);
 

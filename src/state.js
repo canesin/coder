@@ -127,12 +127,17 @@ const LoopIssueResultSchema = z.object({
 
 const LoopStateSchema = z.object({
   version: z.number().int().default(1),
+  runId: z.string().nullable().default(null),
   goal: z.string().default(""),
-  status: z.enum(["idle", "running", "paused", "completed", "failed"]).default("idle"),
+  status: z.enum(["idle", "running", "paused", "completed", "failed", "cancelled"]).default("idle"),
   projectFilter: z.string().nullable().default(null),
   maxIssues: z.number().int().nullable().default(null),
   issueQueue: z.array(LoopIssueResultSchema).default([]),
   currentIndex: z.number().int().default(0),
+  currentStage: z.string().nullable().default(null),
+  currentStageStartedAt: z.string().nullable().default(null),
+  lastHeartbeatAt: z.string().nullable().default(null),
+  activeAgent: z.string().nullable().default(null),
   startedAt: z.string().nullable().default(null),
   completedAt: z.string().nullable().default(null),
 });
