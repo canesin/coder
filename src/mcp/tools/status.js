@@ -38,6 +38,7 @@ const StatusResultShape = {
   }),
   agentActivity: AgentActivityShape,
 };
+const StatusResultSchema = z.object(StatusResultShape);
 
 export function registerStatusTools(server, defaultWorkspace) {
   server.registerTool(
@@ -62,9 +63,10 @@ export function registerStatusTools(server, defaultWorkspace) {
       const orch = new CoderOrchestrator(ws);
       try {
         const status = orch.getStatus();
+        const normalizedStatus = StatusResultSchema.parse(status);
         return {
-          structuredContent: status,
-          content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
+          structuredContent: normalizedStatus,
+          content: [{ type: "text", text: JSON.stringify(normalizedStatus, null, 2) }],
         };
       } catch (err) {
         return {
