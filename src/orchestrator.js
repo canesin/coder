@@ -195,6 +195,29 @@ export class CoderOrchestrator {
   }
 
   /**
+   * Normalize a repo path to a safe workspace-relative directory.
+   * Falls back to "." when path is empty, outside workspace, absolute, or missing.
+   * @param {string} repoPath
+   * @param {{ fallback?: string }} [opts]
+   */
+  _normalizeRepoPath(repoPath, { fallback = "." } = {}) {
+    const resolveIfValid = (candidate) => {
+      const raw = String(candidate || "").trim();
+      if (!raw) return null;
+      if (path.isAbsolute(raw)) return null;
+
+      const abs = path.resolve(this.workspaceDir, raw);
+      const inWorkspace = abs === this.workspaceDir || abs.startsWith(this.workspaceDir + path.sep);
+      if (!inWorkspace) return null;
+      if (!existsSync(abs)) return null;
+
+      return path.relative(this.workspaceDir, abs) || ".";
+    };
+
+    return resolveIfValid(repoPath) || resolveIfValid(fallback) || ".";
+  }
+
+  /**
    * Check for artifact collisions before starting a new workflow.
    * Prevents overwriting foreign files or stale workflow artifacts.
    * @param {{ force?: boolean }} [opts]
@@ -308,7 +331,8 @@ export class CoderOrchestrator {
       // Sub-step: list Linear teams if available and not cached
       if (this.secrets.LINEAR_API_KEY && (!state.steps.listedProjects || !state.linearProjects)) {
         this.log({ event: "step0_list_projects" });
-        const projPrompt = `Use your Linear MCP to list all teams I have access to.
+        try {
+          const projPrompt = `Use your Linear MCP to list all teams I have access to.
 
 Return ONLY valid JSON in this schema:
 {
@@ -320,29 +344,36 @@ Return ONLY valid JSON in this schema:
     }
   ]
 }`;
-        const projCmd = geminiJsonPipe(projPrompt);
-        const projRes = await this._executeWithRetry(gemini, projCmd, {
-          timeoutMs: 1000 * 60 * 5,
-          retries: 1,
-        });
-        if (projRes.exitCode !== 0) {
-          throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
-        }
-        const projPayload = ProjectsPayloadSchema.parse(extractGeminiPayloadJson(projRes.stdout));
-        state.linearProjects = projPayload.projects;
+          const projCmd = geminiJsonPipe(projPrompt);
+          const projRes = await this._executeWithRetry(gemini, projCmd, {
+            timeoutMs: 1000 * 60 * 5,
+            retries: 1,
+          });
+          if (projRes.exitCode !== 0) {
+            throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
+          }
+          const projPayload = ProjectsPayloadSchema.parse(extractGeminiPayloadJson(projRes.stdout));
+          state.linearProjects = projPayload.projects;
 
-        // If projectFilter is given, auto-select matching project
-        if (projectFilter && state.linearProjects.length > 0) {
-          const match = state.linearProjects.find(
-            (p) =>
-              p.name.toLowerCase().includes(projectFilter.toLowerCase()) ||
-              p.key.toLowerCase() === projectFilter.toLowerCase(),
-          );
-          if (match) state.selectedProject = match;
-        }
+          // If projectFilter is given, auto-select matching project
+          if (projectFilter && state.linearProjects.length > 0) {
+            const match = state.linearProjects.find(
+              (p) =>
+                p.name.toLowerCase().includes(projectFilter.toLowerCase()) ||
+                p.key.toLowerCase() === projectFilter.toLowerCase(),
+            );
+            if (match) state.selectedProject = match;
+          }
 
-        state.steps.listedProjects = true;
-        this._saveState(state);
+          state.steps.listedProjects = true;
+          this._saveState(state);
+        } catch (err) {
+          // Linear is optional. Continue with GitHub issue listing when team discovery fails.
+          this.log({ event: "step0_list_projects_failed", error: err.message || String(err) });
+          state.steps.listedProjects = true;
+          state.linearProjects ||= [];
+          this._saveState(state);
+        }
       }
 
       // Main issue listing
@@ -426,7 +457,16 @@ Return ONLY valid JSON in this schema:
 
       // Store the selected issue and repo path
       state.selected = issue;
-      state.repoPath = repoPath;
+      const normalizedRepoPath = this._normalizeRepoPath(repoPath, { fallback: "." });
+      if ((repoPath || "").trim() !== normalizedRepoPath) {
+        this.log({
+          event: "repo_path_normalized",
+          requested: repoPath || "",
+          resolved: normalizedRepoPath,
+          issue: `${issue.source}#${issue.id}`,
+        });
+      }
+      state.repoPath = normalizedRepoPath;
       state.baseBranch = baseBranch || null;
       state.branch = sanitizeBranchForRef(`coder/${issue.source}-${issue.id}`);
       this._saveState(state);
@@ -1244,11 +1284,17 @@ Return ONLY valid JSON in this schema:
         return `${fallbackSource}#${raw}`;
       };
 
-      const queue = payload.queue.map((item) => ({
+      const queue = payload.queue.map((item) => {
+        const issueRef = `${item.source}#${item.id}`;
+        const mappedRepoPath = repoPathMap.get(issueRef) || ".";
+        const repoPath = this._normalizeRepoPath(item.repo_path || mappedRepoPath, {
+          fallback: mappedRepoPath,
+        });
+        return {
         source: item.source,
         id: item.id,
         title: item.title,
-        repoPath: item.repo_path || repoPathMap.get(`${item.source}#${item.id}`) || "",
+        repoPath,
         baseBranch: null,
         status: "pending",
         branch: null,
@@ -1261,7 +1307,8 @@ Return ONLY valid JSON in this schema:
             .map((dep) => normalizeDepRef(dep, item.source))
             .filter((dep) => !!dep)
           : [],
-      }));
+      };
+      });
 
       this._appendAutoLog({
         event: "queue_built",
@@ -1283,7 +1330,7 @@ Return ONLY valid JSON in this schema:
       source: iss.source,
       id: iss.id,
       title: iss.title,
-      repoPath: iss.repo_path || "",
+      repoPath: this._normalizeRepoPath(iss.repo_path || ".", { fallback: "." }),
       baseBranch: null,
       status: "pending",
       branch: null,
