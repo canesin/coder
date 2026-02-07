@@ -34,12 +34,14 @@ import { IssuesPayloadSchema, QuestionsPayloadSchema, ProjectsPayloadSchema } fr
 import {
   buildSecrets,
   extractJson,
+  extractGeminiPayloadJson,
   heredocPipe,
   geminiJsonPipe,
   gitCleanOrThrow,
   runPlanreview,
   runPpcommit,
   runHostTests,
+  formatCommandFailure,
   DEFAULT_PASS_ENV,
 } from "./helpers.js";
 
@@ -304,7 +306,7 @@ export class CoderOrchestrator {
       const gemini = this._getGemini();
 
       // Sub-step: list Linear teams if available and not cached
-      if (process.env.LINEAR_API_KEY && (!state.steps.listedProjects || !state.linearProjects)) {
+      if (this.secrets.LINEAR_API_KEY && (!state.steps.listedProjects || !state.linearProjects)) {
         this.log({ event: "step0_list_projects" });
         const projPrompt = `Use your Linear MCP to list all teams I have access to.
 
@@ -323,8 +325,10 @@ Return ONLY valid JSON in this schema:
           timeoutMs: 1000 * 60 * 5,
           retries: 1,
         });
-        if (projRes.exitCode !== 0) throw new Error("Gemini project listing failed.");
-        const projPayload = ProjectsPayloadSchema.parse(extractJson(projRes.stdout));
+        if (projRes.exitCode !== 0) {
+          throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
+        }
+        const projPayload = ProjectsPayloadSchema.parse(extractGeminiPayloadJson(projRes.stdout));
         state.linearProjects = projPayload.projects;
 
         // If projectFilter is given, auto-select matching project
@@ -374,8 +378,10 @@ Return ONLY valid JSON in this schema:
         timeoutMs: 1000 * 60 * 10,
         retries: 1,
       });
-      if (res.exitCode !== 0) throw new Error("Gemini issue listing failed.");
-      const issuesPayload = IssuesPayloadSchema.parse(extractJson(res.stdout));
+      if (res.exitCode !== 0) {
+        throw new Error(formatCommandFailure("Gemini issue listing failed", res));
+      }
+      const issuesPayload = IssuesPayloadSchema.parse(extractGeminiPayloadJson(res.stdout));
 
       state.steps.listedIssues = true;
       state.issuesPayload = issuesPayload;
@@ -481,7 +487,9 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 
       const cmd = heredocPipe(issuePrompt, "gemini --yolo");
       const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
-      if (res.exitCode !== 0) throw new Error("Gemini ISSUE.md drafting failed.");
+      if (res.exitCode !== 0) {
+        throw new Error(formatCommandFailure("Gemini ISSUE.md drafting failed", res));
+      }
 
       // Gemini may write the file via tool use and respond conversationally,
       // or it may output the markdown directly to stdout.  Prefer the on-disk
@@ -1212,8 +1220,8 @@ Return ONLY valid JSON in this schema:
 
     // Best-effort parse — fall back to difficulty sort if Gemini fails
     try {
-      if (res.exitCode !== 0) throw new Error("Gemini queue building failed");
-      const payload = extractJson(res.stdout);
+      if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini queue building failed", res));
+      const payload = extractGeminiPayloadJson(res.stdout);
       if (!payload?.queue || !Array.isArray(payload.queue)) throw new Error("Invalid queue payload");
 
       // Build lookups from the original issues

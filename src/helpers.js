@@ -16,8 +16,9 @@ export const DEFAULT_PASS_ENV = [
 ];
 
 export function requireEnvOneOf(names) {
+  const resolved = buildSecretsWithFallback(names);
   for (const n of names) {
-    if (process.env[n]) return;
+    if (resolved[n]) return;
   }
   throw new Error(`Missing required env var: one of ${names.join(", ")}`);
 }
@@ -30,33 +31,131 @@ export function requireCommandOnPath(name) {
 }
 
 export function buildSecrets(passEnv) {
+  return buildSecretsWithFallback(passEnv);
+}
+
+function isSafeEnvName(name) {
+  return /^[A-Z_][A-Z0-9_]*$/.test(name);
+}
+
+function readEnvFromLoginShell(name) {
+  if (!isSafeEnvName(name)) return "";
+  const script = `printf '%s' "\${${name}:-}"`;
+  const res = spawnSync("bash", ["-lc", script], { encoding: "utf8" });
+  if (res.status !== 0) return "";
+  return (res.stdout || "").trim();
+}
+
+function applyGeminiKeyAliases(secrets) {
+  // Gemini CLI currently requires GEMINI_API_KEY in some modes.
+  // Mirror GOOGLE_API_KEY when only one of the two is present.
+  if (!secrets.GEMINI_API_KEY && secrets.GOOGLE_API_KEY) {
+    secrets.GEMINI_API_KEY = secrets.GOOGLE_API_KEY;
+  }
+  if (!secrets.GOOGLE_API_KEY && secrets.GEMINI_API_KEY) {
+    secrets.GOOGLE_API_KEY = secrets.GEMINI_API_KEY;
+  }
+}
+
+export function buildSecretsWithFallback(passEnv, { env = process.env, shellLookup = readEnvFromLoginShell } = {}) {
   /** @type {Record<string, string>} */
   const secrets = {};
   for (const key of passEnv) {
-    const val = process.env[key];
+    const val = env[key] || shellLookup(key);
     if (val) secrets[key] = val;
   }
+  applyGeminiKeyAliases(secrets);
   return secrets;
+}
+
+export function formatCommandFailure(label, res, { maxLen = 1200 } = {}) {
+  const exit = typeof res?.exitCode === "number" ? res.exitCode : "unknown";
+  const raw = `${res?.stderr || ""}\n${res?.stdout || ""}`.trim();
+  let detail = raw || "No stdout/stderr captured.";
+
+  // Try to surface the nested JSON error from gemini CLI when present.
+  if (raw) {
+    try {
+      const parsed = extractJson(raw);
+      if (parsed?.error?.message) detail = parsed.error.message;
+    } catch {
+      // best-effort parsing only
+    }
+  }
+
+  if (detail.length > maxLen) detail = detail.slice(0, maxLen) + "…";
+  const hint =
+    /must specify the GEMINI_API_KEY environment variable/i.test(raw) ||
+    /GEMINI_API_KEY/i.test(detail)
+      ? " Hint: set GEMINI_API_KEY (GOOGLE_API_KEY is also accepted and auto-aliased)."
+      : "";
+  return `${label} (exit ${exit}).${hint}\n${detail}`;
 }
 
 export function extractJson(stdout) {
   const trimmed = stdout.trim();
   if (!trimmed) throw new Error("Empty response — no JSON to extract.");
 
-  const fenced = trimmed.match(/```json\s*([\s\S]*?)\s*```/i);
-  if (fenced) return JSON.parse(jsonrepair(fenced[1].trim()));
+  // First try full JSON parse so envelopes like:
+  // {"response":"```json\\n{...}\\n```"} are handled as top-level JSON
+  // instead of matching the escaped code fence inside the string value.
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(jsonrepair(trimmed));
+    } catch {
+      // fall through to extraction heuristics
+    }
+  }
 
   const firstBrace = trimmed.indexOf("{");
   const lastBrace = trimmed.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
     const candidate = trimmed.slice(firstBrace, lastBrace + 1);
-    return JSON.parse(jsonrepair(candidate));
+    try {
+      return JSON.parse(jsonrepair(candidate));
+    } catch {
+      // fall through
+    }
   }
+
+  const fenced = trimmed.match(/```json\s*([\s\S]*?)\s*```/i);
+  if (fenced) return JSON.parse(jsonrepair(fenced[1].trim()));
 
   // No JSON structure found — provide a helpful error instead of
   // letting jsonrepair throw a confusing "Unexpected character" error.
   const preview = trimmed.length > 200 ? trimmed.slice(0, 200) + "…" : trimmed;
   throw new Error(`No JSON object found in response. Preview:\n${preview}`);
+}
+
+/**
+ * Parse Gemini output where `-o json` returns an envelope with a `response`
+ * field that may itself contain JSON (often fenced markdown).
+ */
+export function extractGeminiPayloadJson(stdout) {
+  const parsed = extractJson(stdout);
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    !Array.isArray(parsed) &&
+    typeof parsed.response === "string"
+  ) {
+    try {
+      return extractJson(parsed.response);
+    } catch {
+      // Some envelopes encode escaped newlines (e.g. "\\n") literally.
+      // Normalize and retry before falling back to the raw envelope.
+      try {
+        const normalized = parsed.response
+          .replace(/\\r\\n/g, "\n")
+          .replace(/\\n/g, "\n")
+          .replace(/\\t/g, "\t");
+        return extractJson(normalized);
+      } catch {
+        // Keep envelope if response is not structured JSON.
+      }
+    }
+  }
+  return parsed;
 }
 
 export function geminiJsonPipe(prompt) {

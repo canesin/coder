@@ -112,8 +112,9 @@ function parseArgs(argv) {
 }
 
 function requireEnvOneOf(names) {
+  const resolved = buildSecrets(names);
   for (const n of names) {
-    if (process.env[n]) return;
+    if (resolved[n]) return;
   }
   throw new Error(`Missing required env var: one of ${names.join(", ")}`);
 }
@@ -126,13 +127,52 @@ function requireCommandOnPath(name) {
 }
 
 function buildSecrets(passEnv) {
+  const isSafeEnvName = (name) => /^[A-Z_][A-Z0-9_]*$/.test(name);
+  const readEnvFromLoginShell = (name) => {
+    if (!isSafeEnvName(name)) return "";
+    const script = `printf '%s' "\${${name}:-}"`;
+    const res = spawnSync("bash", ["-lc", script], { encoding: "utf8" });
+    if (res.status !== 0) return "";
+    return (res.stdout || "").trim();
+  };
+
   /** @type {Record<string, string>} */
   const secrets = {};
   for (const key of passEnv) {
-    const val = process.env[key];
+    const val = process.env[key] || readEnvFromLoginShell(key);
     if (val) secrets[key] = val;
   }
+  // Gemini CLI can require GEMINI_API_KEY explicitly in some modes.
+  if (!secrets.GEMINI_API_KEY && secrets.GOOGLE_API_KEY) {
+    secrets.GEMINI_API_KEY = secrets.GOOGLE_API_KEY;
+  }
+  if (!secrets.GOOGLE_API_KEY && secrets.GEMINI_API_KEY) {
+    secrets.GOOGLE_API_KEY = secrets.GEMINI_API_KEY;
+  }
   return secrets;
+}
+
+function formatCommandFailure(label, res, maxLen = 1200) {
+  const exit = typeof res?.exitCode === "number" ? res.exitCode : "unknown";
+  const raw = `${res?.stderr || ""}\n${res?.stdout || ""}`.trim();
+  let detail = raw || "No stdout/stderr captured.";
+
+  if (raw) {
+    try {
+      const parsed = extractJson(raw);
+      if (parsed?.error?.message) detail = parsed.error.message;
+    } catch {
+      // best-effort parsing only
+    }
+  }
+
+  if (detail.length > maxLen) detail = detail.slice(0, maxLen) + "…";
+  const hint =
+    /must specify the GEMINI_API_KEY environment variable/i.test(raw) ||
+    /GEMINI_API_KEY/i.test(detail)
+      ? " Hint: set GEMINI_API_KEY (GOOGLE_API_KEY is also accepted and auto-aliased)."
+      : "";
+  return `${label} (exit ${exit}).${hint}\n${detail}`;
 }
 
 function extractJson(stdout) {
@@ -301,13 +341,13 @@ async function run() {
     .withAgent({
       type: "gemini",
       provider: "google",
-      apiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY,
+      apiKey: secrets.GOOGLE_API_KEY ?? secrets.GEMINI_API_KEY,
       model: "gemini-3-flash-preview",
     });
   attachAgentLogging("gemini", gemini);
 
   // --- Step 0: Linear project selection ---
-  if (process.env.LINEAR_API_KEY && (!state.steps.listedProjects || !state.linearProjects)) {
+  if (secrets.LINEAR_API_KEY && (!state.steps.listedProjects || !state.linearProjects)) {
     process.stdout.write("\n[0/8] Gemini: listing Linear teams...\n");
     const projPrompt = `Use your Linear MCP to list all teams I have access to.
 
@@ -323,7 +363,7 @@ Return ONLY valid JSON in this schema:
 }`;
     const projCmd = heredocPipe(projPrompt, "gemini --model gemini-3-flash-preview --yolo");
     const projRes = await gemini.executeCommand(projCmd, { timeoutMs: 1000 * 60 * 5 });
-    if (projRes.exitCode !== 0) throw new Error("Gemini project listing failed.");
+    if (projRes.exitCode !== 0) throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
     const projPayload = ProjectsPayloadSchema.parse(extractJson(projRes.stdout));
     state.linearProjects = projPayload.projects;
 
@@ -379,7 +419,7 @@ Return ONLY valid JSON in this schema:
 
     const cmd = heredocPipe(listPrompt, "gemini --model gemini-3-flash-preview --yolo");
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
-    if (res.exitCode !== 0) throw new Error("Gemini issue listing failed.");
+    if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini issue listing failed", res));
     issuesPayload = IssuesPayloadSchema.parse(extractJson(res.stdout));
     state.steps.listedIssues = true;
     state.issuesPayload = issuesPayload;
@@ -451,15 +491,15 @@ Return ONLY valid JSON in this schema:
   const claude = makeRepoAgent("claude", {
     type: "claude",
     provider: "anthropic",
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    apiKey: secrets.ANTHROPIC_API_KEY,
+    oauthToken: secrets.CLAUDE_CODE_OAUTH_TOKEN,
     model: "claude-opus-4-6",
   });
 
   const codex = makeRepoAgent("codex", {
     type: "codex",
     provider: "openai",
-    apiKey: process.env.OPENAI_API_KEY,
+    apiKey: secrets.OPENAI_API_KEY,
     model: "gpt-5.3-codex",
   });
 
@@ -478,7 +518,7 @@ Return ONLY valid JSON:
 
     const cmd = heredocPipe(qPrompt, "gemini --model gemini-3-flash-preview --yolo");
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 5 });
-    if (res.exitCode !== 0) throw new Error("Gemini questions failed.");
+    if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini questions failed", res));
     const qPayload = QuestionsPayloadSchema.parse(extractJson(res.stdout));
 
     const answers = [];
@@ -520,7 +560,7 @@ Include a short section at the top with:
 `;
     const cmd = heredocPipe(issuePrompt, "gemini --model gemini-3-flash-preview --yolo");
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
-    if (res.exitCode !== 0) throw new Error("Gemini ISSUE.md drafting failed.");
+    if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini ISSUE.md drafting failed", res));
     writeFileSync(issuePath, res.stdout.trimEnd() + "\n");
     process.stdout.write(`Wrote ${issuePath}\n`);
     state.steps.wroteIssue = true;
