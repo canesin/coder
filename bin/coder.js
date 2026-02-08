@@ -203,13 +203,28 @@ async function promptText(question) {
 function gitCleanOrThrow(repoDir, extraIgnore = []) {
   const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  const ignorePatterns = [".coder/", ...extraIgnore];
+  const ignorePatterns = [".coder/", ...extraIgnore].map((p) => p.replace(/\\/g, "/"));
+
+  const isIgnored = (filePath) => {
+    return ignorePatterns.some((pattern) => {
+      const normalizedPath = filePath.replace(/\\/g, "/");
+      if (pattern.endsWith("/")) {
+        return normalizedPath.startsWith(pattern);
+      }
+      if (pattern.includes("/")) {
+        return normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`);
+      }
+      return normalizedPath === pattern;
+    });
+  };
+
   const lines = (res.stdout || "")
     .split("\n")
     .filter((l) => {
       if (l.trim() === "") return false;
-      const filePath = l.slice(3);
-      return !ignorePatterns.some((p) => filePath === p || filePath.startsWith(p) || filePath.endsWith(p));
+      const pathField = l.slice(3);
+      const filePath = pathField.includes(" -> ") ? pathField.split(" -> ").pop() || pathField : pathField;
+      return !isIgnored(filePath);
     });
   if (lines.length > 0) {
     throw new Error(`Repo working tree is not clean: ${repoDir}\n${lines.join("\n")}`);
