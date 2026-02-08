@@ -117,6 +117,18 @@ test("extractGeminiPayloadJson unwraps fenced JSON in Gemini envelope response",
   assert.deepEqual(parsed, { issues: [], recommended_index: 0 });
 });
 
+test("gitCleanOrThrow automatically ignores .gemini/ directory", () => {
+  const { repoDir } = setupGitRepo({
+    "README.md": "hello\n",
+  });
+  mkdirSync(path.join(repoDir, ".gemini"), { recursive: true });
+  writeFileSync(path.join(repoDir, ".gemini", "settings.json"), "{}", "utf8");
+
+  assert.doesNotThrow(() => {
+    gitCleanOrThrow(repoDir);
+  });
+});
+
 test("gitCleanOrThrow ignores root workflow artifacts when explicitly ignored", () => {
   const { repoDir } = setupGitRepo({
     "PLAN.md": "plan\n",

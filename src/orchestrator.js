@@ -218,6 +218,12 @@ export class CoderOrchestrator {
       const suffix = giContent.endsWith("\n") || giContent === "" ? "" : "\n";
       writeFileSync(gitignorePath, giContent + `${suffix}# coder workflow artifacts\n.coder/\n`);
     }
+    if (!giContent.split("\n").some((line) => line.trim() === ".gemini/")) {
+      // Re-read in case we just wrote .coder/ above
+      const updated = readFileSync(gitignorePath, "utf8");
+      const suffix = updated.endsWith("\n") || updated === "" ? "" : "\n";
+      writeFileSync(gitignorePath, updated + `${suffix}.gemini/\n`);
+    }
 
     // Put workflow artifact files in .git/info/exclude so Gemini can still read them
     const excludePath = path.join(this.workspaceDir, ".git", "info", "exclude");
@@ -782,7 +788,7 @@ Constraints:
         const repoRoot = this._repoRoot(state);
         const status = spawnSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" });
         if (status.status !== 0) throw new Error("Failed to check git status after planning.");
-        const artifactFiles = [this.issueFile, this.planFile, this.critiqueFile, ".coder/"];
+        const artifactFiles = [this.issueFile, this.planFile, this.critiqueFile, ".coder/", ".gemini/"];
         const dirtyLines = (status.stdout || "")
           .split("\n")
           .filter((l) => l.trim() !== "" && !artifactFiles.some((a) => l.includes(a)));

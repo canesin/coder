@@ -203,7 +203,7 @@ async function promptText(question) {
 function gitCleanOrThrow(repoDir, extraIgnore = []) {
   const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  const ignorePatterns = [".coder/", ...extraIgnore].map((p) => p.replace(/\\/g, "/"));
+  const ignorePatterns = [".coder/", ".gemini/", ...extraIgnore].map((p) => p.replace(/\\/g, "/"));
 
   const isIgnored = (filePath) => {
     return ignorePatterns.some((pattern) => {
@@ -610,8 +610,12 @@ Constraints:
     // Hard gate: Claude must not change the repo during planning
     const status = spawnSync("git", ["status", "--porcelain"], { cwd: repoWorktree, encoding: "utf8" });
     if (status.status !== 0) throw new Error("Failed to check git status after planning.");
-    if ((status.stdout || "").trim() !== "") {
-      throw new Error("Planning step modified the repository. Aborting.");
+    const artifactFiles = ["ISSUE.md", "PLAN.md", "PLANREVIEW.md", ".coder/", ".gemini/"];
+    const dirtyLines = (status.stdout || "")
+      .split("\n")
+      .filter((l) => l.trim() !== "" && !artifactFiles.some((a) => l.includes(a)));
+    if (dirtyLines.length > 0) {
+      throw new Error(`Planning step modified the repository. Aborting.\n${dirtyLines.join("\n")}`);
     }
 
     if (!existsSync(planPath)) throw new Error(`PLAN.md not found: ${planPath}`);

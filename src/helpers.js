@@ -174,7 +174,7 @@ export function heredocPipe(text, pipeCmd) {
 export function gitCleanOrThrow(repoDir, extraIgnore = []) {
   const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  const ignorePatterns = [".coder/", ...extraIgnore].map((p) => p.replace(/\\/g, "/"));
+  const ignorePatterns = [".coder/", ".gemini/", ...extraIgnore].map((p) => p.replace(/\\/g, "/"));
 
   const isIgnored = (filePath) => {
     return ignorePatterns.some((pattern) => {
