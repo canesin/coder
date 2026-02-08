@@ -7,10 +7,12 @@ import path from "node:path";
 
 import {
   buildSecretsWithFallback,
+  buildPrBodyFromIssue,
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
   gitCleanOrThrow,
+  sanitizeIssueMarkdown,
 } from "../src/helpers.js";
 
 function setupGitRepo(files) {
@@ -150,4 +152,30 @@ test("gitCleanOrThrow does not ignore nested lookalike artifact paths", () => {
   assert.throws(() => {
     gitCleanOrThrow(repoDir, ["PLAN.md"]);
   }, /docs\/PLAN\.md/);
+});
+
+test("sanitizeIssueMarkdown strips MCP auth noise and preserves markdown body", () => {
+  const raw = `MCP server 'linear' rejected stored OAuth token. Please re-authenticate using: /mcp auth linear
+# Metadata
+
+Issue details`;
+  const cleaned = sanitizeIssueMarkdown(raw);
+  assert.equal(cleaned.startsWith("# Metadata"), true);
+  assert.doesNotMatch(cleaned, /rejected stored OAuth token/i);
+});
+
+test("buildPrBodyFromIssue returns a sanitized top section", () => {
+  const issue = `Warning: startup
+MCP server 'linear' rejected stored OAuth token.
+# Metadata
+- Source: github
+
+# Problem
+Real problem text
+
+# Changes
+Do the thing`;
+  const body = buildPrBodyFromIssue(issue, { maxLines: 4 });
+  assert.equal(body.includes("# Metadata"), true);
+  assert.equal(body.includes("rejected stored OAuth token"), false);
 });

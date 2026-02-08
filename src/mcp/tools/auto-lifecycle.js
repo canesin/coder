@@ -7,6 +7,21 @@ import { loadLoopState, saveLoopState } from "../../state.js";
 const activeRuns = new Map();
 
 export function registerAutoLifecycleTools(server, defaultWorkspace) {
+  const markRunTerminalOnDisk = (workspaceDir, runId, status) => {
+    const diskState = loadLoopState(workspaceDir);
+    if (diskState.runId !== runId) return false;
+    if (!["running", "paused"].includes(diskState.status)) return false;
+    diskState.status = status;
+    diskState.currentStage = null;
+    diskState.currentStageStartedAt = null;
+    diskState.activeAgent = null;
+    diskState.runnerPid = null;
+    diskState.lastHeartbeatAt = new Date().toISOString();
+    diskState.completedAt = new Date().toISOString();
+    saveLoopState(workspaceDir, diskState);
+    return true;
+  };
+
   // --- coder_auto_start: fire-and-forget async launch ---
   server.registerTool(
     "coder_auto_start",
@@ -67,6 +82,7 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         currentStageStartedAt: new Date().toISOString(),
         activeAgent: "gemini",
         lastHeartbeatAt: new Date().toISOString(),
+        runnerPid: process.pid,
         startedAt: new Date().toISOString(),
         completedAt: null,
       });
@@ -84,6 +100,7 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         runId,
       }).catch((err) => {
         // Keep background failures from surfacing as unhandled rejections.
+        markRunTerminalOnDisk(ws, runId, "failed");
         console.error(`[coder_auto_start] Run ${runId} failed:`, err);
         return {
           status: "failed",
@@ -116,6 +133,7 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
       description: "Request cancellation of a running autonomous loop by runId.",
       inputSchema: {
         runId: z.string().describe("The run ID returned by coder_auto_start"),
+        workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
       },
       annotations: {
         readOnlyHint: false,
@@ -124,9 +142,18 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         openWorldHint: false,
       },
     },
-    async ({ runId }) => {
+    async ({ runId, workspace }) => {
       const run = activeRuns.get(runId);
       if (!run) {
+        // Recovery path: allow cancellation via persisted state when the
+        // in-memory orchestrator is gone (e.g. stale/zombie run after crash).
+        const ws = workspace || defaultWorkspace;
+        const cancelledOnDisk = markRunTerminalOnDisk(ws, runId, "cancelled");
+        if (cancelledOnDisk) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ runId, status: "cancelled_offline" }) }],
+          };
+        }
         return {
           content: [{ type: "text", text: JSON.stringify({ error: `No active run found: ${runId}` }) }],
           isError: true,

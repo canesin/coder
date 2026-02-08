@@ -29,3 +29,4 @@ Thumbs.db
 # Build
 dist/
 build/
+.gemini/

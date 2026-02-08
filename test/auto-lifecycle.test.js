@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { registerAutoLifecycleTools } from "../src/mcp/tools/auto-lifecycle.js";
 import { CoderOrchestrator } from "../src/orchestrator.js";
+import { saveLoopState, loadLoopState } from "../src/state.js";
 
 function makeWorkspace() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-auto-lifecycle-"));
@@ -91,4 +92,39 @@ test("coder_auto_start creates .coder and loop-state on fresh workspace", async 
   } finally {
     CoderOrchestrator.prototype.runAuto = originalRunAuto;
   }
+});
+
+test("coder_auto_cancel can cancel stale persisted run without active in-memory orchestrator", async () => {
+  const ws = makeWorkspace();
+  const server = makeServer();
+  const runId = "deadbeef";
+  saveLoopState(ws, {
+    version: 1,
+    runId,
+    goal: "test",
+    status: "running",
+    projectFilter: null,
+    maxIssues: null,
+    issueQueue: [],
+    currentIndex: 0,
+    currentStage: "listing_issues",
+    currentStageStartedAt: new Date().toISOString(),
+    activeAgent: "gemini",
+    lastHeartbeatAt: new Date().toISOString(),
+    runnerPid: 999999,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  });
+
+  registerAutoLifecycleTools(server, ws);
+  const cancel = server.handlers.get("coder_auto_cancel");
+  assert.ok(cancel);
+
+  const res = await cancel({ runId, workspace: ws });
+  assert.equal(res.isError, undefined);
+  assert.equal(JSON.parse(res.content[0].text).status, "cancelled_offline");
+
+  const loopState = loadLoopState(ws);
+  assert.equal(loopState.status, "cancelled");
+  assert.equal(loopState.runId, runId);
 });

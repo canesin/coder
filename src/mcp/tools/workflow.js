@@ -240,7 +240,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         "Autonomous loop: processes multiple assigned issues end-to-end without human intervention. " +
         "Lists issues, sorts by difficulty (easiest first), then for each issue runs the full pipeline " +
         "(draft → plan → implement → review → finalize → PR). Dependency issues run in stacked mode " +
-        "(dependent issue branch + PR base are set to dependency branch). Failed issues are isolated and skipped. " +
+        "(dependent issue branch + PR base are set to dependency branch). Failed issues are isolated and the loop keeps attempting downstream work. " +
         "Saves progress to loop-state.json for crash recovery. Long-running.",
       inputSchema: {
         workspace: z.string().optional().describe("Workspace directory (default: cwd)"),

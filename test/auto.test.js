@@ -137,7 +137,7 @@ test("runAuto resume: skips already completed items and advances checkpoint", as
   assert.equal(persisted.issueQueue[1].status, "completed");
 });
 
-test("runAuto dependency handling: source-qualified refs prevent cross-source collisions", async () => {
+test("runAuto dependency handling: failed dependencies are soft and downstream issue is still attempted", async () => {
   const ws = makeWorkspace();
   seedLoopState(ws, {
     version: 1,
@@ -157,14 +157,13 @@ test("runAuto dependency handling: source-qualified refs prevent cross-source co
   const orch = new FakeAutoOrchestrator(ws);
   const result = await orch.runAuto();
 
-  assert.equal(orch.calls.some((c) => c.startsWith("draft:linear#123")), false);
-  assert.equal(result.completed, 0);
+  assert.equal(orch.calls.some((c) => c.startsWith("draft:linear#123")), true);
+  assert.equal(result.completed, 1);
   assert.equal(result.failed, 1);
-  assert.equal(result.skipped, 1);
+  assert.equal(result.skipped, 0);
 
   const persisted = loadLoopState(ws);
-  assert.equal(persisted.issueQueue[1].status, "skipped");
-  assert.match(persisted.issueQueue[1].error || "", /depends on failed issue/);
+  assert.equal(persisted.issueQueue[1].status, "completed");
 });
 
 test("runAuto stacked mode: dependent issue is drafted on dependency branch", async () => {
@@ -199,6 +198,39 @@ test("runAuto stacked mode: dependent issue is drafted on dependency branch", as
   const persisted = loadLoopState(ws);
   assert.equal(persisted.issueQueue[1].status, "completed");
   assert.equal(persisted.issueQueue[1].baseBranch, "coder/github-1");
+});
+
+test("runAuto dependency handling: proceeds unstacked when dependency has no branch", async () => {
+  const ws = makeWorkspace();
+  seedLoopState(ws, {
+    version: 1,
+    goal: "deps-no-branch",
+    status: "running",
+    projectFilter: null,
+    maxIssues: null,
+    issueQueue: [
+      {
+        ...loopEntry({ source: "github", id: "1", status: "completed" }),
+        branch: null,
+        completedAt: new Date().toISOString(),
+      },
+      loopEntry({ source: "github", id: "2", status: "pending", dependsOn: ["github#1"] }),
+    ],
+    currentIndex: 1,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  });
+
+  const orch = new FakeAutoOrchestrator(ws);
+  const result = await orch.runAuto();
+
+  assert.equal(result.completed, 2);
+  assert.equal(orch.calls.includes("draftBase:"), true);
+  assert.equal(orch.calls.includes("createPRBase:"), true);
+
+  const persisted = loadLoopState(ws);
+  assert.equal(persisted.issueQueue[1].status, "completed");
+  assert.equal(persisted.issueQueue[1].baseBranch, null);
 });
 
 test("runAuto empty queue: finishes as completed (not failed)", async () => {

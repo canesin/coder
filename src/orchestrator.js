@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -36,14 +36,25 @@ import {
   extractJson,
   extractGeminiPayloadJson,
   heredocPipe,
-  geminiJsonPipe,
+  geminiJsonPipeWithModel,
   gitCleanOrThrow,
   runPlanreview,
   runPpcommit,
   runHostTests,
   formatCommandFailure,
+  stripAgentNoise,
+  sanitizeIssueMarkdown,
+  buildPrBodyFromIssue,
   DEFAULT_PASS_ENV,
 } from "./helpers.js";
+
+const GEMINI_LIST_MODEL = "gemini-2.5-flash";
+const GEMINI_DEFAULT_HANG_TIMEOUT_MS = 1000 * 60;
+const GEMINI_PROJECT_LIST_HANG_TIMEOUT_MS = 1000 * 120;
+const GEMINI_AUTH_FAILURE_PATTERNS = [
+  "rejected stored OAuth token",
+  "Please re-authenticate using: /mcp auth",
+];
 
 export class CoderOrchestrator {
   /**
@@ -208,7 +219,7 @@ export class CoderOrchestrator {
   // --- Gitignore ---
 
   _ensureGitignore() {
-    // Keep .coder/ in .gitignore (Gemini doesn't need to read it)
+    // Keep workflow internals out of git.
     const gitignorePath = path.join(this.workspaceDir, ".gitignore");
     let giContent = "";
     if (existsSync(gitignorePath)) {
@@ -223,6 +234,11 @@ export class CoderOrchestrator {
       const updated = readFileSync(gitignorePath, "utf8");
       const suffix = updated.endsWith("\n") || updated === "" ? "" : "\n";
       writeFileSync(gitignorePath, updated + `${suffix}.gemini/\n`);
+    }
+    const latestGitignore = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
+    if (!latestGitignore.split("\n").some((line) => line.trim() === ".coder/logs/")) {
+      const suffix = latestGitignore.endsWith("\n") || latestGitignore === "" ? "" : "\n";
+      writeFileSync(gitignorePath, latestGitignore + `${suffix}.coder/logs/\n`);
     }
 
     // Put workflow artifact files in .git/info/exclude so Gemini can still read them
@@ -239,6 +255,25 @@ export class CoderOrchestrator {
     if (missing.length > 0) {
       const suffix = exContent.endsWith("\n") || exContent === "" ? "" : "\n";
       writeFileSync(excludePath, exContent + `${suffix}# coder workflow artifacts\n${missing.join("\n")}\n`);
+    }
+
+    // Some Gemini versions prioritize .gitignore behavior. Explicitly unignore
+    // workflow markdown artifacts for Gemini.
+    const geminiIgnorePath = path.join(this.workspaceDir, ".geminiignore");
+    let gmContent = "";
+    if (existsSync(geminiIgnorePath)) {
+      gmContent = readFileSync(geminiIgnorePath, "utf8");
+    }
+    const keepRules = artifacts.map((name) => `!${name}`);
+    const missingGeminiRules = keepRules.filter(
+      (rule) => !gmContent.split("\n").some((line) => line.trim() === rule),
+    );
+    if (missingGeminiRules.length > 0) {
+      const suffix = gmContent.endsWith("\n") || gmContent === "" ? "" : "\n";
+      writeFileSync(
+        geminiIgnorePath,
+        gmContent + `${suffix}# coder workflow artifacts must remain readable\n${missingGeminiRules.join("\n")}\n`,
+      );
     }
   }
 
@@ -272,17 +307,31 @@ export class CoderOrchestrator {
    * @param {{ fallback?: string }} [opts]
    */
   _normalizeRepoPath(repoPath, { fallback = "." } = {}) {
+    const inWorkspace = (absPath) =>
+      absPath === this.workspaceDir || absPath.startsWith(this.workspaceDir + path.sep);
+
+    const resolveGitRoot = (absStartDir) => {
+      const rootRes = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+        cwd: absStartDir,
+        encoding: "utf8",
+      });
+      if (rootRes.status !== 0) return null;
+      const root = path.resolve(absStartDir, (rootRes.stdout || "").trim());
+      if (!inWorkspace(root)) return null;
+      return path.relative(this.workspaceDir, root) || ".";
+    };
+
     const resolveIfValid = (candidate) => {
       const raw = String(candidate || "").trim();
       if (!raw) return null;
       if (path.isAbsolute(raw)) return null;
 
       const abs = path.resolve(this.workspaceDir, raw);
-      const inWorkspace = abs === this.workspaceDir || abs.startsWith(this.workspaceDir + path.sep);
-      if (!inWorkspace) return null;
+      if (!inWorkspace(abs)) return null;
       if (!existsSync(abs)) return null;
-
-      return path.relative(this.workspaceDir, abs) || ".";
+      const stats = statSync(abs);
+      const searchDir = stats.isDirectory() ? abs : path.dirname(abs);
+      return resolveGitRoot(searchDir);
     };
 
     return resolveIfValid(repoPath) || resolveIfValid(fallback) || ".";
@@ -331,10 +380,25 @@ export class CoderOrchestrator {
    * @param {string|null} agentName
    * @param {object} agent - AgentRunner instance
    * @param {string} cmd - Command to execute
-   * @param {{ timeoutMs?: number }} opts
+   * @param {{ timeoutMs?: number, hangTimeoutMs?: number, hangResetOnStderr?: boolean, killOnStderrPatterns?: string[] }} opts
    */
-  async _executeAgentCommand(agentName, agent, cmd, { timeoutMs = 1000 * 60 * 10, hangTimeoutMs = 0 } = {}) {
-    const res = await agent.executeCommand(cmd, { timeoutMs, hangTimeoutMs });
+  async _executeAgentCommand(
+    agentName,
+    agent,
+    cmd,
+    { timeoutMs = 1000 * 60 * 10, hangTimeoutMs = 0, hangResetOnStderr, killOnStderrPatterns } = {},
+  ) {
+    const isGemini = agentName === "gemini";
+    const effectiveHangTimeout = hangTimeoutMs > 0 ? hangTimeoutMs : 0;
+    const effectiveHangResetOnStderr = hangResetOnStderr ?? !isGemini;
+    const effectiveKillPatterns = killOnStderrPatterns ?? (isGemini ? GEMINI_AUTH_FAILURE_PATTERNS : []);
+
+    const res = await agent.executeCommand(cmd, {
+      timeoutMs,
+      hangTimeoutMs: effectiveHangTimeout,
+      hangResetOnStderr: effectiveHangResetOnStderr,
+      killOnStderrPatterns: effectiveKillPatterns,
+    });
     if (agentName) this._checkMcpHealth(agentName);
     return res;
   }
@@ -343,27 +407,68 @@ export class CoderOrchestrator {
    * Retry wrapper with exponential backoff. Does not retry timeout errors.
    * @param {object} agent - AgentRunner instance
    * @param {string} cmd - Command to execute
-   * @param {{ timeoutMs?: number, retries?: number, backoffMs?: number, agentName?: string|null }} opts
+   * @param {{ timeoutMs?: number, hangTimeoutMs?: number, retries?: number, backoffMs?: number, agentName?: string|null, retryOnRateLimit?: boolean }} opts
    */
   async _executeWithRetry(agent, cmd, {
     timeoutMs = 1000 * 60 * 10,
     hangTimeoutMs = 0,
+    hangResetOnStderr,
+    killOnStderrPatterns,
     retries = 1,
     backoffMs = 5000,
     agentName = null,
+    retryOnRateLimit = false,
   } = {}) {
+    const parseRetryAfterMs = (txt) => {
+      const m = String(txt || "").match(/retry(?:ing)?(?:\s+after|\s+in)?\s+(\d+)\s*(ms|milliseconds|s|sec|seconds|m|min|minutes)?/i);
+      if (!m) return null;
+      const num = Number.parseInt(m[1], 10);
+      if (!Number.isFinite(num) || num <= 0) return null;
+      const unit = (m[2] || "s").toLowerCase();
+      if (unit === "ms" || unit.startsWith("millisecond")) return num;
+      if (unit === "m" || unit === "min" || unit.startsWith("minute")) return num * 60 * 1000;
+      return num * 1000;
+    };
+
+    const isRateLimited = (txt) =>
+      /rate limit|429|resource_exhausted|quota/i.test(String(txt || ""));
+
     let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await this._executeAgentCommand(agentName, agent, cmd, { timeoutMs, hangTimeoutMs });
+        const res = await this._executeAgentCommand(agentName, agent, cmd, {
+          timeoutMs,
+          hangTimeoutMs,
+          hangResetOnStderr,
+          killOnStderrPatterns,
+        });
+
+        if (retryOnRateLimit && res.exitCode !== 0) {
+          const details = `${res.stderr || ""}\n${res.stdout || ""}`;
+          if (isRateLimited(details)) {
+            const rateErr = new Error(`Rate limited while executing command: ${details.slice(0, 300)}`);
+            rateErr.name = "RateLimitError";
+            rateErr.rateLimitDetails = details;
+            throw rateErr;
+          }
+        }
+
+        return res;
       } catch (err) {
         lastErr = err;
         // Don't retry timeout errors (they're unlikely to succeed)
         if (err.name === "CommandTimeoutError") throw err;
+        // Auth failures are deterministic until credentials are refreshed.
+        if (err.name === "CommandAuthError") throw err;
         // Strict MCP startup failures should fail fast.
         if ((err.message || "").startsWith("MCP startup failure")) throw err;
         if (attempt < retries) {
-          const delay = backoffMs * Math.pow(2, attempt);
+          const details = `${err.rateLimitDetails || ""}\n${err.message || ""}`;
+          const rateLimited = isRateLimited(details);
+          const parsedRetryAfterMs = parseRetryAfterMs(details);
+          const delay = rateLimited
+            ? Math.max(parsedRetryAfterMs || 15000, 5000)
+            : backoffMs * Math.pow(2, attempt);
           this.log({ event: "retry", attempt: attempt + 1, delay, error: err.message });
           await new Promise((r) => setTimeout(r, delay));
         }
@@ -479,12 +584,13 @@ Return ONLY valid JSON in this schema:
     }
   ]
 }`;
-          const projCmd = geminiJsonPipe(projPrompt);
+          const projCmd = geminiJsonPipeWithModel(projPrompt, GEMINI_LIST_MODEL);
           const projRes = await this._executeWithRetry(gemini, projCmd, {
             timeoutMs: 1000 * 60 * 5,
-            hangTimeoutMs: 1000 * 60,
-            retries: 1,
+            hangTimeoutMs: GEMINI_PROJECT_LIST_HANG_TIMEOUT_MS,
+            retries: 2,
             agentName: "gemini",
+            retryOnRateLimit: true,
           });
           if (projRes.exitCode !== 0) {
             throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
@@ -524,7 +630,7 @@ Return ONLY valid JSON in this schema:
 
       const listPrompt = `Use your GitHub MCP and Linear MCP to list the issues assigned to me.${projectFilterClause}
 
-Then, for each issue, briefly inspect the local code in the relevant repository folder(s) in this workspace (${this.workspaceDir}) and estimate implementation difficulty and directness (prefer small, self-contained changes).
+Then estimate implementation difficulty and directness (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
 
 Return ONLY valid JSON in this schema:
 {
@@ -541,12 +647,13 @@ Return ONLY valid JSON in this schema:
   "recommended_index": number
 }`;
 
-      const cmd = geminiJsonPipe(listPrompt);
+      const cmd = geminiJsonPipeWithModel(listPrompt, GEMINI_LIST_MODEL);
       const res = await this._executeWithRetry(gemini, cmd, {
         timeoutMs: 1000 * 60 * 10,
-        hangTimeoutMs: 1000 * 60,
-        retries: 1,
+        hangTimeoutMs: GEMINI_DEFAULT_HANG_TIMEOUT_MS,
+        retries: 2,
         agentName: "gemini",
+        retryOnRateLimit: true,
       });
       if (res.exitCode !== 0) {
         throw new Error(formatCommandFailure("Gemini issue listing failed", res));
@@ -675,13 +782,25 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
       // file if it exists and looks like real markdown content.
       let issueMd;
       if (existsSync(issuePath)) {
-        const onDisk = readFileSync(issuePath, "utf8").trim();
+        const onDisk = sanitizeIssueMarkdown(readFileSync(issuePath, "utf8"));
         if (onDisk.length > 40 && onDisk.startsWith("#")) {
           issueMd = onDisk + "\n";
+          if (issueMd !== readFileSync(issuePath, "utf8")) {
+            writeFileSync(issuePath, issueMd);
+          }
         }
       }
       if (!issueMd) {
-        issueMd = res.stdout.trimEnd() + "\n";
+        issueMd = sanitizeIssueMarkdown(res.stdout.trimEnd()) + "\n";
+        if (!issueMd.trim().startsWith("#")) {
+          const fallback = stripAgentNoise(res.stdout || "", { dropLeadingOnly: true }).trim();
+          if (!fallback.startsWith("#")) {
+            throw new Error(
+              "Gemini draft output did not contain valid ISSUE.md markdown after sanitization.",
+            );
+          }
+          issueMd = fallback + "\n";
+        }
         writeFileSync(issuePath, issueMd);
       }
 
@@ -960,20 +1079,9 @@ FORBIDDEN patterns:
       this._ensureBranch(state);
 
       const workDir = this._repoRoot(state);
+      const codex = this._getCodex();
 
-      // Step 5a: Codex review + ppcommit fix
-      if (!state.steps.codexReviewed) {
-        this.log({ event: "step5_review" });
-        const codex = this._getCodex();
-
-        const ppBefore = runPpcommit(workDir);
-        this.log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
-
-        const ppOutput = (ppBefore.stdout || ppBefore.stderr || "").trim();
-        const ppSection = ppBefore.exitCode === 0
-          ? `ppcommit passed (no issues). Focus on code review.`
-          : `ppcommit found issues — fix ALL of them:\n---\n${ppOutput}\n---`;
-
+      const runCodexReview = async (ppSection) => {
         const codexPrompt = `You are reviewing uncommitted changes for commit readiness.
 Read ISSUE.md to understand what was originally requested.
 
@@ -1021,7 +1129,6 @@ If something is unused, DELETE it completely.
 
 ## ppcommit (commit hygiene)
 ${ppSection}
-${ppBefore.exitCode === 0 ? "ppcommit is clean." : "Fix ALL ppcommit issues."} Coder will re-run built-in ppcommit checks after your changes (do not assume a ppcommit CLI exists).
 
 Then run the repo's standard lint/format/test commands and fix any failures.
 
@@ -1033,12 +1140,38 @@ Hard constraints:
         const cmd = `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(codexPrompt)}`;
         const res = await this._executeAgentCommand("codex", codex, cmd, { timeoutMs: 1000 * 60 * 90 });
         if (res.exitCode !== 0) throw new Error("Codex review/fix failed.");
+      };
+
+      const ppBefore = runPpcommit(workDir);
+      state.steps.ppcommitInitiallyClean = ppBefore.exitCode === 0;
+      this.log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
+      this._saveState(state);
+
+      // Step 5a: Codex review + ppcommit fix
+      if (!state.steps.codexReviewed) {
+        this.log({ event: "step5_review" });
+        const ppOutput = (ppBefore.stdout || ppBefore.stderr || "").trim();
+        const ppSection = ppBefore.exitCode === 0
+          ? `ppcommit passed (no issues). Focus on code review.`
+          : `ppcommit found issues — fix ALL of them:\n---\n${ppOutput}\n---\n\nCoder will re-run ppcommit and fail hard if anything remains.`;
+        await runCodexReview(ppSection);
         state.steps.codexReviewed = true;
         this._saveState(state);
       }
 
-      // Hard gate: ppcommit must be clean
-      const ppAfter = runPpcommit(workDir);
+      // Hard gate: ppcommit must be clean. Retry Codex with explicit ppcommit
+      // output to avoid silent drift between initial/final checks.
+      const maxPpcommitRetries = 2;
+      let ppAfter = runPpcommit(workDir);
+      this.log({ event: "ppcommit_after", attempt: 0, exitCode: ppAfter.exitCode });
+      for (let attempt = 1; attempt <= maxPpcommitRetries && ppAfter.exitCode !== 0; attempt++) {
+        const ppAfterOutput = (ppAfter.stdout || ppAfter.stderr || "").trim();
+        this.log({ event: "ppcommit_retry", attempt, exitCode: ppAfter.exitCode });
+        const retrySection = `ppcommit still failing after Codex pass. Fix ALL remaining ppcommit issues:\n---\n${ppAfterOutput}\n---`;
+        await runCodexReview(retrySection);
+        ppAfter = runPpcommit(workDir);
+        this.log({ event: "ppcommit_after", attempt, exitCode: ppAfter.exitCode });
+      }
       if (ppAfter.exitCode !== 0) {
         throw new Error(`ppcommit still reports issues after Codex pass:\n${ppAfter.stdout || ppAfter.stderr}`);
       }
@@ -1209,16 +1342,25 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
         const paths = this._artifactPaths();
         if (existsSync(paths.issue)) {
           const issueMd = readFileSync(paths.issue, "utf8");
-          body = issueMd.split("\n").slice(0, 10).join("\n");
+          body = buildPrBodyFromIssue(issueMd, { maxLines: 10 });
+          if (!body) {
+            this.log({ event: "pr_body_sanitized_empty", issue: state.selected || null });
+          }
         }
       }
+      if (!body) {
+        body = `## Summary\nAutomated changes for: ${state.selected?.title || "workflow issue"}`;
+      }
+      body = stripAgentNoise(body, { dropLeadingOnly: true }).trim();
 
       // Append issue link
       if (state.selected) {
         const { source, id } = state.selected;
         if (source === "github") {
           const normalized = String(id).trim();
-          body += normalized.includes("#") ? `\n\nCloses ${normalized}` : `\n\nCloses #${normalized}`;
+          body += normalized.includes("#")
+            ? `\n\nCloses ${normalized}`
+            : `\n\nCloses #${normalized}`;
         } else if (source === "linear") {
           body += `\n\nResolves ${id}`;
         }
@@ -1375,7 +1517,8 @@ ${issueList}
 1. **Filter**: Only include issues relevant to the user's goal. If the goal is generic (e.g. "resolve all assigned issues"), include all issues.
 2. **Analyze dependencies**: Determine if any issue depends on another being completed first. For example, if issue A adds a monitoring API and issue B adds dashboards that consume that API, then B depends on A.
 3. **Sort**: Produce a topological order — dependencies before dependents. Among independent issues, sort by difficulty ascending (easy wins first).
-${maxIssues ? `4. **Limit**: Return at most ${maxIssues} issues.` : ""}
+4. **Dependency quality**: Include ONLY hard/blocking dependencies in depends_on. Prefer empty depends_on when unsure.
+${maxIssues ? `5. **Limit**: Return at most ${maxIssues} issues.` : ""}
 
 Return ONLY valid JSON in this schema:
 {
@@ -1394,12 +1537,13 @@ Return ONLY valid JSON in this schema:
   ]
 }`;
 
-    const cmd = geminiJsonPipe(prompt);
+    const cmd = geminiJsonPipeWithModel(prompt, GEMINI_LIST_MODEL);
     const res = await this._executeWithRetry(gemini, cmd, {
       timeoutMs: 1000 * 60 * 5,
-      hangTimeoutMs: 1000 * 60,
-      retries: 1,
+      hangTimeoutMs: GEMINI_DEFAULT_HANG_TIMEOUT_MS,
+      retries: 2,
       agentName: "gemini",
+      retryOnRateLimit: true,
     });
 
     // Best-effort parse — fall back to difficulty sort if Gemini fails
@@ -1431,9 +1575,18 @@ Return ONLY valid JSON in this schema:
       const queue = payload.queue.map((item) => {
         const issueRef = `${item.source}#${item.id}`;
         const mappedRepoPath = repoPathMap.get(issueRef) || ".";
-        const repoPath = this._normalizeRepoPath(item.repo_path || mappedRepoPath, {
+        const requestedRepoPath = item.repo_path || mappedRepoPath;
+        const repoPath = this._normalizeRepoPath(requestedRepoPath, {
           fallback: mappedRepoPath,
         });
+        if ((requestedRepoPath || "").trim() !== repoPath) {
+          this._appendAutoLog({
+            event: "queue_repo_path_normalized",
+            issueRef,
+            requested: requestedRepoPath || "",
+            resolved: repoPath,
+          });
+        }
         return {
         source: item.source,
         id: item.id,
@@ -1489,7 +1642,8 @@ Return ONLY valid JSON in this schema:
   /**
    * Process multiple assigned issues end-to-end without human intervention.
    * Uses the goal prompt to filter and dependency-sort the issue queue via Gemini.
-   * Issues whose dependencies failed are automatically skipped.
+   * Failed dependencies are treated as soft ordering hints; downstream issues
+   * are still attempted to avoid full queue starvation.
    * @param {{ goal?: string, projectFilter?: string, maxIssues?: number, testCmd?: string, testConfigPath?: string, allowNoTests?: boolean, destructiveReset?: boolean }} opts
    * @returns {Promise<{ status: "completed"|"failed"|"cancelled", completed: number, failed: number, skipped: number, results: Array }>}
    */
@@ -1534,6 +1688,7 @@ Return ONLY valid JSON in this schema:
         currentStage: null,
         currentStageStartedAt: null,
         lastHeartbeatAt: null,
+        runnerPid: process.pid,
         activeAgent: null,
         startedAt: new Date().toISOString(),
         completedAt: null,
@@ -1544,6 +1699,8 @@ Return ONLY valid JSON in this schema:
       this._resetForNextIssue("", { destructive: destructiveReset });
     } else {
       this._appendAutoLog({ event: "auto_resume", currentIndex: loopState.currentIndex });
+      loopState.runnerPid = process.pid;
+      saveLoopState(this.workspaceDir, loopState);
     }
 
     const issueRef = (entry) => `${entry.source}#${entry.id}`;
@@ -1574,6 +1731,7 @@ Return ONLY valid JSON in this schema:
     const heartbeatInterval = setInterval(() => {
       try {
         loopState.lastHeartbeatAt = new Date().toISOString();
+        loopState.runnerPid = process.pid;
         saveLoopState(this.workspaceDir, loopState);
       } catch { /* best-effort */ }
     }, 5000);
@@ -1620,51 +1778,27 @@ Return ONLY valid JSON in this schema:
         .filter((dep) => !!dep);
       entry.dependsOn = dependencyRefs;
 
-      // Dependency check: skip if any dependency failed
-      if (dependencyRefs.length > 0) {
-        const blockedBy = dependencyRefs.filter((depRef) => failedRefs.has(depRef));
-        if (blockedBy.length > 0) {
-          entry.status = "skipped";
-          entry.error = `Skipped: depends on failed issue(s) ${blockedBy.join(", ")}`;
-          entry.completedAt = new Date().toISOString();
-          this._appendAutoLog({ event: "issue_skipped", index: i, id: entry.id, blockedBy });
-          loopState.currentIndex = i + 1;
-          saveLoopState(this.workspaceDir, loopState);
-          continue;
-        }
-
-        // Also skip if a dependency is still pending (shouldn't happen with topo sort, but guard)
-        const unresolved = dependencyRefs.filter((depRef) => {
-          const dep = loopState.issueQueue.find((e) => issueRef(e) === depRef);
-          return !dep || dep.status !== "completed";
+      // Failed dependencies are treated as soft ordering hints. We still
+      // attempt the issue and only use completed dependencies for stacked mode.
+      let effectiveDependencyRefs = dependencyRefs;
+      const blockedBy = dependencyRefs.filter((depRef) => failedRefs.has(depRef));
+      if (blockedBy.length > 0) {
+        this._appendAutoLog({
+          event: "dependency_failed_continue",
+          index: i,
+          id: entry.id,
+          blockedBy,
         });
-        if (unresolved.length > 0) {
-          entry.status = "skipped";
-          entry.error = `Skipped: unresolved dependencies ${unresolved.join(", ")}`;
-          entry.completedAt = new Date().toISOString();
-          this._appendAutoLog({ event: "issue_skipped", index: i, id: entry.id, unresolved });
-          loopState.currentIndex = i + 1;
-          saveLoopState(this.workspaceDir, loopState);
-          continue;
-        }
+        effectiveDependencyRefs = dependencyRefs.filter((depRef) => !failedRefs.has(depRef));
       }
 
       let autoBaseBranch = null;
-      if (dependencyRefs.length > 0) {
-        const depEntries = dependencyRefs
+      if (effectiveDependencyRefs.length > 0) {
+        const depEntries = effectiveDependencyRefs
           .map((depRef) => loopState.issueQueue.find((e) => issueRef(e) === depRef))
           .filter((dep) => !!dep);
         const branchDeps = depEntries.filter((dep) => dep.branch).map((dep) => dep.branch);
-        if (branchDeps.length === 0) {
-          entry.status = "skipped";
-          entry.error = "Skipped: dependencies completed but no dependency branch was available for stacked mode.";
-          entry.completedAt = new Date().toISOString();
-          this._appendAutoLog({ event: "issue_skipped", index: i, id: entry.id, reason: "missing_dependency_branch" });
-          loopState.currentIndex = i + 1;
-          saveLoopState(this.workspaceDir, loopState);
-          continue;
-        }
-        autoBaseBranch = branchDeps[0];
+        if (branchDeps.length > 0) autoBaseBranch = branchDeps[0];
         if (branchDeps.length > 1) {
           this._appendAutoLog({
             event: "multi_dependency_base_selected",
@@ -1764,6 +1898,7 @@ Return ONLY valid JSON in this schema:
     } else {
       loopState.status = failed === loopState.issueQueue.length ? "failed" : "completed";
     }
+    loopState.runnerPid = null;
     loopState.completedAt = new Date().toISOString();
     saveLoopState(this.workspaceDir, loopState);
 

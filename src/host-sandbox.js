@@ -79,6 +79,10 @@ class HostSandboxInstance extends EventEmitter {
     const background = options.background ?? false;
     const throwOnNonZero = options.throwOnNonZero ?? false;
     const hangTimeoutMs = options.hangTimeoutMs ?? 0;
+    const hangResetOnStderr = options.hangResetOnStderr ?? true;
+    const killOnStderrPatterns = Array.isArray(options.killOnStderrPatterns)
+      ? options.killOnStderrPatterns.filter((p) => typeof p === "string" && p.trim() !== "")
+      : [];
 
     this.currentCommand = command;
 
@@ -103,6 +107,7 @@ class HostSandboxInstance extends EventEmitter {
         cwd: this.cwd,
         env: this.env,
         stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
       });
 
       this.currentChild = child;
@@ -114,6 +119,14 @@ class HostSandboxInstance extends EventEmitter {
       let settled = false;
       let killTimer = null;
       let hangTimer = null;
+      const terminateChild = () => {
+        // Kill the full process group to avoid orphaned grandchildren.
+        try {
+          if (child.pid) process.kill(-child.pid, "SIGTERM");
+        } catch {
+          child.kill("SIGTERM");
+        }
+      };
       const settle = (err, result) => {
         if (settled) return;
         settled = true;
@@ -128,7 +141,7 @@ class HostSandboxInstance extends EventEmitter {
       killTimer =
         timeoutMs > 0
           ? setTimeout(() => {
-              child.kill("SIGTERM");
+              terminateChild();
               settle(new CommandTimeoutError(command, timeoutMs));
             }, timeoutMs)
           : null;
@@ -138,7 +151,7 @@ class HostSandboxInstance extends EventEmitter {
         if (hangTimeoutMs > 0) {
           if (hangTimer) clearTimeout(hangTimer);
           hangTimer = setTimeout(() => {
-            child.kill("SIGTERM");
+            terminateChild();
             settle(new CommandTimeoutError(command, hangTimeoutMs));
           }, hangTimeoutMs);
         }
@@ -157,9 +170,22 @@ class HostSandboxInstance extends EventEmitter {
         const chunk = buf.toString();
         stderr += chunk;
         this.lastActivityTs = Date.now();
-        resetHangTimer();
+        if (hangResetOnStderr) resetHangTimer();
         options.onStderr?.(chunk);
         this.emit("stderr", chunk);
+
+        if (killOnStderrPatterns.length > 0) {
+          const lower = chunk.toLowerCase();
+          const hit = killOnStderrPatterns.find((p) => lower.includes(String(p).toLowerCase()));
+          if (hit) {
+            terminateChild();
+            const err = new Error(`Command aborted after stderr auth failure: ${hit}`);
+            err.name = "CommandAuthError";
+            err.stdout = stdout;
+            err.stderr = stderr;
+            settle(err);
+          }
+        }
       });
 
       child.on("error", (err) => {
@@ -183,7 +209,11 @@ class HostSandboxInstance extends EventEmitter {
 
   async kill() {
     if (this.currentChild) {
-      this.currentChild.kill("SIGTERM");
+      try {
+        if (this.currentChild.pid) process.kill(-this.currentChild.pid, "SIGTERM");
+      } catch {
+        this.currentChild.kill("SIGTERM");
+      }
       this.currentChild = null;
       this.currentCommand = null;
     }

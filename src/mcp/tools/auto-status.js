@@ -3,6 +3,19 @@ import path from "node:path";
 import { z } from "zod";
 import { loadLoopState } from "../../state.js";
 
+const HEARTBEAT_STALE_MS = 30_000;
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err?.code === "EPERM") return true;
+    return false;
+  }
+}
+
 export function registerAutoStatusTools(server, defaultWorkspace) {
   // --- coder_auto_status: lightweight read-only snapshot ---
   server.registerTool(
@@ -25,6 +38,17 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
       const ws = workspace || defaultWorkspace;
       try {
         const loopState = loadLoopState(ws);
+        const heartbeatTs = loopState.lastHeartbeatAt ? Date.parse(loopState.lastHeartbeatAt) : NaN;
+        const heartbeatAgeMs = Number.isFinite(heartbeatTs) ? Math.max(0, Date.now() - heartbeatTs) : null;
+        const runnerPid = loopState.runnerPid ?? null;
+        const runnerAlive = isPidAlive(runnerPid);
+        const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > HEARTBEAT_STALE_MS;
+        const shouldCheckStale = loopState.status === "running" || loopState.status === "paused";
+        const pidStale = shouldCheckStale && runnerAlive === false;
+        const isStale = shouldCheckStale && (heartbeatStale || pidStale);
+        const staleReason = isStale
+          ? (pidStale ? "runner_process_not_alive" : "heartbeat_stale")
+          : null;
 
         const counts = { total: 0, completed: 0, failed: 0, skipped: 0, pending: 0, inProgress: 0 };
         for (const entry of loopState.issueQueue) {
@@ -61,12 +85,18 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
 
         const result = {
           runId: loopState.runId || null,
-          runStatus: loopState.status,
+          runStatus: isStale ? "stale" : loopState.status,
+          rawRunStatus: loopState.status,
+          isStale,
+          staleReason,
           goal: loopState.goal,
           counts,
           currentStage: loopState.currentStage || null,
           activeAgent: loopState.activeAgent || null,
           lastHeartbeatAt: loopState.lastHeartbeatAt || null,
+          heartbeatAgeMs,
+          runnerPid,
+          runnerAlive,
           issueQueue,
           agentActivity,
           mcpHealth,

@@ -65,7 +65,7 @@ issues, analyze inter-dependencies, and produce a topological execution order
 (dependencies first, then easy-to-hard among independents).
 
 Each issue gets a fresh agent context (no context pollution between issues).
-If an issue fails, its dependents are automatically skipped.
+If an issue fails, dependent ordering is relaxed and downstream issues are still attempted when possible.
 
 ### When to use
 - Multiple issues to batch-process (e.g. "work on all monitoring-related issues")

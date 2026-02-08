@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { CoderOrchestrator } from "../src/orchestrator.js";
 import { loadState } from "../src/state.js";
@@ -10,7 +11,14 @@ import { loadState } from "../src/state.js";
 function makeWorkspace() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-orch-"));
   mkdirSync(path.join(dir, ".coder"), { recursive: true });
+  run("git", ["init"], dir);
   return dir;
+}
+
+function run(cmd, args, cwd) {
+  const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
+  assert.equal(res.status, 0, `command failed: ${cmd} ${args.join(" ")}\n${res.stderr || res.stdout}`);
+  return res;
 }
 
 class StubOrchestrator extends CoderOrchestrator {
@@ -38,9 +46,13 @@ class StubOrchestrator extends CoderOrchestrator {
 test("_normalizeRepoPath keeps valid workspace-relative paths and rejects invalid ones", () => {
   const ws = makeWorkspace();
   mkdirSync(path.join(ws, "subrepo"), { recursive: true });
+  run("git", ["init"], path.join(ws, "subrepo"));
+  mkdirSync(path.join(ws, "subrepo", "src"), { recursive: true });
+  writeFileSync(path.join(ws, "subrepo", "src", "file.js"), "console.log('x');\n", "utf8");
   const orch = new CoderOrchestrator(ws);
 
   assert.equal(orch._normalizeRepoPath("subrepo"), "subrepo");
+  assert.equal(orch._normalizeRepoPath("subrepo/src/file.js"), "subrepo");
   assert.equal(orch._normalizeRepoPath("."), ".");
   assert.equal(orch._normalizeRepoPath("../escape"), ".");
   assert.equal(orch._normalizeRepoPath("/tmp"), ".");
@@ -68,6 +80,7 @@ test("listIssues continues when optional Linear project listing fails", async ()
 test("_buildAutoQueue normalizes invalid repo_path from Gemini output", async () => {
   const ws = makeWorkspace();
   mkdirSync(path.join(ws, "valid-subdir"), { recursive: true });
+  run("git", ["init"], path.join(ws, "valid-subdir"));
   const orch = new StubOrchestrator(ws);
 
   orch.queueResponse({
@@ -129,4 +142,15 @@ test("_executeWithRetry enforces strict MCP startup checks and does not retry", 
     /MCP startup failure for gemini/,
   );
   assert.equal(calls, 1);
+});
+
+test("_ensureGitignore writes .geminiignore unignore rules for workflow artifacts", () => {
+  const ws = makeWorkspace();
+  // Constructor calls _ensureGitignore.
+  // eslint-disable-next-line no-new
+  new CoderOrchestrator(ws);
+  const content = readFileSync(path.join(ws, ".geminiignore"), "utf8");
+  assert.match(content, /!ISSUE\.md/);
+  assert.match(content, /!PLAN\.md/);
+  assert.match(content, /!PLANREVIEW\.md/);
 });

@@ -15,6 +15,17 @@ export const DEFAULT_PASS_ENV = [
   "LINEAR_API_KEY",
 ];
 
+const AGENT_NOISE_LINE_PATTERNS = [
+  /^Warning:/i,
+  /YOLO mode/i,
+  /Loading extension/i,
+  /Hook registry/i,
+  /Server '/i,
+  /Found stored OAuth/i,
+  /rejected stored OAuth token/i,
+  /Please re-authenticate using:\s*\/mcp auth/i,
+];
+
 export function requireEnvOneOf(names) {
   const resolved = buildSecretsWithFallback(names);
   for (const n of names) {
@@ -162,6 +173,12 @@ export function geminiJsonPipe(prompt) {
   return heredocPipe(prompt, "gemini --yolo -o json");
 }
 
+export function geminiJsonPipeWithModel(prompt, model) {
+  const modelArg = String(model || "").trim();
+  const cmd = modelArg ? `gemini --yolo -m ${modelArg} -o json` : "gemini --yolo -o json";
+  return heredocPipe(prompt, cmd);
+}
+
 export function heredocPipe(text, pipeCmd) {
   const marker = `CODER_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
   if (text.includes(marker)) {
@@ -169,6 +186,39 @@ export function heredocPipe(text, pipeCmd) {
   }
   const normalized = text.replace(/\r\n/g, "\n");
   return `cat <<'${marker}' | ${pipeCmd}\n${normalized}\n${marker}`;
+}
+
+function isAgentNoiseLine(line) {
+  return AGENT_NOISE_LINE_PATTERNS.some((pattern) => pattern.test(line));
+}
+
+export function stripAgentNoise(text, { dropLeadingOnly = false } = {}) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  if (dropLeadingOnly) {
+    let start = 0;
+    while (start < lines.length && (lines[start].trim() === "" || isAgentNoiseLine(lines[start]))) {
+      start += 1;
+    }
+    return lines.slice(start).join("\n");
+  }
+  return lines.filter((line) => !isAgentNoiseLine(line)).join("\n");
+}
+
+export function sanitizeIssueMarkdown(text) {
+  const cleaned = stripAgentNoise(text, { dropLeadingOnly: true }).trim();
+  if (!cleaned) return "";
+  const lines = cleaned.split("\n");
+  const firstHeader = lines.findIndex((line) => line.trim().startsWith("#"));
+  if (firstHeader > 0) return lines.slice(firstHeader).join("\n").trim();
+  return cleaned;
+}
+
+export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {
+  const cleaned = sanitizeIssueMarkdown(issueMd);
+  if (!cleaned) return "";
+  const lines = cleaned.split("\n");
+  const head = lines.slice(0, Math.max(1, maxLines));
+  return head.join("\n").trim();
 }
 
 export function gitCleanOrThrow(repoDir, extraIgnore = []) {
@@ -300,12 +350,8 @@ Reference specific sections in the plan when identifying over-engineering.`;
   });
 
   const output = (result.stdout || "") + (result.stderr || "");
-  // Filter out gemini CLI startup noise
-  const filtered = output
-    .split("\n")
-    .filter((line) => !line.startsWith("Warning:") && !line.includes("YOLO mode") && !line.includes("Loading extension") && !line.includes("Hook registry") && !line.includes("Server '") && !line.includes("Found stored OAuth"))
-    .join("\n")
-    .trim();
+  // Filter out gemini CLI startup/auth noise.
+  const filtered = stripAgentNoise(output).trim();
 
   writeFileSync(critiquePath, filtered + "\n");
   return result.status ?? 0;
