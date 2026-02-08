@@ -200,11 +200,19 @@ async function promptText(question) {
   }
 }
 
-function gitCleanOrThrow(repoDir) {
+function gitCleanOrThrow(repoDir, extraIgnore = []) {
   const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  if ((res.stdout || "").trim() !== "") {
-    throw new Error(`Repo working tree is not clean: ${repoDir}`);
+  const ignorePatterns = [".coder/", ...extraIgnore];
+  const lines = (res.stdout || "")
+    .split("\n")
+    .filter((l) => {
+      if (l.trim() === "") return false;
+      const filePath = l.slice(3);
+      return !ignorePatterns.some((p) => filePath === p || filePath.startsWith(p) || filePath.endsWith(p));
+    });
+  if (lines.length > 0) {
+    throw new Error(`Repo working tree is not clean: ${repoDir}\n${lines.join("\n")}`);
   }
 }
 

@@ -208,19 +208,31 @@ export class CoderOrchestrator {
   // --- Gitignore ---
 
   _ensureGitignore() {
+    // Keep .coder/ in .gitignore (Gemini doesn't need to read it)
     const gitignorePath = path.join(this.workspaceDir, ".gitignore");
-    const entries = [".coder/", this.issueFile, this.planFile, this.critiqueFile];
-
-    let content = "";
+    let giContent = "";
     if (existsSync(gitignorePath)) {
-      content = readFileSync(gitignorePath, "utf8");
+      giContent = readFileSync(gitignorePath, "utf8");
+    }
+    if (!giContent.split("\n").some((line) => line.trim() === ".coder/")) {
+      const suffix = giContent.endsWith("\n") || giContent === "" ? "" : "\n";
+      writeFileSync(gitignorePath, giContent + `${suffix}# coder workflow artifacts\n.coder/\n`);
     }
 
-    const missing = entries.filter((e) => !content.split("\n").some((line) => line.trim() === e));
+    // Put workflow artifact files in .git/info/exclude so Gemini can still read them
+    const excludePath = path.join(this.workspaceDir, ".git", "info", "exclude");
+    const excludeDir = path.dirname(excludePath);
+    if (!existsSync(excludeDir)) mkdirSync(excludeDir, { recursive: true });
+
+    let exContent = "";
+    if (existsSync(excludePath)) {
+      exContent = readFileSync(excludePath, "utf8");
+    }
+    const artifacts = [this.issueFile, this.planFile, this.critiqueFile];
+    const missing = artifacts.filter((e) => !exContent.split("\n").some((line) => line.trim() === e));
     if (missing.length > 0) {
-      const suffix = content.endsWith("\n") || content === "" ? "" : "\n";
-      const block = `${suffix}# coder workflow artifacts\n${missing.join("\n")}\n`;
-      writeFileSync(gitignorePath, content + block);
+      const suffix = exContent.endsWith("\n") || exContent === "" ? "" : "\n";
+      writeFileSync(excludePath, exContent + `${suffix}# coder workflow artifacts\n${missing.join("\n")}\n`);
     }
   }
 
@@ -315,8 +327,8 @@ export class CoderOrchestrator {
    * @param {string} cmd - Command to execute
    * @param {{ timeoutMs?: number }} opts
    */
-  async _executeAgentCommand(agentName, agent, cmd, { timeoutMs = 1000 * 60 * 10 } = {}) {
-    const res = await agent.executeCommand(cmd, { timeoutMs });
+  async _executeAgentCommand(agentName, agent, cmd, { timeoutMs = 1000 * 60 * 10, hangTimeoutMs = 0 } = {}) {
+    const res = await agent.executeCommand(cmd, { timeoutMs, hangTimeoutMs });
     if (agentName) this._checkMcpHealth(agentName);
     return res;
   }
@@ -329,6 +341,7 @@ export class CoderOrchestrator {
    */
   async _executeWithRetry(agent, cmd, {
     timeoutMs = 1000 * 60 * 10,
+    hangTimeoutMs = 0,
     retries = 1,
     backoffMs = 5000,
     agentName = null,
@@ -336,7 +349,7 @@ export class CoderOrchestrator {
     let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await this._executeAgentCommand(agentName, agent, cmd, { timeoutMs });
+        return await this._executeAgentCommand(agentName, agent, cmd, { timeoutMs, hangTimeoutMs });
       } catch (err) {
         lastErr = err;
         // Don't retry timeout errors (they're unlikely to succeed)
@@ -463,6 +476,7 @@ Return ONLY valid JSON in this schema:
           const projCmd = geminiJsonPipe(projPrompt);
           const projRes = await this._executeWithRetry(gemini, projCmd, {
             timeoutMs: 1000 * 60 * 5,
+            hangTimeoutMs: 1000 * 60,
             retries: 1,
             agentName: "gemini",
           });
@@ -524,6 +538,7 @@ Return ONLY valid JSON in this schema:
       const cmd = geminiJsonPipe(listPrompt);
       const res = await this._executeWithRetry(gemini, cmd, {
         timeoutMs: 1000 * 60 * 10,
+        hangTimeoutMs: 1000 * 60,
         retries: 1,
         agentName: "gemini",
       });
@@ -596,7 +611,7 @@ Return ONLY valid JSON in this schema:
       if (isGit.status !== 0) throw new Error(`Not a git repository: ${repoRoot}`);
 
       // Verify repo is clean
-      gitCleanOrThrow(repoRoot);
+      gitCleanOrThrow(repoRoot, [this.issueFile, this.planFile, this.critiqueFile]);
       state.steps.verifiedCleanRepo = true;
       this._saveState(state);
 
@@ -1376,6 +1391,7 @@ Return ONLY valid JSON in this schema:
     const cmd = geminiJsonPipe(prompt);
     const res = await this._executeWithRetry(gemini, cmd, {
       timeoutMs: 1000 * 60 * 5,
+      hangTimeoutMs: 1000 * 60,
       retries: 1,
       agentName: "gemini",
     });

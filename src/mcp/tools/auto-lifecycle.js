@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CoderOrchestrator } from "../../orchestrator.js";
+import { loadLoopState, saveLoopState } from "../../state.js";
 
 /** @type {Map<string, { orchestrator: CoderOrchestrator, workspace: string, promise: Promise, startedAt: string }>} */
 const activeRuns = new Map();
@@ -34,9 +35,15 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
     async ({ workspace, goal, projectFilter, maxIssues, allowNoTests, testCmd, testConfigPath, destructiveReset, strictMcpStartup }) => {
       const ws = workspace || defaultWorkspace;
 
-      // Prevent concurrent runs on the same workspace
+      // Prevent concurrent runs on the same workspace.
+      // Release stale locks where the disk state shows a terminal status.
       for (const [id, run] of activeRuns) {
         if (run.workspace === ws) {
+          const diskState = loadLoopState(ws);
+          if (["completed", "failed", "cancelled"].includes(diskState.status)) {
+            activeRuns.delete(id);
+            continue;
+          }
           return {
             content: [{ type: "text", text: JSON.stringify({ error: `Workspace already has active run: ${id}` }) }],
             isError: true,
@@ -45,6 +52,25 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
       }
 
       const runId = randomUUID().slice(0, 8);
+
+      // Write initial state to disk immediately so coder_auto_status sees it
+      saveLoopState(ws, {
+        version: 1,
+        runId,
+        goal,
+        status: "running",
+        projectFilter: projectFilter || null,
+        maxIssues: maxIssues || null,
+        issueQueue: [],
+        currentIndex: 0,
+        currentStage: "listing_issues",
+        currentStageStartedAt: new Date().toISOString(),
+        activeAgent: "gemini",
+        lastHeartbeatAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+      });
+
       const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup });
 
       const promise = orch.runAuto({

@@ -171,12 +171,32 @@ export function heredocPipe(text, pipeCmd) {
   return `cat <<'${marker}' | ${pipeCmd}\n${normalized}\n${marker}`;
 }
 
-export function gitCleanOrThrow(repoDir) {
+export function gitCleanOrThrow(repoDir, extraIgnore = []) {
   const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
+  const ignorePatterns = [".coder/", ...extraIgnore].map((p) => p.replace(/\\/g, "/"));
+
+  const isIgnored = (filePath) => {
+    return ignorePatterns.some((pattern) => {
+      const normalizedPath = filePath.replace(/\\/g, "/");
+      if (pattern.endsWith("/")) {
+        return normalizedPath.startsWith(pattern);
+      }
+      if (pattern.includes("/")) {
+        return normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`);
+      }
+      return normalizedPath === pattern;
+    });
+  };
+
   const lines = (res.stdout || "")
     .split("\n")
-    .filter((l) => l.trim() !== "" && !l.endsWith(".coder/") && !l.includes(".coder/"));
+    .filter((l) => {
+      if (l.trim() === "") return false;
+      const pathField = l.slice(3); // skip status prefix (e.g. "?? " or " M ")
+      const filePath = pathField.includes(" -> ") ? pathField.split(" -> ").pop() || pathField : pathField;
+      return !isIgnored(filePath);
+    });
   if (lines.length > 0) {
     throw new Error(`Repo working tree is not clean: ${repoDir}\n${lines.join("\n")}`);
   }

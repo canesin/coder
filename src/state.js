@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
@@ -105,6 +105,7 @@ export function loadState(workspaceDir) {
 
 export function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
+  mkdirSync(path.dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
 }
 
@@ -158,5 +159,6 @@ export function loadLoopState(workspaceDir) {
 
 export function saveLoopState(workspaceDir, loopState) {
   const p = loopStatePathFor(workspaceDir);
+  mkdirSync(path.dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(loopState, null, 2) + "\n");
 }
