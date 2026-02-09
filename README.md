@@ -39,10 +39,24 @@ You can also run from anywhere and point at a workspace:
 coder --workspace /path/to/workspace
 ```
 
-If the repo’s test command can’t be auto-detected, pass one explicitly:
+If the repo's test command can't be auto-detected, pass one explicitly:
 
 ```bash
 coder --test-cmd "pnpm test"
+```
+
+### `coder ppcommit`
+
+Run ppcommit checks on all files in the repository:
+
+```bash
+coder ppcommit
+```
+
+To check only files changed since a specific branch (PR-scope review):
+
+```bash
+coder ppcommit --base main
 ```
 
 By default, `coder` will:

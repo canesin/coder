@@ -48,6 +48,7 @@ import {
   sanitizeIssueMarkdown,
   buildPrBodyFromIssue,
   DEFAULT_PASS_ENV,
+  detectDefaultBranch,
 } from "./helpers.js";
 
 const GEMINI_LIST_MODEL = "gemini-2.5-flash";
@@ -1484,22 +1485,7 @@ Hard constraints:
     if (repoPath) {
       const repoRoot = path.resolve(this.workspaceDir, repoPath);
       if (existsSync(repoRoot)) {
-        // Determine default branch
-        let defaultBranch = "main";
-        const originHead = spawnSync("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
-          cwd: repoRoot, encoding: "utf8",
-        });
-        if (originHead.status === 0) {
-          const raw = (originHead.stdout || "").trim();
-          if (raw.startsWith("origin/") && raw.length > "origin/".length) {
-            defaultBranch = raw.slice("origin/".length);
-          }
-        } else {
-          const mainCheck = spawnSync("git", ["rev-parse", "--verify", "main"], {
-            cwd: repoRoot, encoding: "utf8",
-          });
-          defaultBranch = mainCheck.status === 0 ? "main" : "master";
-        }
+        const defaultBranch = detectDefaultBranch(repoRoot);
 
         const checkout = spawnSync("git", ["checkout", defaultBranch], { cwd: repoRoot, encoding: "utf8" });
         if (checkout.status !== 0) {
