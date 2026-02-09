@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { jsonrepair } from "jsonrepair";
 import { detectTestCommand, runTestCommand, loadTestConfig, runTestConfig } from "./test-runner.js";
 import { runPpcommitNative } from "./ppcommit.js";
@@ -387,6 +388,82 @@ Reference specific sections in the plan when identifying over-engineering.`;
 
 export function runPpcommit(repoDir) {
   return runPpcommitNative(repoDir);
+}
+
+export function computeGitWorktreeFingerprint(repoDir) {
+  const runGit = (args) => {
+    const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+    if (res.status !== 0) {
+      const msg = (res.stderr || res.stdout || "").trim();
+      throw new Error(`git ${args.join(" ")} failed${msg ? `: ${msg}` : ""}`);
+    }
+    return res.stdout || "";
+  };
+
+  const statusZ = runGit(["status", "--porcelain=v1", "-z"]);
+  const diff = runGit(["diff", "--no-ext-diff"]);
+  const diffCached = runGit(["diff", "--cached", "--no-ext-diff"]);
+
+  // Include untracked file contents in the fingerprint (git diff won't).
+  const untrackedZ = runGit(["ls-files", "--others", "--exclude-standard", "-z"]);
+  const untrackedPaths = untrackedZ.split("\0").filter(Boolean).sort();
+
+  let untrackedHashes = "";
+  if (untrackedPaths.length > 0) {
+    const input = untrackedPaths.join("\n") + "\n";
+    const ho = spawnSync("git", ["hash-object", "--stdin-paths"], { cwd: repoDir, encoding: "utf8", input });
+    if (ho.status !== 0) {
+      const msg = (ho.stderr || ho.stdout || "").trim();
+      throw new Error(`git hash-object failed${msg ? `: ${msg}` : ""}`);
+    }
+    const hashes = (ho.stdout || "").trim().split("\n").filter(Boolean);
+    // `git hash-object --stdin-paths` returns hashes in the same order as input paths.
+    untrackedHashes = untrackedPaths.map((p, i) => `${p}\n${hashes[i] || ""}\n`).join("");
+  }
+
+  const h = createHash("sha256");
+  h.update("status\0");
+  h.update(statusZ);
+  h.update("\0diff\0");
+  h.update(diff);
+  h.update("\0diff_cached\0");
+  h.update(diffCached);
+  h.update("\0untracked\0");
+  h.update(untrackedHashes);
+
+  return h.digest("hex");
+}
+
+export function upsertIssueCompletionBlock(issuePath, { ppcommitClean, testsPassed, note } = {}) {
+  if (!issuePath || !existsSync(issuePath)) return false;
+
+  const start = "<!-- coder:completion:start -->";
+  const end = "<!-- coder:completion:end -->";
+
+  const raw = readFileSync(issuePath, "utf8");
+  const withoutOld = (() => {
+    const s = raw.indexOf(start);
+    if (s === -1) return raw;
+    const e = raw.indexOf(end, s);
+    if (e === -1) return raw.slice(0, s).trimEnd() + "\n";
+    return (raw.slice(0, s) + raw.slice(e + end.length)).trimEnd() + "\n";
+  })();
+
+  const ts = new Date().toISOString();
+  const lines = [
+    start,
+    "## Coder Status",
+    `- Updated: ${ts}`,
+    typeof ppcommitClean === "boolean" ? `- ppcommit: ${ppcommitClean ? "clean" : "failed"}` : null,
+    typeof testsPassed === "boolean" ? `- tests: ${testsPassed ? "passed" : "failed"}` : null,
+    note ? `- note: ${String(note).trim()}` : null,
+    end,
+    "",
+  ].filter(Boolean);
+
+  const next = withoutOld.replace(/\s*$/u, "") + "\n\n" + lines.join("\n");
+  writeFileSync(issuePath, next, "utf8");
+  return true;
 }
 
 export async function runHostTests(repoDir, { testCmd, testConfigPath, allowNoTests } = {}) {

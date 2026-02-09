@@ -49,18 +49,17 @@ By default, `coder` will:
 
 1. Ask Gemini to list issues assigned to you (via MCPs) and recommend the easiest.
 2. Ask you 3 questions to clarify the chosen issue.
-3. Write `ISSUE.md` in the workspace root.
-4. Ask Claude Code to write `PLAN.md` in the workspace root.
-5. Run built-in plan review (Gemini) and save critique to `PLANREVIEW.md`.
+3. Write `.coder/artifacts/ISSUE.md` in the workspace.
+4. Ask Claude Code to write `.coder/artifacts/PLAN.md` in the workspace.
+5. Run built-in plan review (Gemini) and save critique to `.coder/artifacts/PLANREVIEW.md`.
 6. Ask Claude Code to update the plan and implement the feature.
-7. Ask Codex CLI to run built-in ppcommit checks, fix issues, and run tests (no bypasses).
-8. Ask Claude Code to run tests again and update `ISSUE.md` with completion status.
+7. Ask Codex CLI to run built-in ppcommit checks, fix issues, and run tests (no bypasses). Then `coder` updates `.coder/artifacts/ISSUE.md` with completion status (no redundant final agent pass).
 
 ## Notes
 
 - `coder` uses a VibeKit SDK "host sandbox" provider: commands run on your machine (so MCP/config works), and changes land in a dedicated git worktree under `.coder/worktrees/`.
 - Plan review uses Gemini CLI with search grounding to verify external API documentation.
-- The workspace files `ISSUE.md`, `PLAN.md`, and `PLANREVIEW.md` live at the workspace root.
+- The workflow files live under `.coder/artifacts/` by default (`ISSUE.md`, `PLAN.md`, `PLANREVIEW.md`).
 - Progress + logs are written under `.coder/` (see `.coder/state.json` and `.coder/logs/*.jsonl`).
 
 ## MCP Autonomous Mode

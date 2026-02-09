@@ -170,6 +170,8 @@ function getConfig(repoDir) {
   return {
     skip: false,
     blockNewMarkdown: getGitBool(repoDir, k(["blockNewMarkdown"]), true),
+    // Prevent committing workflow/tool internals by default.
+    blockWorkflowArtifacts: getGitBool(repoDir, k(["blockWorkflowArtifacts"]), true),
     blockEmojisInCode: getGitBool(repoDir, k(["blockEmojisInCode", "blockEmojis"]), true),
     blockTodos: getGitBool(repoDir, k(["blockTodos"]), true),
     blockFixmes: getGitBool(repoDir, k(["blockFixmes"]), true),
@@ -284,6 +286,56 @@ function checkNewMarkdown(filePath, isNew, config, issues) {
     file: filePath,
     line: 1,
   });
+}
+
+function checkWorkflowArtifacts(filePath, config, issues) {
+  if (!config.blockWorkflowArtifacts) return;
+
+  const normalized = String(filePath || "").replace(/\\/g, "/");
+  if (!normalized) return;
+
+  const isDirOrWithin = (prefix) => normalized === prefix || normalized.startsWith(prefix + "/");
+
+  // Directories that should never be committed. If a repo genuinely uses these,
+  // it can opt out via `git config ppcommit.blockWorkflowArtifacts false`.
+  if (isDirOrWithin(".coder")) {
+    pushIssue(issues, {
+      level: "ERROR",
+      message: "Workflow artifact detected (.coder/) — do not commit tool internals",
+      file: filePath,
+      line: 1,
+    });
+    return;
+  }
+  if (isDirOrWithin(".gemini")) {
+    pushIssue(issues, {
+      level: "ERROR",
+      message: "Workflow artifact detected (.gemini/) — do not commit tool internals",
+      file: filePath,
+      line: 1,
+    });
+    return;
+  }
+  if (normalized === ".geminiignore") {
+    pushIssue(issues, {
+      level: "ERROR",
+      message: "Workflow artifact detected (.geminiignore) — do not commit tool internals",
+      file: filePath,
+      line: 1,
+    });
+    return;
+  }
+
+  // Common coder workflow artifact names. These are useful in the workspace,
+  // but almost never desired in a PR diff.
+  if (normalized === "ISSUE.md" || normalized === "PLAN.md" || normalized === "PLANREVIEW.md") {
+    pushIssue(issues, {
+      level: "ERROR",
+      message: "Workflow artifact detected (ISSUE/PLAN markdown) — keep these out of the repo diff",
+      file: filePath,
+      line: 1,
+    });
+  }
 }
 
 function checkEmojis(content, filePath, config, issues) {
@@ -785,10 +837,10 @@ export function runPpcommitNative(repoDir) {
   const llmFiles = [];
 
   for (const filePath of ordered) {
-    if (shouldSkipPath(filePath)) continue;
-
     const isNew = newFiles.has(filePath);
+    checkWorkflowArtifacts(filePath, config, issues);
     checkNewMarkdown(filePath, isNew, config, issues);
+    if (shouldSkipPath(filePath)) continue;
 
     const content = readUtf8File(repoDir, filePath);
     if (!content) continue;

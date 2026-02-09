@@ -146,7 +146,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
     "coder_review_and_test",
     "Step 5 of the coder workflow. Has Codex review changes, runs ppcommit for commit " +
       "hygiene, and executes tests. Requires coder_implement first. Long-running. " +
-      "Next step: coder_finalize.",
+      "Next step: coder_create_pr.",
     {
       workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
       allowNoTests: z.boolean().default(false).describe("Allow the workflow to proceed even if no test command is detected"),
@@ -171,36 +171,11 @@ export function registerWorkflowTools(server, defaultWorkspace) {
     },
   );
 
-  // --- Step 6: coder_finalize ---
-  server.tool(
-    "coder_finalize",
-    "Step 6 (final) of the coder workflow. Runs final tests and updates ISSUE.md with " +
-      "completion status. Requires coder_review_and_test first.",
-    {
-      workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
-    },
-    async ({ workspace }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws);
-      try {
-        const result = await orch.finalize();
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: "text", text: `Finalization failed: ${err.message}` }],
-          isError: true,
-        };
-      }
-    },
-  );
-
-  // --- Step 7: coder_create_pr ---
+  // --- Step 6: coder_create_pr ---
   server.tool(
     "coder_create_pr",
-    "Step 7 (optional). Creates a PR from the feature branch. " +
-      "Requires coder_review_and_test or coder_finalize to have been called first.",
+    "Step 6 (optional). Creates a PR from the feature branch. " +
+      "Requires coder_review_and_test to have been called first.",
     {
       workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
       type: z.enum(["bug", "feat", "refactor"]).default("feat").describe("PR type prefix for branch naming"),
@@ -239,7 +214,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
       description:
         "Autonomous loop: processes multiple assigned issues end-to-end without human intervention. " +
         "Lists issues, sorts by difficulty (easiest first), then for each issue runs the full pipeline " +
-        "(draft → plan → implement → review → finalize → PR). Dependency issues run in stacked mode " +
+        "(draft → plan → implement → review → PR). Dependency issues run in stacked mode " +
         "(dependent issue branch + PR base are set to dependency branch). Failed issues are isolated and the loop keeps attempting downstream work. " +
         "Saves progress to loop-state.json for crash recovery. Long-running.",
       inputSchema: {

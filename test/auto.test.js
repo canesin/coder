@@ -86,10 +86,6 @@ class FakeAutoOrchestrator extends CoderOrchestrator {
     this.calls.push("reviewAndTest");
   }
 
-  async finalize() {
-    this.calls.push("finalize");
-  }
-
   async createPR({ base } = {}) {
     this.calls.push("createPR");
     this.calls.push(`createPRBase:${base || ""}`);

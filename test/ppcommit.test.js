@@ -91,3 +91,20 @@ test("ppcommit: detects staged new markdown files", () => {
   assert.match(r.stdout, /new\.md:1/);
   assert.doesNotMatch(r.stdout, /docs\/ok\.md:1/);
 });
+
+test("ppcommit: does not allow workflow artifacts under .coder/", () => {
+  const repo = makeRepo();
+  mkdirSync(path.join(repo, ".coder"), { recursive: true });
+  writeFileSync(path.join(repo, ".coder", "notes.md"), "# Notes\n", "utf8");
+  const r = runPpcommitNative(repo);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /\.coder\/notes\.md:1/);
+});
+
+test("ppcommit: does not allow coder workflow markdown artifacts (ISSUE/PLAN) in repo diffs", () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, "ISSUE.md"), "# Issue\n", "utf8");
+  const r = runPpcommitNative(repo);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /ISSUE\.md:1/);
+});

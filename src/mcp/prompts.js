@@ -3,7 +3,7 @@ import { z } from "zod";
 export function registerPrompts(server) {
   server.prompt(
     "coder_workflow",
-    "Multi-agent coding workflow — guides you through the full pipeline from issue selection to finalized implementation",
+    "Multi-agent coding workflow — guides you through the full pipeline from issue selection to PR creation",
     { projectFilter: z.string().optional().describe("Optional project name to filter issues") },
     ({ projectFilter }) => ({
       messages: [{
@@ -40,11 +40,7 @@ based on PLAN.md and PLANREVIEW.md. Report the changes made when complete.
 Call \`coder_review_and_test\`. Codex reviews the changes, ppcommit checks
 commit hygiene, and tests are run. Report results.
 
-### Step 6: Finalize
-Call \`coder_finalize\`. Claude runs final tests and updates ISSUE.md with
-completion status. Report the final branch name and status.
-
-### Step 7: Create PR (Optional)
+### Step 6: Create PR (Optional)
 Call \`coder_create_pr\` to create a pull request from the feature branch.
 You can specify type (feat/bug/refactor), a semantic branch name, custom title,
 and description. If not provided, defaults are auto-generated from the issue.

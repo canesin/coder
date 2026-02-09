@@ -61,7 +61,7 @@ class StubPlanOrchestrator extends CoderOrchestrator {
   async _executeAgentCommand(agentName, _agent, _cmd) {
     // Simulate Claude writing PLAN.md and creating untracked exploration artifacts.
     if (agentName === "claude") {
-      writeFileSync(path.join(this.workspaceDir, "PLAN.md"), "# Plan\n", "utf8");
+      writeFileSync(path.join(this.workspaceDir, ".coder", "artifacts", "PLAN.md"), "# Plan\n", "utf8");
       writeFileSync(path.join(this.workspaceDir, "Cargo.toml"), "[package]\nname='x'\n", "utf8");
       mkdirSync(path.join(this.workspaceDir, "src"), { recursive: true });
       writeFileSync(path.join(this.workspaceDir, "src", "lib.rs"), "pub fn x() {}\n", "utf8");
@@ -97,14 +97,14 @@ class StubAutoInfraOrchestrator extends CoderOrchestrator {
     state.repoPath = ".";
     state.branch = "coder/github-1";
     state.steps = { ...(state.steps || {}), wroteIssue: true, verifiedCleanRepo: true };
-    writeFileSync(path.join(this.workspaceDir, "ISSUE.md"), "# Issue\n", "utf8");
+    writeFileSync(path.join(this.workspaceDir, ".coder", "artifacts", "ISSUE.md"), "# Issue\n", "utf8");
     run("git", ["checkout", "-B", state.branch], this.workspaceDir);
     writeFileSync(path.join(this.workspaceDir, ".coder", "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
   }
   async createPlan() {
     const state = loadState(this.workspaceDir);
     state.steps = { ...(state.steps || {}), wrotePlan: true, wroteCritique: true };
-    writeFileSync(path.join(this.workspaceDir, "PLAN.md"), "# Plan\n", "utf8");
+    writeFileSync(path.join(this.workspaceDir, ".coder", "artifacts", "PLAN.md"), "# Plan\n", "utf8");
     writeFileSync(path.join(this.workspaceDir, ".coder", "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
     return { planMd: "# Plan\n", critiqueMd: "" };
   }
@@ -119,7 +119,6 @@ class StubAutoInfraOrchestrator extends CoderOrchestrator {
     err.name = "TestInfrastructureError";
     throw err;
   }
-  async finalize() {}
   async createPR() {}
 }
 
@@ -233,13 +232,18 @@ test("_ensureGitignore writes .geminiignore unignore rules for workflow artifact
   assert.match(content, /!ISSUE\.md/);
   assert.match(content, /!PLAN\.md/);
   assert.match(content, /!PLANREVIEW\.md/);
+  assert.match(content, /!\.coder\/$/m);
+  assert.match(content, /!\.coder\/artifacts\/$/m);
+  assert.match(content, /!\.coder\/artifacts\/ISSUE\.md/);
+  assert.match(content, /!\.coder\/artifacts\/PLAN\.md/);
+  assert.match(content, /!\.coder\/artifacts\/PLANREVIEW\.md/);
 });
 
 test("createPlan allows untracked exploration artifacts but cleans up newly-created ones", async () => {
   const ws = makeWorkspace();
   commitInitial(ws);
   const orch = new StubPlanOrchestrator(ws);
-  writeFileSync(path.join(ws, "ISSUE.md"), "# Issue\n", "utf8");
+  writeFileSync(path.join(ws, ".coder", "artifacts", "ISSUE.md"), "# Issue\n", "utf8");
   writeFileSync(
     path.join(ws, ".coder", "state.json"),
     JSON.stringify({
@@ -254,7 +258,7 @@ test("createPlan allows untracked exploration artifacts but cleans up newly-crea
 
   await orch.createPlan();
 
-  assert.equal(readFileSync(path.join(ws, "PLAN.md"), "utf8").includes("# Plan"), true);
+  assert.equal(readFileSync(path.join(ws, ".coder", "artifacts", "PLAN.md"), "utf8").includes("# Plan"), true);
   assert.equal(existsSync(path.join(ws, "Cargo.toml")), false);
   assert.equal(existsSync(path.join(ws, "src")), false);
 });

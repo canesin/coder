@@ -13,7 +13,7 @@ import { z } from "zod";
 import { HostSandboxProvider } from "../src/host-sandbox.js";
 import { closeAllLoggers, ensureLogsDir, makeJsonlLogger } from "../src/logging.js";
 import { runPpcommitNative } from "../src/ppcommit.js";
-import { runPlanreview } from "../src/helpers.js";
+import { runPlanreview, upsertIssueCompletionBlock } from "../src/helpers.js";
 import { loadState, saveState, statePathFor } from "../src/state.js";
 import { detectTestCommand, runTestCommand } from "../src/test-runner.js";
 import { sanitizeBranchForRef, worktreePath } from "../src/worktrees.js";
@@ -362,9 +362,20 @@ async function run() {
   mkdirSync(path.join(workspaceDir, ".coder"), { recursive: true });
   ensureLogsDir(workspaceDir);
 
-  const issuePath = path.join(workspaceDir, args.issueFile);
-  const planPath = path.join(workspaceDir, args.planFile);
-  const critiquePath = path.join(workspaceDir, args.critiqueFile);
+  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+  mkdirSync(artifactsDir, { recursive: true });
+  const legacyIssuePath = path.join(workspaceDir, args.issueFile);
+  const legacyPlanPath = path.join(workspaceDir, args.planFile);
+  const legacyCritiquePath = path.join(workspaceDir, args.critiqueFile);
+  const modernIssuePath = path.join(artifactsDir, args.issueFile);
+  const modernPlanPath = path.join(artifactsDir, args.planFile);
+  const modernCritiquePath = path.join(artifactsDir, args.critiqueFile);
+
+  const hasModern = existsSync(modernIssuePath) || existsSync(modernPlanPath) || existsSync(modernCritiquePath);
+  const hasLegacy = existsSync(legacyIssuePath) || existsSync(legacyPlanPath) || existsSync(legacyCritiquePath);
+  const issuePath = hasModern ? modernIssuePath : hasLegacy ? legacyIssuePath : modernIssuePath;
+  const planPath = hasModern ? modernPlanPath : hasLegacy ? legacyPlanPath : modernPlanPath;
+  const critiquePath = hasModern ? modernCritiquePath : hasLegacy ? legacyCritiquePath : modernCritiquePath;
 
   const state = loadState(workspaceDir);
   const statePath = statePathFor(workspaceDir);
@@ -451,7 +462,7 @@ Return ONLY valid JSON in this schema:
   // --- Step 1: Gemini issues listing (structured JSON contract) ---
   let issuesPayload;
   if (!state.steps.listedIssues || !state.issuesPayload) {
-    process.stdout.write("\n[1/8] Gemini: listing assigned issues...\n");
+    process.stdout.write("\n[1/7] Gemini: listing assigned issues...\n");
     let projectFilter = "";
     if (state.selectedProject) {
       projectFilter = `\nOnly include Linear issues from the "${state.selectedProject.name}" team (key: ${state.selectedProject.key}).`;
@@ -563,7 +574,7 @@ Return ONLY valid JSON in this schema:
 
   // --- Step 2: Gemini asks 3 questions (only human interaction) ---
   if (!state.questions || !state.answers || state.questions.length !== 3 || state.answers.length !== 3) {
-    process.stdout.write("\n[2/8] Gemini: generating 3 clarification questions...\n");
+    process.stdout.write("\n[2/7] Gemini: generating 3 clarification questions...\n");
     const qPrompt = `We chose this issue:
 - source: ${state.selected.source}
 - id: ${state.selected.id}
@@ -592,7 +603,7 @@ Return ONLY valid JSON:
 
   // --- Step 3: Gemini drafts ISSUE.md ---
   if (!state.steps.wroteIssue) {
-    process.stdout.write("\n[3/8] Gemini: drafting ISSUE.md...\n");
+    process.stdout.write("\n[3/7] Gemini: drafting ISSUE.md...\n");
     const issuePrompt = `Draft an ISSUE.md for the chosen issue. Use the local codebase in ${repoRoot} as ground truth.
 Be specific about what needs to change, and how to verify it.
 
@@ -627,7 +638,7 @@ Include a short section at the top with:
 
   // --- Step 4: Claude writes PLAN.md (must not modify repo) ---
   if (!state.steps.wrotePlan) {
-    process.stdout.write("\n[4/8] Claude: writing PLAN.md...\n");
+    process.stdout.write("\n[4/7] Claude: writing PLAN.md...\n");
     const planPrompt = `Read ${issuePath} and write a complete implementation plan to ${planPath}.
 
 Constraints:
@@ -645,7 +656,8 @@ Constraints:
     // Hard gate: Claude must not change the repo during planning
     const status = spawnSync("git", ["status", "--porcelain"], { cwd: repoWorktree, encoding: "utf8" });
     if (status.status !== 0) throw new Error("Failed to check git status after planning.");
-    const artifactFiles = ["ISSUE.md", "PLAN.md", "PLANREVIEW.md", ".coder/", ".gemini/"];
+    // Planning must not modify the repo. Allow internal tool dirs only.
+    const artifactFiles = [".coder/", ".gemini/"];
     const dirtyLines = (status.stdout || "")
       .split("\n")
       .filter((l) => l.trim() !== "" && !artifactFiles.some((a) => l.includes(a)));
@@ -660,7 +672,7 @@ Constraints:
 
   // --- Step 5: planreview critique ---
   if (!state.steps.wroteCritique) {
-    process.stdout.write("\n[5/8] planreview: critiquing PLAN.md...\n");
+    process.stdout.write("\n[5/7] planreview: critiquing PLAN.md...\n");
     const rc = runPlanreview(repoWorktree, planPath, critiquePath);
     if (rc !== 0) process.stdout.write("WARNING: planreview exited non-zero. Continuing.\n");
     state.steps.wroteCritique = true;
@@ -669,7 +681,7 @@ Constraints:
 
   // --- Step 6: Claude updates PLAN.md and implements ---
   if (!state.steps.implemented) {
-    process.stdout.write("\n[6/8] Claude: implementing feature...\n");
+    process.stdout.write("\n[6/7] Claude: implementing feature...\n");
     const implPrompt = `Read ${planPath} and ${critiquePath}. Update ${planPath} to address critique, then implement the feature in the repo.
 
 Constraints:
@@ -689,7 +701,7 @@ Constraints:
 
   // --- Step 7: Codex runs ppcommit, fixes, and tests ---
   if (!state.steps.codexReviewed) {
-    process.stdout.write("\n[7/8] Codex: ppcommit + fixes + tests...\n");
+    process.stdout.write("\n[7/7] Codex: ppcommit + fixes + tests...\n");
     const ppBefore = runPpcommit(repoWorktree);
     log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
 
@@ -711,7 +723,7 @@ ppcommit output:
   }
 
   // Hard gate: ppcommit must be clean after Codex
-  process.stdout.write("\n[7.1/8] Verifying: ppcommit checks are clean...\n");
+  process.stdout.write("\n[7.1/7] Verifying: ppcommit checks are clean...\n");
   const ppAfter = runPpcommit(repoWorktree);
   if (ppAfter.exitCode !== 0) {
     process.stdout.write(ppAfter.stdout || ppAfter.stderr);
@@ -721,7 +733,7 @@ ppcommit output:
   saveState(workspaceDir, state);
 
   // Hard gate: tests must pass on host
-  process.stdout.write("\n[7.2/8] Running tests on host...\n");
+  process.stdout.write("\n[7.2/7] Running tests on host...\n");
   const testRes = runHostTests(repoWorktree, args);
   if (testRes.cmd) process.stdout.write(`Test command: ${testRes.cmd.join(" ")}\n`);
   if (testRes.exitCode !== 0) {
@@ -732,20 +744,15 @@ ppcommit output:
   state.steps.testsPassed = true;
   saveState(workspaceDir, state);
 
-  // --- Step 8: Claude final status update ---
-  if (!state.steps.finalized) {
-    process.stdout.write("\n[8/8] Claude: final status update...\n");
-    const statusPrompt = `Run the repo's standard tests relevant to this change and ensure they pass.
-Then update ${issuePath} with completion status and readiness to push. Do not claim tests passed unless they actually did.`;
-
-    const cmd = heredocPipe(
-      statusPrompt,
-      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6`,
-    );
-    const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 15, branch: state.branch });
-    if (res.exitCode !== 0) throw new Error("Claude final pass failed.");
-    state.steps.finalized = true;
-    saveState(workspaceDir, state);
+  // Update workflow ISSUE.md with a clear completion signal (no extra agent pass).
+  try {
+    upsertIssueCompletionBlock(issuePath, {
+      ppcommitClean: true,
+      testsPassed: true,
+      note: "ppcommit + tests completed. Ready to create PR.",
+    });
+  } catch {
+    // Best-effort: don't fail the run if this write fails.
   }
 
   process.stdout.write("\nDone.\n");

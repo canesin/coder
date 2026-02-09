@@ -24,7 +24,6 @@ const StepsSchema = z
     ppcommitInitiallyClean: z.boolean().optional(),
     ppcommitClean: z.boolean().optional(),
     testsPassed: z.boolean().optional(),
-    finalized: z.boolean().optional(),
     prCreated: z.boolean().optional(),
   })
   .default({});
@@ -66,6 +65,8 @@ const StateSchema = z
     steps: StepsSchema,
 	    claudeSessionId: z.string().nullable().default(null),
 	    lastError: z.string().nullable().default(null),
+    reviewFingerprint: z.string().nullable().default(null),
+    reviewedAt: z.string().nullable().default(null),
     prUrl: z.string().nullable().default(null),
     prBranch: z.string().nullable().default(null),
     prBase: z.string().nullable().default(null),
@@ -85,6 +86,8 @@ const DEFAULT_STATE = {
   steps: {},
 	  claudeSessionId: null,
 	  lastError: null,
+  reviewFingerprint: null,
+  reviewedAt: null,
   prUrl: null,
   prBranch: null,
   prBase: null,

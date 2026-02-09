@@ -41,6 +41,8 @@ import {
   runPlanreview,
   runPpcommit,
   runHostTests,
+  computeGitWorktreeFingerprint,
+  upsertIssueCompletionBlock,
   formatCommandFailure,
   stripAgentNoise,
   sanitizeIssueMarkdown,
@@ -72,8 +74,12 @@ export class CoderOrchestrator {
     this.issueFile = "ISSUE.md";
     this.planFile = "PLAN.md";
     this.critiqueFile = "PLANREVIEW.md";
+    // Default artifact layout: keep human-facing workflow files under .coder/artifacts
+    // to avoid clutter and reduce the chance they get committed.
+    this.artifactsDir = path.join(this.workspaceDir, ".coder", "artifacts");
 
     mkdirSync(path.join(this.workspaceDir, ".coder"), { recursive: true });
+    mkdirSync(this.artifactsDir, { recursive: true });
     ensureLogsDir(this.workspaceDir);
 
     // Ensure coder artifacts are gitignored so only real work gets committed
@@ -241,20 +247,25 @@ export class CoderOrchestrator {
       writeFileSync(gitignorePath, latestGitignore + `${suffix}.coder/logs/\n`);
     }
 
-    // Put workflow artifact files in .git/info/exclude so Gemini can still read them
-    const excludePath = path.join(this.workspaceDir, ".git", "info", "exclude");
-    const excludeDir = path.dirname(excludePath);
-    if (!existsSync(excludeDir)) mkdirSync(excludeDir, { recursive: true });
-
-    let exContent = "";
-    if (existsSync(excludePath)) {
-      exContent = readFileSync(excludePath, "utf8");
-    }
     const artifacts = [this.issueFile, this.planFile, this.critiqueFile];
-    const missing = artifacts.filter((e) => !exContent.split("\n").some((line) => line.trim() === e));
-    if (missing.length > 0) {
-      const suffix = exContent.endsWith("\n") || exContent === "" ? "" : "\n";
-      writeFileSync(excludePath, exContent + `${suffix}# coder workflow artifacts\n${missing.join("\n")}\n`);
+
+    // If the workspace itself is a git repo, also ignore legacy root artifacts via
+    // .git/info/exclude. (Avoid creating a fake .git/ directory for non-repos.)
+    const workspaceGitDir = path.join(this.workspaceDir, ".git");
+    if (existsSync(workspaceGitDir)) {
+      const excludePath = path.join(workspaceGitDir, "info", "exclude");
+      const excludeDir = path.dirname(excludePath);
+      if (!existsSync(excludeDir)) mkdirSync(excludeDir, { recursive: true });
+
+      let exContent = "";
+      if (existsSync(excludePath)) {
+        exContent = readFileSync(excludePath, "utf8");
+      }
+      const missing = artifacts.filter((e) => !exContent.split("\n").some((line) => line.trim() === e));
+      if (missing.length > 0) {
+        const suffix = exContent.endsWith("\n") || exContent === "" ? "" : "\n";
+        writeFileSync(excludePath, exContent + `${suffix}# coder workflow artifacts\n${missing.join("\n")}\n`);
+      }
     }
 
     // Some Gemini versions prioritize .gitignore behavior. Explicitly unignore
@@ -264,7 +275,15 @@ export class CoderOrchestrator {
     if (existsSync(geminiIgnorePath)) {
       gmContent = readFileSync(geminiIgnorePath, "utf8");
     }
-    const keepRules = artifacts.map((name) => `!${name}`);
+    // If `.coder/` is ignored, we must also unignore the intermediate dirs.
+    const keepRules = [
+      // Legacy layout (workspace root)
+      ...artifacts.map((name) => `!${name}`),
+      // Current layout (.coder/artifacts)
+      "!.coder/",
+      "!.coder/artifacts/",
+      ...artifacts.map((name) => `!.coder/artifacts/${name}`),
+    ];
     const missingGeminiRules = keepRules.filter(
       (rule) => !gmContent.split("\n").some((line) => line.trim() === rule),
     );
@@ -287,12 +306,31 @@ export class CoderOrchestrator {
     saveState(this.workspaceDir, state);
   }
 
-  _artifactPaths() {
+  _legacyArtifactPaths() {
     return {
       issue: path.join(this.workspaceDir, this.issueFile),
       plan: path.join(this.workspaceDir, this.planFile),
       critique: path.join(this.workspaceDir, this.critiqueFile),
     };
+  }
+
+  _newArtifactPaths() {
+    return {
+      issue: path.join(this.artifactsDir, this.issueFile),
+      plan: path.join(this.artifactsDir, this.planFile),
+      critique: path.join(this.artifactsDir, this.critiqueFile),
+    };
+  }
+
+  _artifactPaths() {
+    const legacy = this._legacyArtifactPaths();
+    const modern = this._newArtifactPaths();
+
+    const hasModern = existsSync(modern.issue) || existsSync(modern.plan) || existsSync(modern.critique);
+    const hasLegacy = existsSync(legacy.issue) || existsSync(legacy.plan) || existsSync(legacy.critique);
+    if (hasModern) return modern;
+    if (hasLegacy) return legacy;
+    return modern;
   }
 
   _repoRoot(state) {
@@ -345,15 +383,17 @@ export class CoderOrchestrator {
   _checkArtifactCollisions({ force } = {}) {
     if (force) return;
 
-    const paths = this._artifactPaths();
+    const legacy = this._legacyArtifactPaths();
+    const modern = this._newArtifactPaths();
     const hasArtifacts =
-      existsSync(paths.issue) || existsSync(paths.plan) || existsSync(paths.critique);
+      existsSync(legacy.issue) || existsSync(legacy.plan) || existsSync(legacy.critique) ||
+      existsSync(modern.issue) || existsSync(modern.plan) || existsSync(modern.critique);
     const statePath = path.join(this.workspaceDir, ".coder", "state.json");
     const hasState = existsSync(statePath);
 
     if (hasArtifacts && !hasState) {
       throw new Error(
-        "Artifact collision: ISSUE.md/PLAN.md/PLANREVIEW.md exist but no .coder/state.json found. " +
+        "Artifact collision: workflow artifacts exist but no .coder/state.json found. " +
           "These may be foreign files. Remove them or pass force=true to bypass.",
       );
     }
@@ -1121,15 +1161,16 @@ FORBIDDEN patterns:
 
       const workDir = this._repoRoot(state);
       const codex = this._getCodex();
+      const paths = this._artifactPaths();
 
       const runCodexReview = async (ppSection) => {
         const codexPrompt = `You are reviewing uncommitted changes for commit readiness.
-Read ISSUE.md to understand what was originally requested.
+Read ${paths.issue} to understand what was originally requested.
 
 ## Checklist
 
 ### 1. Scope Conformance
-- Does the change ONLY implement what ISSUE.md requested?
+- Does the change ONLY implement what ${paths.issue} requested?
 - Are there any unrequested features added? (Remove them)
 - Are there any unrelated refactors? (Revert them)
 - Were more files modified than necessary? (Consolidate if possible)
@@ -1229,7 +1270,17 @@ Hard constraints:
         throw new Error(`Tests failed after Codex pass:\n${testRes.stdout}\n${testRes.stderr}`);
       }
       state.steps.testsPassed = true;
+      // Capture a fingerprint of the reviewed worktree so PR creation can detect drift.
+      state.reviewFingerprint = computeGitWorktreeFingerprint(workDir);
+      state.reviewedAt = new Date().toISOString();
       this._saveState(state);
+
+      // Keep the workflow's ISSUE.md updated with a clear completion signal.
+      upsertIssueCompletionBlock(paths.issue, {
+        ppcommitClean: true,
+        testsPassed: true,
+        note: "Review + ppcommit + tests completed. Ready to create PR.",
+      });
 
       return {
         ppcommitStatus: "clean",
@@ -1245,63 +1296,7 @@ Hard constraints:
     }
   }
 
-  // --- Step 6: Finalize ---
-
-  /**
-   * Claude runs final tests and updates ISSUE.md with completion status.
-   * @returns {Promise<{ branch: string, status: string }>}
-   */
-  async finalize() {
-    try {
-      const state = this._loadState();
-      state.steps ||= {};
-
-      if (!state.steps.testsPassed) {
-        throw new Error("Precondition failed: tests have not passed. Run coder_review_and_test first.");
-      }
-
-      this._ensureBranch(state);
-
-      if (state.steps.finalized) {
-        return {
-          branch: state.branch,
-          status: "already finalized",
-        };
-      }
-
-      this.log({ event: "step6_finalize" });
-      const paths = this._artifactPaths();
-      const claude = this._getClaude();
-
-      const statusPrompt = `Run the repo's standard tests relevant to this change and ensure they pass.
-Then update ${paths.issue} with completion status and readiness to push. Do not claim tests passed unless they actually did.`;
-
-      // Session reuse: resume from implementation context if available
-      let claudeFlags = `claude -p --output-format stream-json --verbose --dangerously-skip-permissions`;
-      if (state.claudeSessionId) {
-        claudeFlags += ` --resume ${state.claudeSessionId}`;
-      }
-
-      const cmd = heredocPipe(statusPrompt, claudeFlags);
-      const res = await this._executeAgentCommand("claude", claude, cmd, { timeoutMs: 1000 * 60 * 15 });
-      if (res.exitCode !== 0) throw new Error("Claude final pass failed.");
-
-      state.steps.finalized = true;
-      this._saveState(state);
-
-      this.log({ event: "done", branch: state.branch });
-
-      return {
-        branch: state.branch,
-        status: "finalized",
-      };
-    } catch (err) {
-      this._recordError(err);
-      throw err;
-    }
-  }
-
-  // --- Step 7: Create PR ---
+  // --- Step 6: Create PR ---
 
   /**
    * Create a pull request from the feature branch.
@@ -1313,10 +1308,10 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
       const state = this._loadState();
       state.steps ||= {};
 
-      if (!state.steps.finalized && !state.steps.testsPassed) {
+      if (!state.steps.testsPassed) {
         throw new Error(
-          "Precondition failed: tests have not passed or workflow not finalized. " +
-            "Run coder_review_and_test or coder_finalize first.",
+          "Precondition failed: tests have not passed. " +
+            "Run coder_review_and_test first.",
         );
       }
 
@@ -1334,6 +1329,21 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
 
       this._ensureBranch(state);
       const repoRoot = this._repoRoot(state);
+
+      // Re-validate that the tree hasn't drifted since review_and_test ran.
+      const currentFp = computeGitWorktreeFingerprint(repoRoot);
+      if (state.reviewFingerprint && state.reviewFingerprint !== currentFp) {
+        throw new Error(
+          "Worktree changed since coder_review_and_test completed. " +
+            "Re-run coder_review_and_test to re-validate ppcommit and tests before creating a PR.",
+        );
+      }
+
+      // Defense-in-depth: run ppcommit again immediately before committing/pushing.
+      const ppNow = runPpcommit(repoRoot);
+      if (ppNow.exitCode !== 0) {
+        throw new Error(`ppcommit reports issues prior to PR creation:\n${ppNow.stdout || ppNow.stderr}`);
+      }
 
       // Commit any uncommitted changes before pushing
       const status = spawnSync("git", ["status", "--porcelain"], {
@@ -1876,7 +1886,6 @@ Return ONLY valid JSON in this schema:
         await this._withStage(loopState, "plan", "claude", () => this.createPlan());
         await this._withStage(loopState, "implement", "claude", () => this.implement());
         await this._withStage(loopState, "review", "codex", () => this.reviewAndTest());
-        await this._withStage(loopState, "finalize", "claude", () => this.finalize());
 
         let prResult;
         try {
