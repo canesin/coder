@@ -27,5 +27,16 @@
     "tree-sitter-rust": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",
     "zod": "^3.25.76"
+  },
+  "overrides": {
+    "tree-sitter-java": {
+      "tree-sitter": "$tree-sitter"
+    },
+    "tree-sitter-rust": {
+      "tree-sitter": "$tree-sitter"
+    },
+    "tree-sitter-typescript": {
+      "tree-sitter": "$tree-sitter"
+    }
   }
 }
