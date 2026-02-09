@@ -818,18 +818,120 @@ function formatIssues(issues, treatWarningsAsErrors) {
 }
 
 /**
- * Run ppcommit checks on uncommitted files in the given repository.
+ * List all tracked files plus untracked files in the repo.
+ * Every file is treated as "new" for check purposes.
  *
  * @param {string} repoDir - Path to the git repository
+ * @returns {{ ordered: string[], newFiles: Set<string> }}
+ */
+function listAllFiles(repoDir) {
+  const tracked = spawnSync("git", ["ls-files"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+
+  /** @type {Set<string>} */
+  const newFiles = new Set();
+  /** @type {string[]} */
+  const ordered = [];
+  /** @type {Set<string>} */
+  const seen = new Set();
+
+  for (const f of splitLines(tracked.stdout || "")
+    .concat(splitLines(untracked.stdout || ""))
+    .map((l) => l.trim())
+    .filter(Boolean)) {
+    if (!seen.has(f)) {
+      ordered.push(f);
+      seen.add(f);
+      newFiles.add(f);
+    }
+  }
+
+  return { ordered, newFiles };
+}
+
+/**
+ * Discover files changed since a base branch (for PR-scope checks).
+ *
+ * @param {string} repoDir - Path to the git repository
+ * @param {string} baseBranch - Base branch to diff against (e.g. "main")
+ * @returns {{ ordered: string[], newFiles: Set<string>, error?: string }}
+ */
+function listFilesSinceBase(repoDir, baseBranch) {
+  const base = (baseBranch || "").trim();
+  if (!base) {
+    return { ordered: [], newFiles: new Set(), error: "ERROR: --base must be a non-empty git ref.\n" };
+  }
+
+  const diffRange = `${base}...HEAD`;
+  const diffNewArgs = ["diff", "--name-only", "--diff-filter=A", diffRange];
+  const diffAllArgs = ["diff", "--name-only", "--diff-filter=ACMR", diffRange];
+
+  const diffNew = spawnSync("git", diffNewArgs, {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  const diffAll = spawnSync("git", diffAllArgs, {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+
+  // If the base ref is missing/invalid, git writes errors to stderr and exits non-zero.
+  // Treat that as a hard error; otherwise `stdout` is empty and we'd incorrectly report "no changes".
+  if (diffNew.status !== 0 || diffAll.status !== 0) {
+    const failing = diffNew.status !== 0 ? diffNew : diffAll;
+    const details = ((failing.stderr || "") + (failing.error ? "\n" + failing.error.message : "")).trim();
+    let error = `ERROR: Failed to diff against base '${base}'. Ensure the ref exists locally (try 'git fetch') and is spelled correctly.\n`;
+    if (details) error += details + "\n";
+    return { ordered: [], newFiles: new Set(), error };
+  }
+
+  /** @type {Set<string>} */
+  const newFiles = new Set();
+  /** @type {string[]} */
+  const ordered = [];
+  /** @type {Set<string>} */
+  const seen = new Set();
+
+  for (const f of splitLines(diffNew.stdout || "").map((l) => l.trim()).filter(Boolean)) {
+    newFiles.add(f);
+  }
+  for (const f of splitLines(untracked.stdout || "").map((l) => l.trim()).filter(Boolean)) {
+    newFiles.add(f);
+  }
+
+  for (const f of splitLines(diffAll.stdout || "")
+    .concat(splitLines(untracked.stdout || ""))
+    .map((l) => l.trim())
+    .filter(Boolean)) {
+    if (!seen.has(f)) {
+      ordered.push(f);
+      seen.add(f);
+    }
+  }
+
+  return { ordered, newFiles };
+}
+
+/**
+ * Shared check loop used by both runPpcommitNative and runPpcommitBranch.
+ *
+ * @param {string} repoDir
+ * @param {string[]} ordered
+ * @param {Set<string>} newFiles
+ * @param {ReturnType<typeof getConfig>} config
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
-export function runPpcommitNative(repoDir) {
-  const config = getConfig(repoDir);
-  if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
-
-  const { ordered, newFiles } = listUncommittedFiles(repoDir);
-  if (ordered.length === 0) return { exitCode: 0, stdout: "No uncommitted files to check\n", stderr: "" };
-
+function _runChecks(repoDir, ordered, newFiles, config) {
   /** @type {Issue[]} */
   const issues = [];
 
@@ -877,4 +979,56 @@ export function runPpcommitNative(repoDir) {
   const stdout = formatIssues(issues, config.treatWarningsAsErrors);
   const hasErrors = issues.some((i) => i.level === "ERROR") || (config.treatWarningsAsErrors && issues.some((i) => i.level === "WARNING"));
   return { exitCode: hasErrors ? 1 : 0, stdout, stderr: "" };
+}
+
+/**
+ * Run ppcommit checks on uncommitted files in the given repository.
+ *
+ * @param {string} repoDir - Path to the git repository
+ * @returns {{ exitCode: number, stdout: string, stderr: string }}
+ */
+export function runPpcommitNative(repoDir) {
+  const config = getConfig(repoDir);
+  if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
+
+  const { ordered, newFiles } = listUncommittedFiles(repoDir);
+  if (ordered.length === 0) return { exitCode: 0, stdout: "No uncommitted files to check\n", stderr: "" };
+
+  return _runChecks(repoDir, ordered, newFiles, config);
+}
+
+/**
+ * Run ppcommit checks on files changed since a base branch.
+ * This is the natural scope for a PR review.
+ *
+ * @param {string} repoDir - Path to the git repository
+ * @param {string} baseBranch - Base branch to diff against (e.g. "main")
+ * @returns {{ exitCode: number, stdout: string, stderr: string }}
+ */
+export function runPpcommitBranch(repoDir, baseBranch) {
+  const config = getConfig(repoDir);
+  if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
+
+  const { ordered, newFiles, error } = listFilesSinceBase(repoDir, baseBranch);
+  if (error) return { exitCode: 2, stdout: "", stderr: error };
+  if (ordered.length === 0) return { exitCode: 0, stdout: "No files changed since " + baseBranch + "\n", stderr: "" };
+
+  return _runChecks(repoDir, ordered, newFiles, config);
+}
+
+/**
+ * Run ppcommit checks on all files in the repository.
+ * Useful for examining a repo that hasn't used ppcommit before.
+ *
+ * @param {string} repoDir - Path to the git repository
+ * @returns {{ exitCode: number, stdout: string, stderr: string }}
+ */
+export function runPpcommitAll(repoDir) {
+  const config = getConfig(repoDir);
+  if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
+
+  const { ordered, newFiles } = listAllFiles(repoDir);
+  if (ordered.length === 0) return { exitCode: 0, stdout: "No files to check\n", stderr: "" };
+
+  return _runChecks(repoDir, ordered, newFiles, config);
 }

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { runPpcommitNative } from "../src/ppcommit.js";
+import { runPpcommitNative, runPpcommitBranch, runPpcommitAll } from "../src/ppcommit.js";
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
@@ -107,4 +107,97 @@ test("ppcommit: does not allow coder workflow markdown artifacts (ISSUE/PLAN) in
   const r = runPpcommitNative(repo);
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /ISSUE\.md:1/);
+});
+
+// --- runPpcommitBranch tests ---
+
+function makeRepoWithMainBranch() {
+  const dir = makeRepo();
+  // Create initial commit on main so we can branch from it.
+  writeFileSync(path.join(dir, "init.txt"), "initial\n", "utf8");
+  run("git", ["add", "init.txt"], dir);
+  run("git", ["commit", "-m", "initial commit"], dir);
+  // Ensure we're on "main" branch
+  run("git", ["branch", "-M", "main"], dir);
+  return dir;
+}
+
+test("ppcommit branch: no files changed since base", () => {
+  const repo = makeRepoWithMainBranch();
+  const r = runPpcommitBranch(repo, "main");
+  assert.equal(r.exitCode, 0);
+  assert.match(r.stdout, /No files changed/i);
+});
+
+test("ppcommit branch: detects TODO in files changed since base", () => {
+  const repo = makeRepoWithMainBranch();
+  run("git", ["checkout", "-b", "feat"], repo);
+  writeFileSync(path.join(repo, "a.js"), "// TODO: fix this\n", "utf8");
+  run("git", ["add", "a.js"], repo);
+  run("git", ["commit", "-m", "add a.js"], repo);
+  const r = runPpcommitBranch(repo, "main");
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /TODO/);
+  assert.match(r.stdout, /a\.js:1/);
+});
+
+test("ppcommit branch: clean files pass checks", () => {
+  const repo = makeRepoWithMainBranch();
+  run("git", ["checkout", "-b", "feat"], repo);
+  writeFileSync(path.join(repo, "b.js"), "const x = 1;\nconsole.log(x);\n", "utf8");
+  run("git", ["add", "b.js"], repo);
+  run("git", ["commit", "-m", "add b.js"], repo);
+  const r = runPpcommitBranch(repo, "main");
+  assert.equal(r.exitCode, 0);
+});
+
+test("ppcommit branch: skip via git config", () => {
+  const repo = makeRepoWithMainBranch();
+  run("git", ["checkout", "-b", "feat"], repo);
+  writeFileSync(path.join(repo, "a.js"), "// TODO: should be ignored\n", "utf8");
+  run("git", ["add", "a.js"], repo);
+  run("git", ["commit", "-m", "add a.js"], repo);
+  run("git", ["config", "ppcommit.skip", "true"], repo);
+  const r = runPpcommitBranch(repo, "main");
+  assert.equal(r.exitCode, 0);
+  assert.match(r.stdout, /skipped/i);
+});
+
+test("ppcommit branch: detects new markdown added since base", () => {
+  const repo = makeRepoWithMainBranch();
+  run("git", ["checkout", "-b", "feat"], repo);
+  writeFileSync(path.join(repo, "notes.md"), "# Notes\n", "utf8");
+  run("git", ["add", "notes.md"], repo);
+  run("git", ["commit", "-m", "add notes"], repo);
+  const r = runPpcommitBranch(repo, "main");
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /notes\.md:1/);
+});
+
+test("ppcommit branch: invalid base ref is an error (does not silently succeed)", () => {
+  const repo = makeRepoWithMainBranch();
+  const r = runPpcommitBranch(repo, "definitely-not-a-real-branch");
+  assert.notEqual(r.exitCode, 0);
+  assert.match(r.stderr, /Failed to diff against base/);
+});
+
+// --- runPpcommitAll tests ---
+
+test("ppcommit all: checks all files in the repo", () => {
+  const repo = makeRepoWithMainBranch();
+  // init.txt is already committed — add a file with a TODO
+  writeFileSync(path.join(repo, "a.js"), "// TODO: fix\n", "utf8");
+  run("git", ["add", "a.js"], repo);
+  run("git", ["commit", "-m", "add a.js"], repo);
+  const r = runPpcommitAll(repo);
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /TODO/);
+  assert.match(r.stdout, /a\.js:1/);
+});
+
+test("ppcommit all: clean repo passes", () => {
+  const repo = makeRepoWithMainBranch();
+  // init.txt has only "initial\n" — no issues
+  const r = runPpcommitAll(repo);
+  assert.equal(r.exitCode, 0);
 });

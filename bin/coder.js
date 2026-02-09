@@ -12,7 +12,7 @@ import { z } from "zod";
 
 import { HostSandboxProvider } from "../src/host-sandbox.js";
 import { closeAllLoggers, ensureLogsDir, makeJsonlLogger } from "../src/logging.js";
-import { runPpcommitNative } from "../src/ppcommit.js";
+import { runPpcommitNative, runPpcommitBranch, runPpcommitAll } from "../src/ppcommit.js";
 import { runPlanreview, upsertIssueCompletionBlock } from "../src/helpers.js";
 import { loadState, saveState, statePathFor } from "../src/state.js";
 import { detectTestCommand, runTestCommand } from "../src/test-runner.js";
@@ -52,6 +52,11 @@ function usage() {
 Usage:
   coder [--workspace <path>] [--repo <path>] [--issue-index <n>] [--verbose]
         [--test-cmd "<cmd>"] [--allow-no-tests]
+
+  coder ppcommit [--base <branch>]
+        Run ppcommit checks on the repository.
+        Without --base: checks all files in the repo.
+        With --base: checks only files changed since the given branch.
 
 Defaults:
   - Human interaction: project selection, issue selection, and Gemini's 3 clarification questions.
@@ -761,8 +766,46 @@ ppcommit output:
   return 0;
 }
 
-run().catch(async (err) => {
-  process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
-  await closeAllLoggers();
-  process.exitCode = 1;
-});
+function runPpcommitCli() {
+  const args = process.argv.slice(3); // skip "node coder ppcommit"
+  let baseBranch = "";
+  let hasBase = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--base" && i + 1 < args.length) {
+      baseBranch = args[i + 1];
+      hasBase = true;
+      i++;
+    } else if (args[i] === "--help" || args[i] === "-h") {
+      process.stdout.write(usage());
+      process.exit(0);
+    }
+  }
+
+  const repoDir = process.cwd();
+  const isGit = spawnSync("git", ["rev-parse", "--git-dir"], { cwd: repoDir, encoding: "utf8" });
+  if (isGit.status !== 0) {
+    process.stderr.write("ERROR: Not a git repository.\n");
+    process.exit(1);
+  }
+
+  let result;
+  if (hasBase) {
+    result = runPpcommitBranch(repoDir, baseBranch);
+  } else {
+    result = runPpcommitAll(repoDir);
+  }
+  process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  process.exit(result.exitCode);
+}
+
+// Subcommand dispatch
+if (process.argv[2] === "ppcommit") {
+  runPpcommitCli();
+} else {
+  run().catch(async (err) => {
+    process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+    await closeAllLoggers();
+    process.exitCode = 1;
+  });
+}

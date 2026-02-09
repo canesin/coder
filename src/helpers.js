@@ -1,6 +1,31 @@
 import { existsSync, writeFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+
+/**
+ * Detect the default branch for a git repository.
+ * Tries `git symbolic-ref --short refs/remotes/origin/HEAD` first,
+ * then falls back to checking if `main` exists, else `master`.
+ *
+ * @param {string} repoDir - Path to the git repository
+ * @returns {string} The default branch name
+ */
+export function detectDefaultBranch(repoDir) {
+  const originHead = spawnSync("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
+    cwd: repoDir, encoding: "utf8",
+  });
+  if (originHead.status === 0) {
+    const raw = (originHead.stdout || "").trim();
+    if (raw.startsWith("origin/") && raw.length > "origin/".length) {
+      return raw.slice("origin/".length);
+    }
+  }
+
+  const mainCheck = spawnSync("git", ["rev-parse", "--verify", "main"], {
+    cwd: repoDir, encoding: "utf8",
+  });
+  return mainCheck.status === 0 ? "main" : "master";
+}
 import { createHash } from "node:crypto";
 import { jsonrepair } from "jsonrepair";
 import { detectTestCommand, runTestCommand, loadTestConfig, runTestConfig } from "./test-runner.js";
