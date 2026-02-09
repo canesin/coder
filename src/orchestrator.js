@@ -840,6 +840,34 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 
       // Step 3a: Claude writes PLAN.md
       if (!state.steps.wrotePlan) {
+        const repoRoot = this._repoRoot(state);
+        const artifactFiles = [this.issueFile, this.planFile, this.critiqueFile, ".coder/", ".gemini/"];
+        const isArtifact = (p) =>
+          artifactFiles.some((a) => (a.endsWith("/") ? p.replace(/\\/g, "/").startsWith(a) : p === a));
+
+        const gitPorcelain = () => {
+          const st = spawnSync("git", ["status", "--porcelain=v1", "-z"], { cwd: repoRoot, encoding: "utf8" });
+          if (st.status !== 0) throw new Error("Failed to check git status during planning.");
+          const tokens = (st.stdout || "").split("\0").filter(Boolean);
+          /** @type {{ status: string, path: string }[]} */
+          const entries = [];
+          for (let i = 0; i < tokens.length; i++) {
+            const t = tokens[i];
+            if (t.length < 4) continue;
+            const status = t.slice(0, 2);
+            let filePath = t.slice(3);
+            if ((status[0] === "R" || status[0] === "C") && i + 1 < tokens.length) {
+              filePath = tokens[i + 1];
+              i++;
+            }
+            entries.push({ status, path: filePath });
+          }
+          return entries;
+        };
+
+        const pre = gitPorcelain();
+        const preUntracked = new Set(pre.filter((e) => e.status === "??").map((e) => e.path));
+
         // Generate a session ID for Claude session reuse across steps
         if (!state.claudeSessionId) {
           state.claudeSessionId = randomUUID();
@@ -903,16 +931,29 @@ Constraints:
         const res = await this._executeAgentCommand("claude", claude, cmd, { timeoutMs: 1000 * 60 * 20 });
         if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
 
-        // Hard gate: Claude must not change the repo during planning.
-        const repoRoot = this._repoRoot(state);
-        const status = spawnSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" });
-        if (status.status !== 0) throw new Error("Failed to check git status after planning.");
-        const artifactFiles = [this.issueFile, this.planFile, this.critiqueFile, ".coder/", ".gemini/"];
-        const dirtyLines = (status.stdout || "")
-          .split("\n")
-          .filter((l) => l.trim() !== "" && !artifactFiles.some((a) => l.includes(a)));
-        if (dirtyLines.length > 0) {
-          throw new Error(`Planning step modified the repository. Aborting.\n${dirtyLines.join("\n")}`);
+        // Hard gate: Claude must not change tracked files during planning.
+        // But allow untracked exploration artifacts (e.g. cargo init) and clean up newly-created ones
+        // to avoid contaminating later stages.
+        const post = gitPorcelain();
+        const postUntracked = post.filter((e) => e.status === "??").map((e) => e.path);
+        const newUntracked = postUntracked
+          .filter((p) => !preUntracked.has(p) && !isArtifact(p));
+
+        const trackedDirty = post
+          .filter((e) => e.status !== "??" && !isArtifact(e.path))
+          .map((e) => `${e.status} ${e.path}`);
+        if (trackedDirty.length > 0) {
+          throw new Error(`Planning step modified tracked files. Aborting.\n${trackedDirty.join("\n")}`);
+        }
+
+        if (newUntracked.length > 0) {
+          this.log({ event: "plan_untracked_cleanup", count: newUntracked.length, paths: newUntracked.slice(0, 50) });
+          // Best-effort cleanup of only the new untracked paths created during planning.
+          const chunkSize = 100;
+          for (let i = 0; i < newUntracked.length; i += chunkSize) {
+            const chunk = newUntracked.slice(i, i + chunkSize);
+            spawnSync("git", ["clean", "-fd", "--", ...chunk], { cwd: repoRoot, encoding: "utf8" });
+          }
         }
 
         if (!existsSync(paths.plan)) throw new Error(`PLAN.md not found: ${paths.plan}`);
@@ -1351,7 +1392,7 @@ Then update ${paths.issue} with completion status and readiness to push. Do not 
       if (!body) {
         body = `## Summary\nAutomated changes for: ${state.selected?.title || "workflow issue"}`;
       }
-      body = stripAgentNoise(body, { dropLeadingOnly: true }).trim();
+      body = stripAgentNoise(body).trim();
 
       // Append issue link
       if (state.selected) {
@@ -1737,6 +1778,7 @@ Return ONLY valid JSON in this schema:
     }, 5000);
 
     let runCancelled = false;
+    let runAbortedInfra = false;
 
     // Phase 2: Loop through issues
     try {
@@ -1817,6 +1859,7 @@ Return ONLY valid JSON in this schema:
 
       this._appendAutoLog({ event: "issue_start", index: i, id: entry.id, title: entry.title });
 
+      let abortAfterThisIssue = false;
       try {
         await this._withStage(loopState, "draft", "gemini", () =>
           this.draftIssue({
@@ -1870,6 +1913,22 @@ Return ONLY valid JSON in this schema:
         entry.completedAt = new Date().toISOString();
         failedRefs.add(issueRef(entry));
 
+        if (err?.name === "TestInfrastructureError") {
+          // Test infra failures (e.g. missing Cargo.toml for cargo test) will cascade.
+          // Abort the run and mark remaining issues as skipped with a clear reason.
+          runAbortedInfra = true;
+          abortAfterThisIssue = true;
+          this._appendAutoLog({ event: "auto_abort_test_infra", index: i, id: entry.id, error: entry.error });
+          for (let j = i + 1; j < loopState.issueQueue.length; j++) {
+            const next = loopState.issueQueue[j];
+            if (next.status === "pending" || next.status === "in_progress") {
+              next.status = "skipped";
+              next.error = `Skipped: test infrastructure error earlier in run: ${entry.error}`;
+              next.completedAt = new Date().toISOString();
+            }
+          }
+        }
+
         try {
           const state = this._loadState();
           entry.branch = state.branch || null;
@@ -1881,6 +1940,7 @@ Return ONLY valid JSON in this schema:
       this._resetForNextIssue(entry.repoPath, { destructive: destructiveReset });
       loopState.currentIndex = i + 1;
       saveLoopState(this.workspaceDir, loopState);
+      if (abortAfterThisIssue) break;
     }
     } finally {
       clearInterval(heartbeatInterval);
@@ -1895,6 +1955,8 @@ Return ONLY valid JSON in this schema:
       loopState.status = "completed";
     } else if (runCancelled) {
       loopState.status = "cancelled";
+    } else if (runAbortedInfra) {
+      loopState.status = "failed";
     } else {
       loopState.status = failed === loopState.issueQueue.length ? "failed" : "completed";
     }

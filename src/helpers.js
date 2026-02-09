@@ -17,14 +17,35 @@ export const DEFAULT_PASS_ENV = [
 
 const AGENT_NOISE_LINE_PATTERNS = [
   /^Warning:/i,
+  /Skipping extension in .*Configuration file not found/i,
   /YOLO mode/i,
   /Loading extension/i,
   /Hook registry/i,
   /Server '/i,
+  /supports tool updates/i,
+  /Listening for changes/i,
   /Found stored OAuth/i,
   /rejected stored OAuth token/i,
   /Please re-authenticate using:\s*\/mcp auth/i,
+  /Both GOOGLE_API_KEY and GEMINI_API_KEY are set/i,
+  /\bUsing GOOGLE_API_KEY\b/i,
+  /updated for server:/i,
+  /Tools changed,\s*updating Gemini context/i,
+  /Received (?:resource|prompt|tool) update notification/i,
+  /^\[INFO\]\s*(?:Tools|Prompts|Resources) updated for server:/i,
+  /^Resources updated for server:/i,
+  /^Prompts updated for server:/i,
+  /^Tools updated for server:/i,
+  /^🔔\s*/u,
 ];
+
+export class TestInfrastructureError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "TestInfrastructureError";
+    this.details = details;
+  }
+}
 
 export function requireEnvOneOf(names) {
   const resolved = buildSecretsWithFallback(names);
@@ -82,7 +103,8 @@ export function buildSecretsWithFallback(passEnv, { env = process.env, shellLook
 export function formatCommandFailure(label, res, { maxLen = 1200 } = {}) {
   const exit = typeof res?.exitCode === "number" ? res.exitCode : "unknown";
   const raw = `${res?.stderr || ""}\n${res?.stdout || ""}`.trim();
-  let detail = raw || "No stdout/stderr captured.";
+  const filteredRaw = stripAgentNoise(raw).trim();
+  let detail = filteredRaw || raw || "No stdout/stderr captured.";
 
   // Try to surface the nested JSON error from gemini CLI when present.
   if (raw) {
@@ -94,7 +116,10 @@ export function formatCommandFailure(label, res, { maxLen = 1200 } = {}) {
     }
   }
 
-  if (detail.length > maxLen) detail = detail.slice(0, maxLen) + "…";
+  if (detail.length > maxLen) {
+    // Keep the tail: errors are usually at the end, and the head is often MCP startup noise.
+    detail = "…" + detail.slice(-maxLen);
+  }
   const hint =
     /must specify the GEMINI_API_KEY environment variable/i.test(raw) ||
     /GEMINI_API_KEY/i.test(detail)
@@ -205,12 +230,15 @@ export function stripAgentNoise(text, { dropLeadingOnly = false } = {}) {
 }
 
 export function sanitizeIssueMarkdown(text) {
-  const cleaned = stripAgentNoise(text, { dropLeadingOnly: true }).trim();
-  if (!cleaned) return "";
-  const lines = cleaned.split("\n");
+  // Drop leading startup noise (common) and then remove any remaining noise lines
+  // anywhere in the document (MCP notifications can leak mid/late output).
+  const cleaned = stripAgentNoise(text, { dropLeadingOnly: true });
+  const fullyCleaned = stripAgentNoise(cleaned).trim();
+  if (!fullyCleaned) return "";
+  const lines = fullyCleaned.split("\n");
   const firstHeader = lines.findIndex((line) => line.trim().startsWith("#"));
   if (firstHeader > 0) return lines.slice(firstHeader).join("\n").trim();
-  return cleaned;
+  return fullyCleaned;
 }
 
 export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {
@@ -380,6 +408,38 @@ export async function runHostTests(repoDir, { testCmd, testConfigPath, allowNoTe
 
   // Priority 2: explicit test command
   if (testCmd) {
+    const rawCmd = String(testCmd);
+    const cmdLower = rawCmd.toLowerCase();
+    // Avoid cascading failures in auto-mode when a repo is reset to a branch
+    // that doesn't actually contain the Rust project files required by `cargo`.
+    //
+    // Important: do NOT false-trigger when users intentionally run cargo from a
+    // subdirectory (e.g. `cd rust && cargo test`). Only treat cargo as "repo-root
+    // required" when it is the top-level command.
+    const looksLikeRootCargoCmd = () => {
+      const t = rawCmd.trim();
+      // Match commands like:
+      // - cargo test
+      // - RUSTFLAGS=... cargo test
+      // - env -i FOO=1 cargo test
+      // - command cargo test
+      // - time cargo test
+      //
+      // Reject anything that starts with `cd ... &&` or other multi-command scripts.
+      return /^(?:(?:env\b[^;&|]*\s+)?(?:command\s+)?(?:time\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)cargo\b/i.test(t);
+    };
+
+    if (looksLikeRootCargoCmd()) {
+      const cargoToml = path.join(repoDir, "Cargo.toml");
+      if (!existsSync(cargoToml)) {
+        throw new TestInfrastructureError(
+          `Test infrastructure missing: ${cargoToml} not found, but testCmd includes "cargo". ` +
+            `Either ensure Cargo.toml exists on the default branch (especially with destructiveReset=true), ` +
+            `or adjust testCmd/testConfigPath for this repo.`,
+          { testCmd, missingPath: cargoToml },
+        );
+      }
+    }
     const res = spawnSync("bash", ["-lc", testCmd], {
       cwd: repoDir,
       encoding: "utf8",

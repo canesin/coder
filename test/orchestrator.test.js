@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -19,6 +19,14 @@ function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
   assert.equal(res.status, 0, `command failed: ${cmd} ${args.join(" ")}\n${res.stderr || res.stdout}`);
   return res;
+}
+
+function commitInitial(cwd) {
+  run("git", ["config", "user.email", "test@example.com"], cwd);
+  run("git", ["config", "user.name", "Test User"], cwd);
+  writeFileSync(path.join(cwd, "README.md"), "hello\n", "utf8");
+  run("git", ["add", "."], cwd);
+  run("git", ["commit", "-m", "initial"], cwd);
 }
 
 class StubOrchestrator extends CoderOrchestrator {
@@ -41,6 +49,78 @@ class StubOrchestrator extends CoderOrchestrator {
     if (next instanceof Error) throw next;
     return next;
   }
+}
+
+class StubPlanOrchestrator extends CoderOrchestrator {
+  constructor(workspaceDir) {
+    super(workspaceDir, { allowNoTests: true });
+  }
+  _getClaude() {
+    return {};
+  }
+  async _executeAgentCommand(agentName, _agent, _cmd) {
+    // Simulate Claude writing PLAN.md and creating untracked exploration artifacts.
+    if (agentName === "claude") {
+      writeFileSync(path.join(this.workspaceDir, "PLAN.md"), "# Plan\n", "utf8");
+      writeFileSync(path.join(this.workspaceDir, "Cargo.toml"), "[package]\nname='x'\n", "utf8");
+      mkdirSync(path.join(this.workspaceDir, "src"), { recursive: true });
+      writeFileSync(path.join(this.workspaceDir, "src", "lib.rs"), "pub fn x() {}\n", "utf8");
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  }
+}
+
+class StubAutoInfraOrchestrator extends CoderOrchestrator {
+  constructor(workspaceDir) {
+    super(workspaceDir, { allowNoTests: true });
+  }
+  async listIssues() {
+    return {
+      issues: [
+        { source: "github", id: "1", title: "Issue 1", repo_path: ".", difficulty: 1 },
+        { source: "github", id: "2", title: "Issue 2", repo_path: ".", difficulty: 1 },
+      ],
+      recommended_index: 0,
+      linearProjects: [],
+    };
+  }
+  async _buildAutoQueue() {
+    return [
+      { source: "github", id: "1", title: "Issue 1", repoPath: ".", baseBranch: null, status: "pending", branch: null, prUrl: null, error: null, startedAt: null, completedAt: null, dependsOn: [] },
+      { source: "github", id: "2", title: "Issue 2", repoPath: ".", baseBranch: null, status: "pending", branch: null, prUrl: null, error: null, startedAt: null, completedAt: null, dependsOn: [] },
+    ];
+  }
+  _resetForNextIssue() {}
+  async draftIssue() {
+    const state = loadState(this.workspaceDir);
+    state.repoPath = ".";
+    state.branch = "coder/github-1";
+    state.steps = { ...(state.steps || {}), wroteIssue: true, verifiedCleanRepo: true };
+    writeFileSync(path.join(this.workspaceDir, "ISSUE.md"), "# Issue\n", "utf8");
+    run("git", ["checkout", "-B", state.branch], this.workspaceDir);
+    writeFileSync(path.join(this.workspaceDir, ".coder", "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
+  }
+  async createPlan() {
+    const state = loadState(this.workspaceDir);
+    state.steps = { ...(state.steps || {}), wrotePlan: true, wroteCritique: true };
+    writeFileSync(path.join(this.workspaceDir, "PLAN.md"), "# Plan\n", "utf8");
+    writeFileSync(path.join(this.workspaceDir, ".coder", "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
+    return { planMd: "# Plan\n", critiqueMd: "" };
+  }
+  async implement() {
+    const state = loadState(this.workspaceDir);
+    state.steps = { ...(state.steps || {}), implemented: true };
+    writeFileSync(path.join(this.workspaceDir, ".coder", "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
+    return { summary: "ok" };
+  }
+  async reviewAndTest() {
+    const err = new Error("Test infra missing");
+    err.name = "TestInfrastructureError";
+    throw err;
+  }
+  async finalize() {}
+  async createPR() {}
 }
 
 test("_normalizeRepoPath keeps valid workspace-relative paths and rejects invalid ones", () => {
@@ -153,4 +233,38 @@ test("_ensureGitignore writes .geminiignore unignore rules for workflow artifact
   assert.match(content, /!ISSUE\.md/);
   assert.match(content, /!PLAN\.md/);
   assert.match(content, /!PLANREVIEW\.md/);
+});
+
+test("createPlan allows untracked exploration artifacts but cleans up newly-created ones", async () => {
+  const ws = makeWorkspace();
+  commitInitial(ws);
+  const orch = new StubPlanOrchestrator(ws);
+  writeFileSync(path.join(ws, "ISSUE.md"), "# Issue\n", "utf8");
+  writeFileSync(
+    path.join(ws, ".coder", "state.json"),
+    JSON.stringify({
+      repoPath: ".",
+      branch: "coder/github-1",
+      selected: { source: "github", id: "1", title: "Issue 1" },
+      steps: { wroteIssue: true, wroteCritique: true },
+    }, null, 2) + "\n",
+    "utf8",
+  );
+  run("git", ["checkout", "-B", "coder/github-1"], ws);
+
+  await orch.createPlan();
+
+  assert.equal(readFileSync(path.join(ws, "PLAN.md"), "utf8").includes("# Plan"), true);
+  assert.equal(existsSync(path.join(ws, "Cargo.toml")), false);
+  assert.equal(existsSync(path.join(ws, "src")), false);
+});
+
+test("runAuto aborts and skips remaining issues on TestInfrastructureError to avoid cascades", async () => {
+  const ws = makeWorkspace();
+  commitInitial(ws);
+  const orch = new StubAutoInfraOrchestrator(ws);
+  const res = await orch.runAuto({ destructiveReset: false });
+  assert.equal(res.failed, 1);
+  assert.equal(res.skipped, 1);
+  assert.equal(res.status, "failed");
 });

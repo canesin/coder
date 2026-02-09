@@ -155,7 +155,42 @@ function buildSecrets(passEnv) {
 function formatCommandFailure(label, res, maxLen = 1200) {
   const exit = typeof res?.exitCode === "number" ? res.exitCode : "unknown";
   const raw = `${res?.stderr || ""}\n${res?.stdout || ""}`.trim();
-  let detail = raw || "No stdout/stderr captured.";
+  const isNoiseLine = (line) => {
+    const l = String(line || "");
+    return (
+      /^Warning:/i.test(l) ||
+      /Skipping extension in .*Configuration file not found/i.test(l) ||
+      /YOLO mode/i.test(l) ||
+      /Loading extension/i.test(l) ||
+      /Hook registry/i.test(l) ||
+      /Server '/i.test(l) ||
+      /supports tool updates/i.test(l) ||
+      /Listening for changes/i.test(l) ||
+      /Found stored OAuth/i.test(l) ||
+      /rejected stored OAuth token/i.test(l) ||
+      /Please re-authenticate using:\s*\/mcp auth/i.test(l) ||
+      /Both GOOGLE_API_KEY and GEMINI_API_KEY are set/i.test(l) ||
+      /\bUsing GOOGLE_API_KEY\b/i.test(l) ||
+      /updated for server:/i.test(l) ||
+      /Tools changed,\s*updating Gemini context/i.test(l) ||
+      /Received (?:resource|prompt|tool) update notification/i.test(l) ||
+      /^\[INFO\]\s*(?:Tools|Prompts|Resources) updated for server:/i.test(l) ||
+      /^Resources updated for server:/i.test(l) ||
+      /^Prompts updated for server:/i.test(l) ||
+      /^Tools updated for server:/i.test(l) ||
+      /^🔔\s*/u.test(l)
+    );
+  };
+  const stripNoise = (text) =>
+    String(text || "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .filter((line) => !isNoiseLine(line))
+      .join("\n")
+      .trim();
+
+  const filteredRaw = stripNoise(raw);
+  let detail = filteredRaw || raw || "No stdout/stderr captured.";
 
   if (raw) {
     try {
@@ -166,7 +201,7 @@ function formatCommandFailure(label, res, maxLen = 1200) {
     }
   }
 
-  if (detail.length > maxLen) detail = detail.slice(0, maxLen) + "…";
+  if (detail.length > maxLen) detail = "…" + detail.slice(-maxLen);
   const hint =
     /must specify the GEMINI_API_KEY environment variable/i.test(raw) ||
     /GEMINI_API_KEY/i.test(detail)
