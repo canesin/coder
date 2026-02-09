@@ -1,33 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
 import path from "node:path";
 import process from "node:process";
 
+import { AgentRunner } from "./agent-runner.js";
 import { HostSandboxProvider } from "./host-sandbox.js";
 import { ensureLogsDir, makeJsonlLogger, closeAllLoggers } from "./logging.js";
-
-/**
- * Thin wrapper around HostSandboxProvider that exposes the executeCommand()
- * and EventEmitter interface the orchestrator expects.
- */
-class AgentRunner extends EventEmitter {
-  constructor(provider) {
-    super();
-    this._provider = provider;
-    this._sandbox = null;
-  }
-
-  async executeCommand(command, opts = {}) {
-    if (!this._sandbox) {
-      this._sandbox = await this._provider.create();
-      this._sandbox.on("stdout", (d) => this.emit("stdout", d));
-      this._sandbox.on("stderr", (d) => this.emit("stderr", d));
-    }
-    return this._sandbox.commands.run(command, opts);
-  }
-}
 import { loadState, saveState, loadLoopState, saveLoopState, statePathFor } from "./state.js";
 import { sanitizeBranchForRef } from "./worktrees.js";
 import { IssuesPayloadSchema, QuestionsPayloadSchema, ProjectsPayloadSchema } from "./schemas.js";

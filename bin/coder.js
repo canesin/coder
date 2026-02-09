@@ -6,17 +6,17 @@ import process from "node:process";
 import readline from "node:readline/promises";
 import { parseArgs as nodeParseArgs } from "node:util";
 
-import { VibeKit } from "@vibe-kit/sdk";
 import { jsonrepair } from "jsonrepair";
 import { z } from "zod";
 
+import { AgentRunner } from "../src/agent-runner.js";
 import { HostSandboxProvider } from "../src/host-sandbox.js";
 import { closeAllLoggers, ensureLogsDir, makeJsonlLogger } from "../src/logging.js";
 import { runPpcommitNative, runPpcommitBranch, runPpcommitAll } from "../src/ppcommit.js";
 import { runPlanreview, upsertIssueCompletionBlock } from "../src/helpers.js";
 import { loadState, saveState, statePathFor } from "../src/state.js";
 import { detectTestCommand, runTestCommand } from "../src/test-runner.js";
-import { sanitizeBranchForRef, worktreePath } from "../src/worktrees.js";
+import { sanitizeBranchForRef, worktreePath, ensureWorktree } from "../src/worktrees.js";
 
 const IssuesPayloadSchema = z.object({
   issues: z.array(
@@ -47,7 +47,7 @@ const ProjectsPayloadSchema = z.object({
 });
 
 function usage() {
-  return `coder (VibeKit SDK orchestrator; host sandbox)
+  return `coder (multi-agent orchestrator; host sandbox)
 
 Usage:
   coder [--workspace <path>] [--repo <path>] [--issue-index <n>] [--verbose]
@@ -408,16 +408,8 @@ async function run() {
   };
 
   // Gemini runs at workspace scope.
-  const gemini = new VibeKit()
-    .withSandbox(new HostSandboxProvider({ defaultCwd: workspaceDir, baseEnv: secrets }))
-    .withWorkingDirectory(workspaceDir)
-    .withSecrets(secrets)
-    .withAgent({
-      type: "gemini",
-      provider: "google",
-      apiKey: secrets.GOOGLE_API_KEY ?? secrets.GEMINI_API_KEY,
-      model: "gemini-3-flash-preview",
-    });
+  const geminiProvider = new HostSandboxProvider({ defaultCwd: workspaceDir, baseEnv: secrets });
+  const gemini = new AgentRunner(geminiProvider);
   attachAgentLogging("gemini", gemini);
 
   // --- Step 0: Linear project selection ---
@@ -547,35 +539,18 @@ Return ONLY valid JSON in this schema:
 
   const worktreesRoot = path.join(workspaceDir, ".coder", "worktrees", state.repoPath.replaceAll("/", "__"));
   mkdirSync(worktreesRoot, { recursive: true });
-  const repoWorktree = worktreePath(worktreesRoot, state.branch);
+  const repoWorktree = ensureWorktree(repoRoot, worktreesRoot, state.branch);
 
-  // Repo-scoped agents operate from the repo root and isolate changes in a worktree.
-  const makeRepoAgent = (name, agentConfig) => {
-    const provider = new HostSandboxProvider({ defaultCwd: repoRoot, baseEnv: secrets });
-    const vk = new VibeKit()
-      .withSandbox(provider)
-      .withWorkingDirectory(repoRoot)
-      .withWorktrees({ root: worktreesRoot, cleanup: false })
-      .withSecrets(secrets)
-      .withAgent(agentConfig);
-    attachAgentLogging(name, vk);
-    return vk;
+  // Repo-scoped agents operate from the worktree directory.
+  const makeRepoAgent = (name) => {
+    const provider = new HostSandboxProvider({ defaultCwd: repoWorktree, baseEnv: secrets });
+    const agent = new AgentRunner(provider);
+    attachAgentLogging(name, agent);
+    return agent;
   };
 
-  const claude = makeRepoAgent("claude", {
-    type: "claude",
-    provider: "anthropic",
-    apiKey: secrets.ANTHROPIC_API_KEY,
-    oauthToken: secrets.CLAUDE_CODE_OAUTH_TOKEN,
-    model: "claude-opus-4-6",
-  });
-
-  const codex = makeRepoAgent("codex", {
-    type: "codex",
-    provider: "openai",
-    apiKey: secrets.OPENAI_API_KEY,
-    model: "gpt-5.3-codex",
-  });
+  const claude = makeRepoAgent("claude");
+  const codex = makeRepoAgent("codex");
 
   // --- Step 2: Gemini asks 3 questions (only human interaction) ---
   if (!state.questions || !state.answers || state.questions.length !== 3 || state.answers.length !== 3) {
@@ -655,7 +630,7 @@ Constraints:
       planPrompt,
       `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6`,
     );
-    const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 20, branch: state.branch });
+    const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 20 });
     if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
 
     // Hard gate: Claude must not change the repo during planning
@@ -698,7 +673,7 @@ Constraints:
       implPrompt,
       `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6`,
     );
-    const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 60, branch: state.branch });
+    const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 60 });
     if (res.exitCode !== 0) throw new Error("Claude implementation failed.");
     state.steps.implemented = true;
     saveState(workspaceDir, state);
@@ -721,7 +696,7 @@ ppcommit output:
 \n---\n${(ppBefore.stdout || ppBefore.stderr || "").trim()}\n---\n`;
 
     const cmd = `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(codexPrompt)}`;
-    const res = await codex.executeCommand(cmd, { timeoutMs: 1000 * 60 * 90, branch: state.branch });
+    const res = await codex.executeCommand(cmd, { timeoutMs: 1000 * 60 * 90 });
     if (res.exitCode !== 0) throw new Error("Codex review/fix failed.");
     state.steps.codexReviewed = true;
     saveState(workspaceDir, state);

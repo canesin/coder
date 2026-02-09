@@ -1,7 +1,7 @@
 {
   "name": "coder",
   "version": "0.3.0",
-  "description": "VibeKit SDK-coordinated multi-agent coding workflow (gemini-cli + claude-code + codex-cli)",
+  "description": "Multi-agent coding workflow orchestrator (gemini-cli + claude-code + codex-cli)",
   "type": "module",
   "bin": {
     "coder": "./bin/coder.js",

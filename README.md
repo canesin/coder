@@ -1,6 +1,6 @@
 # coder
 
-Orchestrates a multi-agent workflow using the VibeKit SDK + `gemini` + `claude` + `codex`.
+Orchestrates a multi-agent workflow using `gemini` + `claude` + `codex`.
 
 This tool is designed for a workspace folder that contains one or more git repositories as subfolders.
 
@@ -71,7 +71,7 @@ By default, `coder` will:
 
 ## Notes
 
-- `coder` uses a VibeKit SDK "host sandbox" provider: commands run on your machine (so MCP/config works), and changes land in a dedicated git worktree under `.coder/worktrees/`.
+- `coder` uses a host sandbox provider: commands run on your machine (so MCP/config works), and changes land in a dedicated git worktree under `.coder/worktrees/`.
 - Plan review uses Gemini CLI with search grounding to verify external API documentation.
 - The workflow files live under `.coder/artifacts/` by default (`ISSUE.md`, `PLAN.md`, `PLANREVIEW.md`).
 - Progress + logs are written under `.coder/` (see `.coder/state.json` and `.coder/logs/*.jsonl`).
