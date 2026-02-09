@@ -55,7 +55,7 @@ const CODE_EXTENSIONS = new Set([
 ]);
 
 // Directories to skip when checking files
-const SKIP_DIRS = new Set(["node_modules", "venv", ".venv", "__pycache__", ".git", "dist", "build", ".coder"]);
+const SKIP_DIRS = new Set(["node_modules", "venv", ".venv", "__pycache__", ".git", "dist", "build", ".coder", ".gemini"]);
 
 const MARKDOWN_ALLOWED_DIRS = new Set(["docs", "doc", ".github"]);
 const MARKDOWN_ALLOWED_FILES = new Set(["README.md", "CHANGELOG.md", "LICENSE.md", "CONTRIBUTING.md"]);
@@ -837,10 +837,11 @@ export function runPpcommitNative(repoDir) {
   const llmFiles = [];
 
   for (const filePath of ordered) {
-    const isNew = newFiles.has(filePath);
     checkWorkflowArtifacts(filePath, config, issues);
-    checkNewMarkdown(filePath, isNew, config, issues);
     if (shouldSkipPath(filePath)) continue;
+
+    const isNew = newFiles.has(filePath);
+    checkNewMarkdown(filePath, isNew, config, issues);
 
     const content = readUtf8File(repoDir, filePath);
     if (!content) continue;
