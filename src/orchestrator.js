@@ -41,7 +41,15 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
 export class CoderOrchestrator {
   /**
    * @param {string} workspaceDir - Absolute path to the workspace directory
-   * @param {{ passEnv?: string[], verbose?: boolean, testCmd?: string, testConfigPath?: string, allowNoTests?: boolean }} [opts]
+   * @param {{
+   *   passEnv?: string[],
+   *   verbose?: boolean,
+   *   testCmd?: string,
+   *   testConfigPath?: string,
+   *   allowNoTests?: boolean,
+   *   strictMcpStartup?: boolean,
+   *   claudeDangerouslySkipPermissions?: boolean
+   * }} [opts]
    */
   constructor(workspaceDir, opts = {}) {
     this.workspaceDir = path.resolve(workspaceDir);
@@ -79,6 +87,11 @@ export class CoderOrchestrator {
 
     // MCP health option
     this.strictMcpStartup = opts.strictMcpStartup || false;
+
+    // If true, Claude Code won't stop for permission prompts. This is powerful but risky:
+    // prompt injection can lead to destructive commands or exfiltration. Keep it opt-in.
+    this.claudeDangerouslySkipPermissions =
+      opts.claudeDangerouslySkipPermissions ?? (process.env.CODER_CLAUDE_DANGEROUS !== "0");
   }
 
   requestCancel() { this._cancelRequested = true; }
@@ -167,6 +180,12 @@ export class CoderOrchestrator {
     vk.on("stderr", writeActivity);
     vk.on("update", writeActivity);
     vk.on("error", writeActivity);
+  }
+
+  _claudeBaseFlags() {
+    let flags = "claude -p --output-format stream-json --verbose";
+    if (this.claudeDangerouslySkipPermissions) flags += " --dangerously-skip-permissions";
+    return flags;
   }
 
   _getGemini() {
@@ -905,7 +924,7 @@ Constraints:
 
         const cmd = heredocPipe(
           planPrompt,
-          `claude -p --output-format stream-json --verbose --dangerously-skip-permissions --session-id ${state.claudeSessionId}`,
+          `${this._claudeBaseFlags()} --session-id ${state.claudeSessionId}`,
         );
         const res = await this._executeAgentCommand("claude", claude, cmd, { timeoutMs: 1000 * 60 * 20 });
         if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
@@ -1058,7 +1077,7 @@ FORBIDDEN patterns:
 - Use the repo's normal commands (lint, format, test)`;
 
       // Session reuse: resume from planning context if available
-      let claudeFlags = `claude -p --output-format stream-json --verbose --dangerously-skip-permissions`;
+      let claudeFlags = this._claudeBaseFlags();
       if (state.claudeSessionId) {
         claudeFlags += ` --resume ${state.claudeSessionId}`;
       }

@@ -7,10 +7,12 @@ import path from "node:path";
 import { makeJsonlLogger, closeAllLoggers, logsDir, sanitizeLogEvent } from "../src/logging.js";
 
 test("sanitizeLogEvent redacts common credential fields in strings", () => {
-  const raw = `{"accessToken":"abc123","refreshToken":"def456","token=xyz789","auth":"Bearer tokenvalue1234"}`;
+  // Keep values short/low-entropy to avoid tripping external secret scanners in tests.
+  const raw = `{"accessToken":"x","refreshToken":"y","token=z","auth":"Bearer aaaaaaaaaaaa"}`;
   const sanitized = sanitizeLogEvent(raw);
   assert.match(sanitized, /\[REDACTED\]/);
-  assert.doesNotMatch(sanitized, /abc123|def456|xyz789|tokenvalue1234/);
+  assert.doesNotMatch(sanitized, /\b(x|y|z)\b/);
+  assert.doesNotMatch(sanitized, /Bearer a{12}/i);
 });
 
 test("makeJsonlLogger writes redacted payloads", async () => {
@@ -18,7 +20,7 @@ test("makeJsonlLogger writes redacted payloads", async () => {
   const logger = makeJsonlLogger(ws, "gemini");
   logger({
     stream: "stderr",
-    data: `MCP server 'linear' rejected stored OAuth token. accessToken="topsecret" refreshToken='alsosecret'`,
+    data: `MCP server 'linear' rejected stored OAuth token. accessToken="x" refreshToken='y'`,
   });
   await closeAllLoggers();
 

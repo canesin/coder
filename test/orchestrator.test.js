@@ -170,7 +170,7 @@ test("_buildAutoQueue normalizes invalid repo_path from Gemini output", async ()
           source: "github",
           id: "1",
           title: "Issue 1",
-          repo_path: "fcc/OpenPVT",
+          repo_path: "acme/private-repo",
           depends_on: [],
           reason: "invalid path",
         },

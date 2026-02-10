@@ -168,7 +168,7 @@ Issue details`;
 });
 
 test("sanitizeIssueMarkdown strips MCP update notification noise (leading and trailing)", () => {
-  const raw = `Warning: Skipping extension in /home/fcc/.gemini/extensions/logs: Configuration file not found
+  const raw = `Warning: Skipping extension in <HOME>/.gemini/extensions/logs: Configuration file not found
 🔔 Received tool update notification from 'github'
 # Title
 

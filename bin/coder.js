@@ -70,6 +70,8 @@ Required environment (agent auth):
 Optional:
   --test-cmd          Override test command (e.g. "pnpm test" or "pytest -q")
   --allow-no-tests    Continue even if no tests detected
+  --claude-dangerously-skip-permissions  Default: on. Run Claude Code without permission prompts (risky)
+  --claude-require-permissions           Force permission prompts for Claude Code (safer)
 `;
 }
 
@@ -94,10 +96,15 @@ function parseArgs(argv) {
       "issue-index": { type: "string", default: "" },
       "test-cmd": { type: "string", default: "" },
       "allow-no-tests": { type: "boolean", default: false },
+      "claude-dangerously-skip-permissions": { type: "boolean", default: true },
+      "claude-require-permissions": { type: "boolean", default: false },
       verbose: { type: "boolean", short: "v", default: false },
       "pass-env": { type: "string", default: "" },
     },
   });
+
+  const claudeDangerouslySkipPermissions =
+    values["claude-require-permissions"] ? false : values["claude-dangerously-skip-permissions"];
 
   return {
     help: values.help,
@@ -110,6 +117,7 @@ function parseArgs(argv) {
     critiqueFile: "PLANREVIEW.md",
     allowNoTests: values["allow-no-tests"],
     testCmd: values["test-cmd"],
+    claudeDangerouslySkipPermissions,
     passEnv: values["pass-env"]
       ? values["pass-env"].split(",").map((s) => s.trim()).filter(Boolean)
       : DEFAULT_PASS_ENV,
@@ -623,7 +631,9 @@ Constraints:
 
     const cmd = heredocPipe(
       planPrompt,
-      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6`,
+      `claude -p --output-format stream-json --model claude-opus-4-6${
+        args.claudeDangerouslySkipPermissions ? " --dangerously-skip-permissions" : ""
+      }`,
     );
     const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 20 });
     if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
@@ -666,7 +676,9 @@ Constraints:
 
     const cmd = heredocPipe(
       implPrompt,
-      `claude -p --output-format stream-json --dangerously-skip-permissions --model claude-opus-4-6`,
+      `claude -p --output-format stream-json --model claude-opus-4-6${
+        args.claudeDangerouslySkipPermissions ? " --dangerously-skip-permissions" : ""
+      }`,
     );
     const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 60 });
     if (res.exitCode !== 0) throw new Error("Claude implementation failed.");

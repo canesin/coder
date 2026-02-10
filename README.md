@@ -75,6 +75,9 @@ By default, `coder` will:
 - Plan review uses Gemini CLI with search grounding to verify external API documentation.
 - The workflow files live under `.coder/artifacts/` by default (`ISSUE.md`, `PLAN.md`, `PLANREVIEW.md`).
 - Progress + logs are written under `.coder/` (see `.coder/state.json` and `.coder/logs/*.jsonl`).
+- Repo includes examples for local tool config: `.mcp.example.json` and `.claude/settings.example.json`.
+- Security model: this project orchestrates LLM agents that run shell commands. You should run it in an isolated environment (VM/container/throwaway devbox) with minimal credentials and no sensitive data. Hardening that environment is out of scope for this project.
+- Claude Code permissions: by default, `coder` passes `--dangerously-skip-permissions` to Claude Code. To force permission prompts, use `--claude-require-permissions` or set `CODER_CLAUDE_DANGEROUS=0`.
 
 ## MCP Autonomous Mode
 

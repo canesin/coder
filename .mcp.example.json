@@ -2,7 +2,7 @@
   "mcpServers": {
     "coder": {
       "command": "node",
-      "args": ["/home/fcc/Programming/AITOOLS/coder/bin/coder-mcp.js"],
+      "args": ["./bin/coder-mcp.js"],
       "env": {}
     }
   }
