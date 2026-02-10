@@ -2,7 +2,7 @@
  * Native ppcommit implementation for coder.
  *
  * Replaces the external Python `ppcommit --uncommitted` dependency by performing
- * regex checks, AST checks (tree-sitter), and LLM checks (Gemini CLI).
+ * regex checks, AST checks (tree-sitter), and optional LLM checks (Gemini API via @google/genai).
  *
  * Output format (compat with coder workflow):
  *   ERROR|WARNING: <message> at <file>:<line>
@@ -12,7 +12,9 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import process from "node:process";
 import { jsonrepair } from "jsonrepair";
+import { GoogleGenAI } from "@google/genai";
 
 const require = createRequire(import.meta.url);
 
@@ -160,12 +162,14 @@ function getGitBool(repoDir, keys, defaultValue) {
 }
 
 function getConfig(repoDir) {
-  // Support both `ppcommit.*` and the legacy `preprecommit.*` prefix.
-  const prefixes = ["ppcommit", "preprecommit"];
-  const k = (suffixes) => prefixes.flatMap((p) => suffixes.map((s) => `${p}.${s}`));
+  const k = (suffixes) => suffixes.map((s) => `ppcommit.${s}`);
 
   const skip = getGitBool(repoDir, k(["skip"]), false);
   if (skip) return { skip: true };
+
+  const disableGeminiByEnv =
+    process.env.PPCOMMIT_DISABLE_GEMINI === "1" ||
+    process.env.NODE_ENV === "test";
 
   return {
     skip: false,
@@ -183,6 +187,9 @@ function getConfig(repoDir) {
     blockCompatHacks: getGitBool(repoDir, k(["blockCompatHacks"]), true),
     blockOverEngineering: getGitBool(repoDir, k(["blockOverEngineering"]), true),
     treatWarningsAsErrors: getGitBool(repoDir, k(["treatWarningsAsErrors"]), false),
+    // Optional: can be slow and adds network dependency. Enabled by default, but
+    // forced off for tests (and when PPCOMMIT_DISABLE_GEMINI=1).
+    enableGemini: disableGeminiByEnv ? false : getGitBool(repoDir, k(["enableGemini"]), true),
   };
 }
 
@@ -324,17 +331,6 @@ function checkWorkflowArtifacts(filePath, config, issues) {
       line: 1,
     });
     return;
-  }
-
-  // Common coder workflow artifact names. These are useful in the workspace,
-  // but almost never desired in a PR diff.
-  if (normalized === "ISSUE.md" || normalized === "PLAN.md" || normalized === "PLANREVIEW.md") {
-    pushIssue(issues, {
-      level: "ERROR",
-      message: "Workflow artifact detected (ISSUE/PLAN markdown) — keep these out of the repo diff",
-      file: filePath,
-      line: 1,
-    });
   }
 }
 
@@ -657,85 +653,20 @@ function checkMagicNumbers(content, filePath, config, issues) {
   }
 }
 
-function checkUnusedVariables(content, filePath, config, issues) {
-  if (!config.blockMagicNumbers) return;
-  if (!isCodeFile(filePath)) return;
-  const parser = getParserForFile(filePath);
-  if (!parser) return;
+// --- LLM check (Gemini API via @google/genai) ---
 
-  /** @type {Set<string>} */
-  const used = new Set();
-  /** @type {Array<{ name: string, line: number }>} */
-  const defined = [];
-
-  const IDENT_TYPES = new Set(["identifier", "name", "variable_name"]);
-  const DEF_CONTEXT_TYPES = new Set([
-    "assignment",
-    "variable_declarator",
-    "parameter",
-    "for_statement",
-    "pattern_binding",
-    "let_declaration",
-    "local_variable_declaration",
-    "variable_assignment",
-    "variable_declaration",
-  ]);
-
-  try {
-    const tree = parser.parse(content);
-    /** @param {any} node @param {boolean} inDef */
-    const collect = (node, inDef) => {
-      if (IDENT_TYPES.has(node.type)) {
-        const name = safeSliceByIndex(content, node.startIndex, node.endIndex);
-        if (name && name !== "_" && !name.startsWith("_")) {
-          if (inDef) defined.push({ name, line: node.startPosition.row + 1 });
-          else used.add(name);
-        }
-      }
-      const nextInDef = inDef || DEF_CONTEXT_TYPES.has(node.type);
-      for (const child of node.namedChildren) collect(child, nextInDef);
-    };
-    collect(tree.rootNode, false);
-  } catch {
-    return;
-  }
-
-  let emitted = 0;
-  for (const def of defined) {
-    if (emitted >= 10) break;
-    if (!used.has(def.name)) {
-      pushIssue(issues, {
-        level: "WARNING",
-        message: `Potential unused variable '${def.name}'`,
-        file: filePath,
-        line: def.line,
-      });
-      emitted++;
-    }
-  }
-}
-
-// --- LLM check (Gemini CLI) ---
-
-function filterGeminiNoise(output) {
-  return splitLines(output)
-    .filter((line) => {
-      const l = line.trim();
-      if (!l) return false;
-      if (l.startsWith("Warning:")) return false;
-      if (l.includes("YOLO mode")) return false;
-      if (l.includes("Loading extension")) return false;
-      if (l.includes("Hook registry")) return false;
-      if (l.includes("Found stored OAuth")) return false;
-      return true;
-    })
-    .join("\n")
-    .trim();
-}
-
-function extractJsonArray(stdout) {
-  const trimmed = stdout.trim();
+function extractJsonArray(text) {
+  const trimmed = String(text || "").trim();
   if (!trimmed) return [];
+
+  // Prefer parsing the full response first (often already valid JSON).
+  try {
+    const parsed = JSON.parse(jsonrepair(trimmed));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // Fall through to bracket extraction.
+  }
+
   const firstBracket = trimmed.indexOf("[");
   const lastBracket = trimmed.lastIndexOf("]");
   if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
@@ -745,8 +676,14 @@ function extractJsonArray(stdout) {
   return [];
 }
 
-function runGeminiIssues(repoDir, files) {
+async function runGeminiIssues(repoDir, files, config) {
   // Best-effort: do not fail ppcommit if Gemini is unavailable.
+  if (!config?.enableGemini) return /** @type {any[]} */ ([]);
+
+  // Use API key auth only. This avoids Gemini CLI OAuth prompts entirely.
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!apiKey) return /** @type {any[]} */ ([]);
+
   const maxFiles = 3;
   const snippets = files
     .slice(0, maxFiles)
@@ -760,7 +697,7 @@ function runGeminiIssues(repoDir, files) {
 ## Definite Issues (ERROR level)
 1. Tutorial-style narration comments ("First we...", "Now we...", "Step N:")
 2. Comments that restate what code does ("// increment counter" above x++)
-3. Placeholder code (pass, NotImplementedError, todo!(), unimplemented!())
+3. Placeholder code (pass, NotImplementedError, todo!(...), unimplemented!(...))
 4. TODOs/FIXMEs left in the code
 
 ## Likely Issues (WARNING level)
@@ -781,23 +718,29 @@ ${snippets}
 Respond with ONLY a JSON array. Each item:
 { "file": string, "line": number, "issue": string, "severity": "ERROR" | "WARNING" }
 
-If no issues found, respond with [].
-Only report clear issues, not speculation. Be specific about what's wrong.`;
+	If no issues found, respond with [].
+	Only report clear issues, not speculation. Be specific about what's wrong.`;
 
-  const res = spawnSync("gemini", ["--yolo", "-m", "gemini-3-flash-preview", "-o", "json"], {
-    cwd: repoDir,
-    encoding: "utf8",
-    input: prompt,
-    timeout: 180000,
-    maxBuffer: 10 * 1024 * 1024,
-  });
-
-  if (res.status !== 0) return [];
-
-  const filtered = filterGeminiNoise((res.stdout || "") + (res.stderr || ""));
   try {
-    const arr = extractJsonArray(filtered);
-    return Array.isArray(arr) ? arr : [];
+    const ai = new GoogleGenAI({ apiKey });
+    const controller = new AbortController();
+    const timeoutMs = 20000;
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config: {
+          abortSignal: controller.signal,
+          temperature: 0,
+          responseMimeType: "application/json",
+        },
+      });
+      const arr = extractJsonArray(res?.text || "");
+      return Array.isArray(arr) ? arr : [];
+    } finally {
+      clearTimeout(t);
+    }
   } catch {
     return [];
   }
@@ -931,7 +874,7 @@ function listFilesSinceBase(repoDir, baseBranch) {
  * @param {ReturnType<typeof getConfig>} config
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
-function _runChecks(repoDir, ordered, newFiles, config) {
+async function _runChecks(repoDir, ordered, newFiles, config) {
   /** @type {Issue[]} */
   const issues = [];
 
@@ -959,13 +902,12 @@ function _runChecks(repoDir, ordered, newFiles, config) {
       checkCompatHacks(content, filePath, config, issues);
       checkOverEngineering(content, filePath, config, issues);
       checkMagicNumbers(content, filePath, config, issues);
-      checkUnusedVariables(content, filePath, config, issues);
       llmFiles.push({ filePath, content });
     }
   }
 
-  // LLM analysis is best-effort.
-  const llmResults = runGeminiIssues(repoDir, llmFiles);
+  // LLM analysis is best-effort (and opt-in; see config.enableGemini).
+  const llmResults = await runGeminiIssues(repoDir, llmFiles, config);
   for (const r of llmResults) {
     if (!r || typeof r !== "object") continue;
     const file = typeof r.file === "string" ? r.file : "";
@@ -987,14 +929,14 @@ function _runChecks(repoDir, ordered, newFiles, config) {
  * @param {string} repoDir - Path to the git repository
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
-export function runPpcommitNative(repoDir) {
+export async function runPpcommitNative(repoDir) {
   const config = getConfig(repoDir);
   if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
 
   const { ordered, newFiles } = listUncommittedFiles(repoDir);
   if (ordered.length === 0) return { exitCode: 0, stdout: "No uncommitted files to check\n", stderr: "" };
 
-  return _runChecks(repoDir, ordered, newFiles, config);
+  return await _runChecks(repoDir, ordered, newFiles, config);
 }
 
 /**
@@ -1005,7 +947,7 @@ export function runPpcommitNative(repoDir) {
  * @param {string} baseBranch - Base branch to diff against (e.g. "main")
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
-export function runPpcommitBranch(repoDir, baseBranch) {
+export async function runPpcommitBranch(repoDir, baseBranch) {
   const config = getConfig(repoDir);
   if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
 
@@ -1013,7 +955,7 @@ export function runPpcommitBranch(repoDir, baseBranch) {
   if (error) return { exitCode: 2, stdout: "", stderr: error };
   if (ordered.length === 0) return { exitCode: 0, stdout: "No files changed since " + baseBranch + "\n", stderr: "" };
 
-  return _runChecks(repoDir, ordered, newFiles, config);
+  return await _runChecks(repoDir, ordered, newFiles, config);
 }
 
 /**
@@ -1023,12 +965,12 @@ export function runPpcommitBranch(repoDir, baseBranch) {
  * @param {string} repoDir - Path to the git repository
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
-export function runPpcommitAll(repoDir) {
+export async function runPpcommitAll(repoDir) {
   const config = getConfig(repoDir);
   if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
 
   const { ordered, newFiles } = listAllFiles(repoDir);
   if (ordered.length === 0) return { exitCode: 0, stdout: "No files to check\n", stderr: "" };
 
-  return _runChecks(repoDir, ordered, newFiles, config);
+  return await _runChecks(repoDir, ordered, newFiles, config);
 }

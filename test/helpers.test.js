@@ -146,27 +146,15 @@ test("gitCleanOrThrow automatically ignores .gemini/ directory", () => {
   });
 });
 
-test("gitCleanOrThrow ignores root workflow artifacts when explicitly ignored", () => {
+test("gitCleanOrThrow throws when repo has modified files", () => {
   const { repoDir } = setupGitRepo({
-    "PLAN.md": "plan\n",
+    "a.txt": "a\n",
   });
-  writeFileSync(path.join(repoDir, "PLAN.md"), "updated plan\n", "utf8");
-
-  assert.doesNotThrow(() => {
-    gitCleanOrThrow(repoDir, ["PLAN.md"]);
-  });
-});
-
-test("gitCleanOrThrow does not ignore nested lookalike artifact paths", () => {
-  const { repoDir } = setupGitRepo({
-    "PLAN.md": "plan\n",
-    "docs/PLAN.md": "docs plan\n",
-  });
-  writeFileSync(path.join(repoDir, "docs", "PLAN.md"), "updated docs plan\n", "utf8");
+  writeFileSync(path.join(repoDir, "a.txt"), "b\n", "utf8");
 
   assert.throws(() => {
-    gitCleanOrThrow(repoDir, ["PLAN.md"]);
-  }, /docs\/PLAN\.md/);
+    gitCleanOrThrow(repoDir);
+  }, /a\.txt/);
 });
 
 test("sanitizeIssueMarkdown strips MCP auth noise and preserves markdown body", () => {

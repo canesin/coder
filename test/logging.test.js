@@ -7,10 +7,10 @@ import path from "node:path";
 import { makeJsonlLogger, closeAllLoggers, logsDir, sanitizeLogEvent } from "../src/logging.js";
 
 test("sanitizeLogEvent redacts common credential fields in strings", () => {
-  const raw = `{"accessToken":"abc123","refreshToken":"def456","token=xyz789","auth":"Bearer verylongtokenvalue12345"}`;
+  const raw = `{"accessToken":"abc123","refreshToken":"def456","token=xyz789","auth":"Bearer tokenvalue1234"}`;
   const sanitized = sanitizeLogEvent(raw);
   assert.match(sanitized, /\[REDACTED\]/);
-  assert.doesNotMatch(sanitized, /abc123|def456|xyz789|verylongtokenvalue12345/);
+  assert.doesNotMatch(sanitized, /abc123|def456|xyz789|tokenvalue1234/);
 });
 
 test("makeJsonlLogger writes redacted payloads", async () => {
@@ -26,4 +26,3 @@ test("makeJsonlLogger writes redacted payloads", async () => {
   assert.match(content, /\[REDACTED\]/);
   assert.doesNotMatch(content, /topsecret|alsosecret/);
 });
-

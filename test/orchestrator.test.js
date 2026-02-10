@@ -229,9 +229,6 @@ test("_ensureGitignore writes .geminiignore unignore rules for workflow artifact
   // eslint-disable-next-line no-new
   new CoderOrchestrator(ws);
   const content = readFileSync(path.join(ws, ".geminiignore"), "utf8");
-  assert.match(content, /!ISSUE\.md/);
-  assert.match(content, /!PLAN\.md/);
-  assert.match(content, /!PLANREVIEW\.md/);
   assert.match(content, /!\.coder\/$/m);
   assert.match(content, /!\.coder\/artifacts\/$/m);
   assert.match(content, /!\.coder\/artifacts\/ISSUE\.md/);

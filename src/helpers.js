@@ -275,10 +275,10 @@ export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {
   return head.join("\n").trim();
 }
 
-export function gitCleanOrThrow(repoDir, extraIgnore = []) {
+export function gitCleanOrThrow(repoDir) {
   const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  const ignorePatterns = [".coder/", ".gemini/", ...extraIgnore].map((p) => p.replace(/\\/g, "/"));
+  const ignorePatterns = [".coder/", ".gemini/"].map((p) => p.replace(/\\/g, "/"));
 
   const isIgnored = (filePath) => {
     return ignorePatterns.some((pattern) => {
@@ -411,8 +411,8 @@ Reference specific sections in the plan when identifying over-engineering.`;
   return result.status ?? 0;
 }
 
-export function runPpcommit(repoDir) {
-  return runPpcommitNative(repoDir);
+export async function runPpcommit(repoDir) {
+  return await runPpcommitNative(repoDir);
 }
 
 export function computeGitWorktreeFingerprint(repoDir) {

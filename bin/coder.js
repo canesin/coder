@@ -240,10 +240,10 @@ async function promptText(question) {
   }
 }
 
-function gitCleanOrThrow(repoDir, extraIgnore = []) {
+function gitCleanOrThrow(repoDir) {
   const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  const ignorePatterns = [".coder/", ".gemini/", ...extraIgnore].map((p) => p.replace(/\\/g, "/"));
+  const ignorePatterns = [".coder/", ".gemini/"].map((p) => p.replace(/\\/g, "/"));
 
   const isIgnored = (filePath) => {
     return ignorePatterns.some((pattern) => {
@@ -273,8 +273,8 @@ function gitCleanOrThrow(repoDir, extraIgnore = []) {
 
 // runPlanreview is imported from helpers.js (uses Gemini CLI)
 
-function runPpcommit(repoDir) {
-  return runPpcommitNative(repoDir);
+async function runPpcommit(repoDir) {
+  return await runPpcommitNative(repoDir);
 }
 
 function runHostTests(repoDir, args) {
@@ -369,18 +369,13 @@ async function run() {
 
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
   mkdirSync(artifactsDir, { recursive: true });
-  const legacyIssuePath = path.join(workspaceDir, args.issueFile);
-  const legacyPlanPath = path.join(workspaceDir, args.planFile);
-  const legacyCritiquePath = path.join(workspaceDir, args.critiqueFile);
   const modernIssuePath = path.join(artifactsDir, args.issueFile);
   const modernPlanPath = path.join(artifactsDir, args.planFile);
   const modernCritiquePath = path.join(artifactsDir, args.critiqueFile);
 
-  const hasModern = existsSync(modernIssuePath) || existsSync(modernPlanPath) || existsSync(modernCritiquePath);
-  const hasLegacy = existsSync(legacyIssuePath) || existsSync(legacyPlanPath) || existsSync(legacyCritiquePath);
-  const issuePath = hasModern ? modernIssuePath : hasLegacy ? legacyIssuePath : modernIssuePath;
-  const planPath = hasModern ? modernPlanPath : hasLegacy ? legacyPlanPath : modernPlanPath;
-  const critiquePath = hasModern ? modernCritiquePath : hasLegacy ? legacyCritiquePath : modernCritiquePath;
+  const issuePath = modernIssuePath;
+  const planPath = modernPlanPath;
+  const critiquePath = modernCritiquePath;
 
   const state = loadState(workspaceDir);
   const statePath = statePathFor(workspaceDir);
@@ -682,7 +677,7 @@ Constraints:
   // --- Step 7: Codex runs ppcommit, fixes, and tests ---
   if (!state.steps.codexReviewed) {
     process.stdout.write("\n[7/7] Codex: ppcommit + fixes + tests...\n");
-    const ppBefore = runPpcommit(repoWorktree);
+    const ppBefore = await runPpcommit(repoWorktree);
     log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
 
     const codexPrompt = `You are reviewing uncommitted changes. Run ppcommit and fix ALL issues it reports.
@@ -704,7 +699,7 @@ ppcommit output:
 
   // Hard gate: ppcommit must be clean after Codex
   process.stdout.write("\n[7.1/7] Verifying: ppcommit checks are clean...\n");
-  const ppAfter = runPpcommit(repoWorktree);
+  const ppAfter = await runPpcommit(repoWorktree);
   if (ppAfter.exitCode !== 0) {
     process.stdout.write(ppAfter.stdout || ppAfter.stderr);
     throw new Error("ppcommit still reports issues after Codex pass.");
@@ -741,7 +736,7 @@ ppcommit output:
   return 0;
 }
 
-function runPpcommitCli() {
+async function runPpcommitCli() {
   const args = process.argv.slice(3); // skip "node coder ppcommit"
   let baseBranch = "";
   let hasBase = false;
@@ -765,9 +760,9 @@ function runPpcommitCli() {
 
   let result;
   if (hasBase) {
-    result = runPpcommitBranch(repoDir, baseBranch);
+    result = await runPpcommitBranch(repoDir, baseBranch);
   } else {
-    result = runPpcommitAll(repoDir);
+    result = await runPpcommitAll(repoDir);
   }
   process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
@@ -776,7 +771,10 @@ function runPpcommitCli() {
 
 // Subcommand dispatch
 if (process.argv[2] === "ppcommit") {
-  runPpcommitCli();
+  runPpcommitCli().catch((err) => {
+    process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+    process.exitCode = 1;
+  });
 } else {
   run().catch(async (err) => {
     process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);

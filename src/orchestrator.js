@@ -229,25 +229,6 @@ export class CoderOrchestrator {
 
     const artifacts = [this.issueFile, this.planFile, this.critiqueFile];
 
-    // If the workspace itself is a git repo, also ignore legacy root artifacts via
-    // .git/info/exclude. (Avoid creating a fake .git/ directory for non-repos.)
-    const workspaceGitDir = path.join(this.workspaceDir, ".git");
-    if (existsSync(workspaceGitDir)) {
-      const excludePath = path.join(workspaceGitDir, "info", "exclude");
-      const excludeDir = path.dirname(excludePath);
-      if (!existsSync(excludeDir)) mkdirSync(excludeDir, { recursive: true });
-
-      let exContent = "";
-      if (existsSync(excludePath)) {
-        exContent = readFileSync(excludePath, "utf8");
-      }
-      const missing = artifacts.filter((e) => !exContent.split("\n").some((line) => line.trim() === e));
-      if (missing.length > 0) {
-        const suffix = exContent.endsWith("\n") || exContent === "" ? "" : "\n";
-        writeFileSync(excludePath, exContent + `${suffix}# coder workflow artifacts\n${missing.join("\n")}\n`);
-      }
-    }
-
     // Some Gemini versions prioritize .gitignore behavior. Explicitly unignore
     // workflow markdown artifacts for Gemini.
     const geminiIgnorePath = path.join(this.workspaceDir, ".geminiignore");
@@ -257,8 +238,6 @@ export class CoderOrchestrator {
     }
     // If `.coder/` is ignored, we must also unignore the intermediate dirs.
     const keepRules = [
-      // Legacy layout (workspace root)
-      ...artifacts.map((name) => `!${name}`),
       // Current layout (.coder/artifacts)
       "!.coder/",
       "!.coder/artifacts/",
@@ -286,31 +265,12 @@ export class CoderOrchestrator {
     saveState(this.workspaceDir, state);
   }
 
-  _legacyArtifactPaths() {
-    return {
-      issue: path.join(this.workspaceDir, this.issueFile),
-      plan: path.join(this.workspaceDir, this.planFile),
-      critique: path.join(this.workspaceDir, this.critiqueFile),
-    };
-  }
-
-  _newArtifactPaths() {
+  _artifactPaths() {
     return {
       issue: path.join(this.artifactsDir, this.issueFile),
       plan: path.join(this.artifactsDir, this.planFile),
       critique: path.join(this.artifactsDir, this.critiqueFile),
     };
-  }
-
-  _artifactPaths() {
-    const legacy = this._legacyArtifactPaths();
-    const modern = this._newArtifactPaths();
-
-    const hasModern = existsSync(modern.issue) || existsSync(modern.plan) || existsSync(modern.critique);
-    const hasLegacy = existsSync(legacy.issue) || existsSync(legacy.plan) || existsSync(legacy.critique);
-    if (hasModern) return modern;
-    if (hasLegacy) return legacy;
-    return modern;
   }
 
   _repoRoot(state) {
@@ -363,11 +323,8 @@ export class CoderOrchestrator {
   _checkArtifactCollisions({ force } = {}) {
     if (force) return;
 
-    const legacy = this._legacyArtifactPaths();
-    const modern = this._newArtifactPaths();
-    const hasArtifacts =
-      existsSync(legacy.issue) || existsSync(legacy.plan) || existsSync(legacy.critique) ||
-      existsSync(modern.issue) || existsSync(modern.plan) || existsSync(modern.critique);
+    const paths = this._artifactPaths();
+    const hasArtifacts = existsSync(paths.issue) || existsSync(paths.plan) || existsSync(paths.critique);
     const statePath = path.join(this.workspaceDir, ".coder", "state.json");
     const hasState = existsSync(statePath);
 
@@ -744,7 +701,7 @@ Return ONLY valid JSON in this schema:
       if (isGit.status !== 0) throw new Error(`Not a git repository: ${repoRoot}`);
 
       // Verify repo is clean
-      gitCleanOrThrow(repoRoot, [this.issueFile, this.planFile, this.critiqueFile]);
+      gitCleanOrThrow(repoRoot);
       state.steps.verifiedCleanRepo = true;
       this._saveState(state);
 
@@ -1204,7 +1161,7 @@ Hard constraints:
         if (res.exitCode !== 0) throw new Error("Codex review/fix failed.");
       };
 
-      const ppBefore = runPpcommit(workDir);
+      const ppBefore = await runPpcommit(workDir);
       state.steps.ppcommitInitiallyClean = ppBefore.exitCode === 0;
       this.log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
       this._saveState(state);
@@ -1224,14 +1181,14 @@ Hard constraints:
       // Hard gate: ppcommit must be clean. Retry Codex with explicit ppcommit
       // output to avoid silent drift between initial/final checks.
       const maxPpcommitRetries = 2;
-      let ppAfter = runPpcommit(workDir);
+      let ppAfter = await runPpcommit(workDir);
       this.log({ event: "ppcommit_after", attempt: 0, exitCode: ppAfter.exitCode });
       for (let attempt = 1; attempt <= maxPpcommitRetries && ppAfter.exitCode !== 0; attempt++) {
         const ppAfterOutput = (ppAfter.stdout || ppAfter.stderr || "").trim();
         this.log({ event: "ppcommit_retry", attempt, exitCode: ppAfter.exitCode });
         const retrySection = `ppcommit still failing after Codex pass. Fix ALL remaining ppcommit issues:\n---\n${ppAfterOutput}\n---`;
         await runCodexReview(retrySection);
-        ppAfter = runPpcommit(workDir);
+        ppAfter = await runPpcommit(workDir);
         this.log({ event: "ppcommit_after", attempt, exitCode: ppAfter.exitCode });
       }
       if (ppAfter.exitCode !== 0) {
@@ -1320,7 +1277,7 @@ Hard constraints:
       }
 
       // Defense-in-depth: run ppcommit again immediately before committing/pushing.
-      const ppNow = runPpcommit(repoRoot);
+      const ppNow = await runPpcommit(repoRoot);
       if (ppNow.exitCode !== 0) {
         throw new Error(`ppcommit reports issues prior to PR creation:\n${ppNow.stdout || ppNow.stderr}`);
       }
