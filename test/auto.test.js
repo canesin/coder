@@ -133,7 +133,7 @@ test("runAuto resume: skips already completed items and advances checkpoint", as
   assert.equal(persisted.issueQueue[1].status, "completed");
 });
 
-test("runAuto dependency handling: failed dependencies are soft and downstream issue is still attempted", async () => {
+test("runAuto dependency handling: skips issue when all dependencies failed", async () => {
   const ws = makeWorkspace();
   seedLoopState(ws, {
     version: 1,
@@ -153,13 +153,13 @@ test("runAuto dependency handling: failed dependencies are soft and downstream i
   const orch = new FakeAutoOrchestrator(ws);
   const result = await orch.runAuto();
 
-  assert.equal(orch.calls.some((c) => c.startsWith("draft:linear#123")), true);
-  assert.equal(result.completed, 1);
+  assert.equal(orch.calls.some((c) => c.startsWith("draft:linear#123")), false);
+  assert.equal(result.completed, 0);
   assert.equal(result.failed, 1);
-  assert.equal(result.skipped, 0);
+  assert.equal(result.skipped, 1);
 
   const persisted = loadLoopState(ws);
-  assert.equal(persisted.issueQueue[1].status, "completed");
+  assert.equal(persisted.issueQueue[1].status, "skipped");
 });
 
 test("runAuto stacked mode: dependent issue is drafted on dependency branch", async () => {

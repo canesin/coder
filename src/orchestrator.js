@@ -772,8 +772,10 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
         if (!issueMd.trim().startsWith("#")) {
           const fallback = stripAgentNoise(res.stdout || "", { dropLeadingOnly: true }).trim();
           if (!fallback.startsWith("#")) {
+            const rawPreview = (res.stdout || "").slice(0, 300).replace(/\n/g, "\\n");
             throw new Error(
-              "Gemini draft output did not contain valid ISSUE.md markdown after sanitization.",
+              "Gemini draft output did not contain valid ISSUE.md markdown after sanitization. " +
+              `Raw output preview (first 300 chars): "${rawPreview}"`,
             );
           }
           issueMd = fallback + "\n";
@@ -1668,8 +1670,10 @@ Return ONLY valid JSON in this schema:
       };
       saveLoopState(this.workspaceDir, loopState);
 
-      // Reset per-issue state from listIssues call
-      this._resetForNextIssue("", { destructive: destructiveReset });
+      // Reset per-issue state from listIssues call, using actual repo paths
+      // so destructiveReset can clean the working tree before the first issue.
+      const repoPaths = [...new Set(queue.map((e) => e.repoPath).filter(Boolean))];
+      this._resetForNextIssue(repoPaths[0] || "", { destructive: destructiveReset });
     } else {
       this._appendAutoLog({ event: "auto_resume", currentIndex: loopState.currentIndex });
       loopState.runnerPid = process.pid;
@@ -1752,11 +1756,27 @@ Return ONLY valid JSON in this schema:
         .filter((dep) => !!dep);
       entry.dependsOn = dependencyRefs;
 
-      // Failed dependencies are treated as soft ordering hints. We still
-      // attempt the issue and only use completed dependencies for stacked mode.
+      // Skip issues whose dependencies all failed — there's nothing to build on.
+      // If only some dependencies failed, treat remaining as stacking hints.
       let effectiveDependencyRefs = dependencyRefs;
       const blockedBy = dependencyRefs.filter((depRef) => failedRefs.has(depRef));
-      if (blockedBy.length > 0) {
+      if (blockedBy.length > 0 && blockedBy.length === dependencyRefs.length) {
+        // All dependencies failed — skip this issue entirely
+        entry.status = "skipped";
+        entry.error = `Skipped: all dependencies failed (${blockedBy.join(", ")})`;
+        entry.completedAt = new Date().toISOString();
+        failedRefs.add(issueRef(entry));
+        this._appendAutoLog({
+          event: "dependency_skipped",
+          index: i,
+          id: entry.id,
+          blockedBy,
+        });
+        loopState.currentIndex = i + 1;
+        saveLoopState(this.workspaceDir, loopState);
+        continue;
+      } else if (blockedBy.length > 0) {
+        // Some dependencies failed — proceed with the ones that succeeded
         this._appendAutoLog({
           event: "dependency_failed_continue",
           index: i,

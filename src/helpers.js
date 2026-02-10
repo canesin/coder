@@ -63,6 +63,7 @@ const AGENT_NOISE_LINE_PATTERNS = [
   /^Prompts updated for server:/i,
   /^Tools updated for server:/i,
   /^🔔\s*/u,
+  /^Prompt with name\b/,
 ];
 
 export class TestInfrastructureError extends Error {
@@ -278,7 +279,7 @@ export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {
 export function gitCleanOrThrow(repoDir) {
   const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  const ignorePatterns = [".coder/", ".gemini/"].map((p) => p.replace(/\\/g, "/"));
+  const ignorePatterns = [".coder/", ".gemini/", ".geminiignore"].map((p) => p.replace(/\\/g, "/"));
 
   const isIgnored = (filePath) => {
     return ignorePatterns.some((pattern) => {
@@ -404,10 +405,16 @@ Reference specific sections in the plan when identifying over-engineering.`;
   });
 
   const output = (result.stdout || "") + (result.stderr || "");
-  // Filter out gemini CLI startup/auth noise.
+  // Filter out gemini CLI startup/auth noise and strip preamble before first header.
   const filtered = stripAgentNoise(output).trim();
+  let critique = filtered;
+  const critiqueLines = filtered.split("\n");
+  const firstHeader = critiqueLines.findIndex((line) => line.trim().startsWith("#"));
+  if (firstHeader > 0) {
+    critique = critiqueLines.slice(firstHeader).join("\n").trim();
+  }
 
-  writeFileSync(critiquePath, filtered + "\n");
+  writeFileSync(critiquePath, critique + "\n");
   return result.status ?? 0;
 }
 
