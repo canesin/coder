@@ -457,13 +457,18 @@ export class CoderOrchestrator {
         if ((err.message || "").startsWith("MCP startup failure")) return false;
         return true;
       },
+      shouldConsumeRetry: (ctx) => {
+        // Rate limits don't count toward retry budget — we handle timing ourselves
+        if (ctx.error.name === "RateLimitError") return false;
+        return true;
+      },
       onFailedAttempt: async (err) => {
-        // For rate limits, override p-retry's backoff with the server's retry-after
+        // For rate limits, sleep the exact server-directed delay
         const details = `${err.rateLimitDetails || ""}\n${err.message || ""}`;
         if (isRateLimited(details)) {
           const serverDelay = parseRetryAfterMs(details);
-          if (serverDelay && serverDelay > backoffMs) {
-            await new Promise((r) => setTimeout(r, serverDelay - backoffMs));
+          if (serverDelay) {
+            await new Promise((r) => setTimeout(r, serverDelay));
           }
         }
         this.log({ event: "retry", attempt: err.attemptNumber, error: err.message });
