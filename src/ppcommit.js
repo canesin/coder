@@ -9,7 +9,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync, existsSync } from "node:fs";
+import os from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
@@ -118,21 +119,91 @@ const OVER_ENGINEERING_PATTERNS = [
   { pattern: /try\s*\{[^}]*try\s*\{[^}]*try\s*\{/s, name: "Excessive try-catch nesting (3+ levels)" },
 ];
 
-// Secret patterns
-const SECRET_PATTERNS = [
-  { pattern: /AKIA[0-9A-Z]{16}/, name: "AWS Access Key" },
-  { pattern: /(api[_-]?key|apikey)\s*[=:]\s*['"][^'"]{20,}['"]/i, name: "API key" },
-  { pattern: /(secret[_-]?key|secretkey)\s*[=:]\s*['"][^'"]{20,}['"]/i, name: "Secret key" },
-  { pattern: /(password|passwd|pwd)\s*[=:]\s*['"][^'"]+['"]/i, name: "Password" },
-  { pattern: /\btoken\b\s*[=:]\s*['"][^'"]{20,}['"]/i, name: "Token" },
-  { pattern: /bearer\s+[a-zA-Z0-9_.\\-]{20,}/i, name: "Bearer token" },
-  { pattern: /ghp_[a-zA-Z0-9]{36}/, name: "GitHub PAT" },
-  { pattern: /gho_[a-zA-Z0-9]{36}/, name: "GitHub OAuth Token" },
-  { pattern: /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/, name: "GitHub Fine-grained PAT" },
-  { pattern: /sk-[a-zA-Z0-9]{48}/, name: "OpenAI API Key" },
-  { pattern: /sk-proj-[a-zA-Z0-9_-]{80,}/, name: "OpenAI Project API Key" },
-  { pattern: /-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----/, name: "Private key" },
-];
+// --- Gitleaks integration (secret detection) ---
+
+let _gitleaksChecked = false;
+
+/**
+ * Verify gitleaks is installed. Throws if not found.
+ */
+function assertGitleaksInstalled() {
+  if (_gitleaksChecked) return;
+  const res = spawnSync("gitleaks", ["version"], { encoding: "utf8", timeout: 5000 });
+  if (res.status !== 0) {
+    throw new Error(
+      "gitleaks is required for secret detection but was not found in PATH. " +
+      "Install it: https://github.com/gitleaks/gitleaks#installing"
+    );
+  }
+  _gitleaksChecked = true;
+}
+
+/**
+ * Run gitleaks on the repository and return ppcommit-style issues,
+ * filtered to only the given file list.
+ *
+ * @param {string} repoDir
+ * @param {string[]} fileFilter - Only report findings in these files
+ * @returns {Issue[]}
+ */
+function runGitleaksDetect(repoDir, fileFilter) {
+  assertGitleaksInstalled();
+
+  const tmpReport = path.join(os.tmpdir(), `gitleaks-${process.pid}-${Date.now()}.json`);
+  const args = ["detect", "--no-git", "-s", repoDir, "-r", tmpReport, "-f", "json"];
+
+  // Use repo-local gitleaks.toml if present
+  const configPath = path.join(repoDir, "gitleaks.toml");
+  if (existsSync(configPath)) {
+    args.push("-c", configPath);
+  }
+
+  const res = spawnSync("gitleaks", args, {
+    cwd: repoDir,
+    encoding: "utf8",
+    timeout: 120000,
+  });
+
+  // Exit code 0 = no leaks, 1 = leaks found, other = gitleaks error
+  if (res.status !== 0 && res.status !== 1) {
+    try { unlinkSync(tmpReport); } catch {}
+    return [{
+      level: "ERROR",
+      message: `gitleaks failed (exit ${res.status}): ${(res.stderr || "").trim().slice(0, 200)}`,
+      file: ".",
+      line: 0,
+    }];
+  }
+
+  let findings;
+  try {
+    const report = readFileSync(tmpReport, "utf8");
+    findings = JSON.parse(report);
+  } catch {
+    return [];
+  } finally {
+    try { unlinkSync(tmpReport); } catch {}
+  }
+
+  if (!Array.isArray(findings) || findings.length === 0) return [];
+
+  const filterSet = new Set(fileFilter);
+  /** @type {Issue[]} */
+  const issues = [];
+  for (const f of findings) {
+    const file = f.File || "";
+    const relFile = path.relative(repoDir, path.resolve(repoDir, file));
+    if (!filterSet.has(relFile)) continue;
+    issues.push({
+      level: "ERROR",
+      message: `Secret detected by gitleaks (${f.RuleID || "unknown"}): ${f.Description || "potential secret"}. Use env vars or secret management.`,
+      file: relFile,
+      line: f.StartLine || 1,
+    });
+  }
+
+  return issues;
+}
 
 const MAGIC_NUMBER_THRESHOLD = 10;
 const MAGIC_NUMBER_ALLOWLIST = new Set([100, 1000, 60, 24, 365, 360, 180, 90]);
@@ -426,31 +497,6 @@ function checkPlaceholderCode(content, filePath, config, issues) {
         pushIssue(issues, {
           level: "ERROR",
           message: "Placeholder code detected. Complete the implementation before committing.",
-          file: filePath,
-          line: i + 1,
-        });
-        break;
-      }
-    }
-  }
-}
-
-function checkSecrets(content, filePath, config, issues) {
-  if (!config.blockSecrets) return;
-
-  // Skip common false-positive files
-  if (/\.(lock)$/.test(filePath) || /(^|\/|\\)package-lock\.json$/.test(filePath) || /(^|\/|\\)yarn\.lock$/.test(filePath)) {
-    return;
-  }
-
-  const lines = splitLines(content);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    for (const { pattern, name } of SECRET_PATTERNS) {
-      if (pattern.test(line)) {
-        pushIssue(issues, {
-          level: "ERROR",
-          message: `Potential secret detected (${name}). Use env vars or secret management.`,
           file: filePath,
           line: i + 1,
         });
@@ -878,6 +924,12 @@ async function _runChecks(repoDir, ordered, newFiles, config) {
   /** @type {Issue[]} */
   const issues = [];
 
+  // Secret detection via gitleaks (runs once for all files)
+  if (config.blockSecrets) {
+    const secretIssues = runGitleaksDetect(repoDir, ordered);
+    issues.push(...secretIssues);
+  }
+
   /** @type {{ filePath: string, content: string }[]} */
   const llmFiles = [];
 
@@ -890,8 +942,6 @@ async function _runChecks(repoDir, ordered, newFiles, config) {
 
     const content = readUtf8File(repoDir, filePath);
     if (!content) continue;
-
-    checkSecrets(content, filePath, config, issues);
 
     if (isCodeFile(filePath)) {
       checkEmojis(content, filePath, config, issues);
