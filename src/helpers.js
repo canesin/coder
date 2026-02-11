@@ -399,8 +399,10 @@ Reference specific sections in the plan when identifying over-engineering.`;
   });
 
   const output = (result.stdout || "") + (result.stderr || "");
-  // Filter out gemini CLI startup/auth noise and strip preamble before first header.
-  const filtered = stripAgentNoise(output).trim();
+  // Two-pass sanitization: strip leading noise first, then remove any remaining
+  // embedded MCP lines (same approach as sanitizeIssueMarkdown).
+  const cleaned = stripAgentNoise(output, { dropLeadingOnly: true });
+  const filtered = stripAgentNoise(cleaned).trim();
   let critique = filtered;
   const critiqueLines = filtered.split("\n");
   const firstHeader = critiqueLines.findIndex((line) => line.trim().startsWith("#"));
