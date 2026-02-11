@@ -159,33 +159,27 @@ export function extractJson(stdout) {
   const trimmed = stdout.trim();
   if (!trimmed) throw new Error("Empty response — no JSON to extract.");
 
-  // First try full JSON parse so envelopes like:
-  // {"response":"```json\\n{...}\\n```"} are handled as top-level JSON
-  // instead of matching the escaped code fence inside the string value.
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    try {
-      return JSON.parse(jsonrepair(trimmed));
-    } catch {
-      // fall through to extraction heuristics
+  // Fast path: input starts with { or [ — likely already JSON (possibly malformed).
+  if (trimmed[0] === "{" || trimmed[0] === "[") {
+    try { return JSON.parse(jsonrepair(trimmed)); } catch { /* fall through */ }
+  }
+
+  // Extract from markdown code fence.
+  const fenced = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/i);
+  if (fenced) {
+    try { return JSON.parse(jsonrepair(fenced[1].trim())); } catch { /* fall through */ }
+  }
+
+  // Extract the outermost { … } or [ … ] from surrounding prose.
+  const open = trimmed.search(/[{[]/);
+  if (open !== -1) {
+    const isArray = trimmed[open] === "[";
+    const close = trimmed.lastIndexOf(isArray ? "]" : "}");
+    if (close > open) {
+      try { return JSON.parse(jsonrepair(trimmed.slice(open, close + 1))); } catch { /* fall through */ }
     }
   }
 
-  const firstBrace = trimmed.indexOf("{");
-  const lastBrace = trimmed.lastIndexOf("}");
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    const candidate = trimmed.slice(firstBrace, lastBrace + 1);
-    try {
-      return JSON.parse(jsonrepair(candidate));
-    } catch {
-      // fall through
-    }
-  }
-
-  const fenced = trimmed.match(/```json\s*([\s\S]*?)\s*```/i);
-  if (fenced) return JSON.parse(jsonrepair(fenced[1].trim()));
-
-  // No JSON structure found — provide a helpful error instead of
-  // letting jsonrepair throw a confusing "Unexpected character" error.
   const preview = trimmed.length > 200 ? trimmed.slice(0, 200) + "…" : trimmed;
   throw new Error(`No JSON object found in response. Preview:\n${preview}`);
 }

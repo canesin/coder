@@ -1,51 +1,34 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { parseArgs as nodeParseArgs } from "node:util";
 
-import { jsonrepair } from "jsonrepair";
-import { z } from "zod";
+import Table from "cli-table3";
 
 import { AgentRunner } from "../src/agent-runner.js";
 import { HostSandboxProvider } from "../src/host-sandbox.js";
 import { closeAllLoggers, ensureLogsDir, makeJsonlLogger } from "../src/logging.js";
 import { runPpcommitNative, runPpcommitBranch, runPpcommitAll } from "../src/ppcommit.js";
-import { runPlanreview, upsertIssueCompletionBlock } from "../src/helpers.js";
+import {
+  buildSecrets,
+  extractJson,
+  formatCommandFailure,
+  gitCleanOrThrow,
+  heredocPipe,
+  requireEnvOneOf,
+  requireCommandOnPath,
+  runHostTests,
+  runPlanreview,
+  upsertIssueCompletionBlock,
+  DEFAULT_PASS_ENV,
+} from "../src/helpers.js";
 import { loadConfig } from "../src/config.js";
+import { IssuesPayloadSchema, QuestionsPayloadSchema, ProjectsPayloadSchema } from "../src/schemas.js";
 import { loadState, saveState, statePathFor } from "../src/state.js";
-import { detectTestCommand, runTestCommand } from "../src/test-runner.js";
-import { sanitizeBranchForRef, worktreePath, ensureWorktree } from "../src/worktrees.js";
-
-const IssuesPayloadSchema = z.object({
-  issues: z.array(
-    z.object({
-      source: z.enum(["github", "linear"]),
-      id: z.string().min(1),
-      title: z.string().min(1),
-      repo_path: z.string().default(""),
-      difficulty: z.number().int().min(1).max(5),
-      reason: z.string().default(""),
-    }),
-  ),
-  recommended_index: z.number().int(),
-});
-
-const QuestionsPayloadSchema = z.object({
-  questions: z.tuple([z.string().min(1), z.string().min(1), z.string().min(1)]),
-});
-
-const ProjectsPayloadSchema = z.object({
-  projects: z.array(
-    z.object({
-      id: z.string().min(1),
-      name: z.string().min(1),
-      key: z.string().default(""),
-    }),
-  ),
-});
+import { sanitizeBranchForRef, ensureWorktree } from "../src/worktrees.js";
 
 function usage() {
   return `coder (multi-agent orchestrator; host sandbox)
@@ -75,16 +58,6 @@ Optional:
   --claude-require-permissions           Force permission prompts for Claude Code (safer)
 `;
 }
-
-const DEFAULT_PASS_ENV = [
-  "GOOGLE_API_KEY",
-  "GEMINI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "OPENAI_API_KEY",
-  "GITHUB_TOKEN",
-  "LINEAR_API_KEY",
-];
 
 function parseArgs(argv) {
   const { values } = nodeParseArgs({
@@ -125,120 +98,6 @@ function parseArgs(argv) {
   };
 }
 
-function requireEnvOneOf(names) {
-  const resolved = buildSecrets(names);
-  for (const n of names) {
-    if (resolved[n]) return;
-  }
-  throw new Error(`Missing required env var: one of ${names.join(", ")}`);
-}
-
-function requireCommandOnPath(name) {
-  const res = spawnSync("bash", ["-lc", `command -v ${JSON.stringify(name)} >/dev/null 2>&1`], {
-    encoding: "utf8",
-  });
-  if (res.status !== 0) throw new Error(`Required command not found on PATH: ${name}`);
-}
-
-function buildSecrets(passEnv) {
-  const isSafeEnvName = (name) => /^[A-Z_][A-Z0-9_]*$/.test(name);
-  const readEnvFromLoginShell = (name) => {
-    if (!isSafeEnvName(name)) return "";
-    const script = `printf '%s' "\${${name}:-}"`;
-    const res = spawnSync("bash", ["-lc", script], { encoding: "utf8" });
-    if (res.status !== 0) return "";
-    return (res.stdout || "").trim();
-  };
-
-  /** @type {Record<string, string>} */
-  const secrets = {};
-  for (const key of passEnv) {
-    const val = process.env[key] || readEnvFromLoginShell(key);
-    if (val) secrets[key] = val;
-  }
-  // Gemini CLI can require GEMINI_API_KEY explicitly in some modes.
-  if (!secrets.GEMINI_API_KEY && secrets.GOOGLE_API_KEY) {
-    secrets.GEMINI_API_KEY = secrets.GOOGLE_API_KEY;
-  }
-  if (!secrets.GOOGLE_API_KEY && secrets.GEMINI_API_KEY) {
-    secrets.GOOGLE_API_KEY = secrets.GEMINI_API_KEY;
-  }
-  return secrets;
-}
-
-function formatCommandFailure(label, res, maxLen = 1200) {
-  const exit = typeof res?.exitCode === "number" ? res.exitCode : "unknown";
-  const raw = `${res?.stderr || ""}\n${res?.stdout || ""}`.trim();
-  const isNoiseLine = (line) => {
-    const l = String(line || "");
-    return (
-      /^Warning:/i.test(l) ||
-      /Skipping extension in .*Configuration file not found/i.test(l) ||
-      /YOLO mode/i.test(l) ||
-      /Loading extension/i.test(l) ||
-      /Hook registry/i.test(l) ||
-      /Server '/i.test(l) ||
-      /supports tool updates/i.test(l) ||
-      /Listening for changes/i.test(l) ||
-      /Found stored OAuth/i.test(l) ||
-      /rejected stored OAuth token/i.test(l) ||
-      /Please re-authenticate using:\s*\/mcp auth/i.test(l) ||
-      /Both GOOGLE_API_KEY and GEMINI_API_KEY are set/i.test(l) ||
-      /\bUsing GOOGLE_API_KEY\b/i.test(l) ||
-      /updated for server:/i.test(l) ||
-      /Tools changed,\s*updating Gemini context/i.test(l) ||
-      /Received (?:resource|prompt|tool) update notification/i.test(l) ||
-      /^\[INFO\]\s*(?:Tools|Prompts|Resources) updated for server:/i.test(l) ||
-      /^Resources updated for server:/i.test(l) ||
-      /^Prompts updated for server:/i.test(l) ||
-      /^Tools updated for server:/i.test(l) ||
-      /^🔔\s*/u.test(l)
-    );
-  };
-  const stripNoise = (text) =>
-    String(text || "")
-      .replace(/\r\n/g, "\n")
-      .split("\n")
-      .filter((line) => !isNoiseLine(line))
-      .join("\n")
-      .trim();
-
-  const filteredRaw = stripNoise(raw);
-  let detail = filteredRaw || raw || "No stdout/stderr captured.";
-
-  if (raw) {
-    try {
-      const parsed = extractJson(raw);
-      if (parsed?.error?.message) detail = parsed.error.message;
-    } catch {
-      // best-effort parsing only
-    }
-  }
-
-  if (detail.length > maxLen) detail = "…" + detail.slice(-maxLen);
-  const hint =
-    /must specify the GEMINI_API_KEY environment variable/i.test(raw) ||
-    /GEMINI_API_KEY/i.test(detail)
-      ? " Hint: set GEMINI_API_KEY (GOOGLE_API_KEY is also accepted and auto-aliased)."
-      : "";
-  return `${label} (exit ${exit}).${hint}\n${detail}`;
-}
-
-function extractJson(stdout) {
-  const trimmed = stdout.trim();
-  const fenced = trimmed.match(/```json\s*([\s\S]*?)\s*```/i);
-  if (fenced) return JSON.parse(jsonrepair(fenced[1].trim()));
-
-  const firstBrace = trimmed.indexOf("{");
-  const lastBrace = trimmed.lastIndexOf("}");
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    const candidate = trimmed.slice(firstBrace, lastBrace + 1);
-    return JSON.parse(jsonrepair(candidate));
-  }
-
-  return JSON.parse(jsonrepair(trimmed));
-}
-
 async function promptText(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -249,109 +108,29 @@ async function promptText(question) {
   }
 }
 
-function gitCleanOrThrow(repoDir) {
-  const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
-  if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  const ignorePatterns = [".coder/", ".gemini/"].map((p) => p.replace(/\\/g, "/"));
-
-  const isIgnored = (filePath) => {
-    return ignorePatterns.some((pattern) => {
-      const normalizedPath = filePath.replace(/\\/g, "/");
-      if (pattern.endsWith("/")) {
-        return normalizedPath.startsWith(pattern);
-      }
-      if (pattern.includes("/")) {
-        return normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`);
-      }
-      return normalizedPath === pattern;
-    });
-  };
-
-  const lines = (res.stdout || "")
-    .split("\n")
-    .filter((l) => {
-      if (l.trim() === "") return false;
-      const pathField = l.slice(3);
-      const filePath = pathField.includes(" -> ") ? pathField.split(" -> ").pop() || pathField : pathField;
-      return !isIgnored(filePath);
-    });
-  if (lines.length > 0) {
-    throw new Error(`Repo working tree is not clean: ${repoDir}\n${lines.join("\n")}`);
-  }
-}
-
-// runPlanreview is imported from helpers.js (uses Gemini CLI)
-
 async function runPpcommit(repoDir, ppcommitConfig) {
   return await runPpcommitNative(repoDir, ppcommitConfig);
 }
 
-function runHostTests(repoDir, args) {
-  if (args.testCmd) {
-    const res = spawnSync("bash", ["-lc", args.testCmd], {
-      cwd: repoDir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return {
-      cmd: ["bash", "-lc", args.testCmd],
-      exitCode: res.status ?? 0,
-      stdout: res.stdout || "",
-      stderr: res.stderr || "",
-    };
-  }
-
-  const detected = detectTestCommand(repoDir);
-  if (!detected) {
-    if (args.allowNoTests) return { cmd: null, exitCode: 0, stdout: "", stderr: "" };
-    throw new Error(
-      `No tests detected for repo ${repoDir}. Pass --test-cmd \"...\" or --allow-no-tests.`,
-    );
-  }
-
-  const res = runTestCommand(repoDir, detected);
-  return { cmd: detected, ...res };
-}
-
-function heredocPipe(text, pipeCmd) {
-  const marker = `CODER_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-  if (text.includes(marker)) {
-    return heredocPipe(text + "\n", pipeCmd);
-  }
-  const normalized = text.replace(/\r\n/g, "\n");
-  return `cat <<'${marker}' | ${pipeCmd}\n${normalized}\n${marker}`;
-}
-
 function renderIssuesTable(issues, recommendedIndex) {
-  const headers = [" #", "Source", "ID", "Diff", "Title", "Reason"];
-  const rows = issues.map((it, i) => [
-    i === recommendedIndex ? `\u2192${i + 1}` : ` ${i + 1}`,
-    it.source,
-    it.id,
-    `${it.difficulty}/5`,
-    it.title,
-    it.reason || "",
-  ]);
-
-  const maxColWidths = [5, 6, 24, 4, 42, 32];
-  const widths = headers.map((h, col) => {
-    const dataMax = Math.max(h.length, ...rows.map((r) => r[col].length));
-    return Math.min(dataMax, maxColWidths[col]);
+  const table = new Table({
+    head: [" #", "Source", "ID", "Diff", "Title", "Reason"],
+    colWidths: [6, 8, 26, 6, 44, 34],
+    style: { head: [], border: [] },
+    wordWrap: true,
   });
-
-  const trunc = (s, w) => (s.length > w ? s.slice(0, w - 1) + "\u2026" : s.padEnd(w));
-  const hr = (l, m, r) => l + widths.map((w) => "\u2500".repeat(w + 2)).join(m) + r;
-  const fmtRow = (cells) =>
-    "\u2502" + cells.map((c, i) => ` ${trunc(c, widths[i])} `).join("\u2502") + "\u2502";
-
-  let out = "";
-  out += hr("\u250c", "\u252c", "\u2510") + "\n";
-  out += fmtRow(headers) + "\n";
-  out += hr("\u251c", "\u253c", "\u2524") + "\n";
-  for (const r of rows) out += fmtRow(r) + "\n";
-  out += hr("\u2514", "\u2534", "\u2518") + "\n";
-  out += "\u2192 = Gemini recommendation\n";
-  return out;
+  for (let i = 0; i < issues.length; i++) {
+    const it = issues[i];
+    table.push([
+      i === recommendedIndex ? `\u2192${i + 1}` : ` ${i + 1}`,
+      it.source,
+      it.id,
+      `${it.difficulty}/5`,
+      it.title,
+      it.reason || "",
+    ]);
+  }
+  return table.toString() + "\n\u2192 = Gemini recommendation\n";
 }
 
 async function run() {
@@ -724,7 +503,7 @@ ppcommit output:
 
   // Hard gate: tests must pass on host
   process.stdout.write("\n[7.2/7] Running tests on host...\n");
-  const testRes = runHostTests(repoWorktree, args);
+  const testRes = await runHostTests(repoWorktree, args);
   if (testRes.cmd) process.stdout.write(`Test command: ${testRes.cmd.join(" ")}\n`);
   if (testRes.exitCode !== 0) {
     process.stdout.write(testRes.stdout);

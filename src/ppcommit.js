@@ -613,43 +613,45 @@ function checkMagicNumbers(content, filePath, config, issues) {
   const parser = getParserForFile(filePath);
   if (!parser) return;
 
-  let count = 0;
+  let tree;
   try {
-    const tree = parser.parse(content);
-    walkTree(tree.rootNode, (node) => {
-      if (count >= 5) return;
-      const t = node.type;
-      if (
-        t === "integer" ||
-        t === "float" ||
-        t === "number" ||
-        t === "integer_literal" ||
-        t === "float_literal" ||
-        t === "floating_point_literal" ||
-        t === "decimal_integer_literal" ||
-        t === "hex_integer_literal" ||
-        t === "octal_integer_literal" ||
-        t === "binary_integer_literal" ||
-        t === "int_literal"
-      ) {
-        const literal = safeSliceByIndex(content, node.startIndex, node.endIndex);
-        const value = parseNumericLiteral(literal);
-        if (value === null) return;
-        if (Math.abs(value) <= MAGIC_NUMBER_THRESHOLD) return;
-        if (MAGIC_NUMBER_ALLOWLIST.has(value)) return;
-
-        pushIssue(issues, {
-          level: "WARNING",
-          message: `Magic number ${literal} found. Consider using a named constant.`,
-          file: filePath,
-          line: node.startPosition.row + 1,
-        });
-        count++;
-      }
-    });
+    tree = parser.parse(content);
   } catch {
-    // Best-effort; ignore parse errors.
+    return; // skip file if tree-sitter can't parse it
   }
+
+  let count = 0;
+  walkTree(tree.rootNode, (node) => {
+    if (count >= 5) return;
+    const t = node.type;
+    if (
+      t === "integer" ||
+      t === "float" ||
+      t === "number" ||
+      t === "integer_literal" ||
+      t === "float_literal" ||
+      t === "floating_point_literal" ||
+      t === "decimal_integer_literal" ||
+      t === "hex_integer_literal" ||
+      t === "octal_integer_literal" ||
+      t === "binary_integer_literal" ||
+      t === "int_literal"
+    ) {
+      const literal = safeSliceByIndex(content, node.startIndex, node.endIndex);
+      const value = parseNumericLiteral(literal);
+      if (value === null) return;
+      if (Math.abs(value) <= MAGIC_NUMBER_THRESHOLD) return;
+      if (MAGIC_NUMBER_ALLOWLIST.has(value)) return;
+
+      pushIssue(issues, {
+        level: "WARNING",
+        message: `Magic number ${literal} found. Consider using a named constant.`,
+        file: filePath,
+        line: node.startPosition.row + 1,
+      });
+      count++;
+    }
+  });
 }
 
 // --- LLM check (Gemini API via @google/genai) ---

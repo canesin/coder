@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import os from "node:os";
+import merge from "deepmerge";
 import { z } from "zod";
 
 export const PpcommitConfigSchema = z.object({
@@ -69,19 +70,23 @@ export function repoConfigPath(workspaceDir) {
   return path.join(workspaceDir, "coder.json");
 }
 
+// Arrays replace (not concat); undefined keys are dropped before merging.
+const overwriteMerge = (_target, source) => source;
+
+function dropUndefined(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return obj;
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = dropUndefined(v);
+  }
+  return out;
+}
+
 export function deepMerge(base, override) {
-  if (!override || typeof override !== "object" || Array.isArray(override)) {
-    return override === undefined ? base : override;
-  }
-  if (!base || typeof base !== "object" || Array.isArray(base)) {
-    return override;
-  }
-  const result = { ...base };
-  for (const key of Object.keys(override)) {
-    if (override[key] === undefined) continue;
-    result[key] = deepMerge(base[key], override[key]);
-  }
-  return result;
+  if (override === undefined) return base;
+  if (override === null || typeof override !== "object" || Array.isArray(override)) return override;
+  if (!base || typeof base !== "object" || Array.isArray(base)) return override;
+  return merge(base, dropUndefined(override), { arrayMerge: overwriteMerge });
 }
 
 function readJson(filePath) {
