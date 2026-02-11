@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { TestConfigSchema } from "./schemas.js";
+import { loadConfig } from "./config.js";
 
 export function detectTestCommand(repoDir) {
   const has = (rel) => existsSync(path.join(repoDir, rel));
@@ -34,27 +36,57 @@ export function runTestCommand(repoDir, argv) {
 }
 
 /**
- * Load and validate a test config from .coder/test.json (or custom path).
+ * Load and validate a test config from coder.json test section,
+ * falling back to .coder/test.json (legacy) with a deprecation warning.
  * @param {string} repoDir
  * @param {string} [configPath]
  * @returns {object|null} Parsed TestConfig or null if not found/invalid
  */
 export function loadTestConfig(repoDir, configPath) {
-  const p = configPath
-    ? path.resolve(repoDir, configPath)
-    : path.join(repoDir, ".coder", "test.json");
+  // If explicit configPath given, use legacy .coder/test.json path directly
+  if (configPath) {
+    const p = path.resolve(repoDir, configPath);
+    if (!existsSync(p)) return null;
+    try {
+      const raw = JSON.parse(readFileSync(p, "utf8"));
+      return TestConfigSchema.parse(raw);
+    } catch (err) {
+      const details =
+        err && typeof err === "object" && "issues" in err
+          ? err.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")
+          : err?.message || String(err);
+      throw new Error(`Invalid test config at ${p}: ${details}`);
+    }
+  }
 
-  if (!existsSync(p)) return null;
+  // Check unified config first
+  const config = loadConfig(repoDir);
+  if (config.test.command) {
+    return {
+      setup: config.test.setup,
+      healthCheck: config.test.healthCheck,
+      test: config.test.command,
+      teardown: config.test.teardown,
+      timeoutMs: config.test.timeoutMs,
+    };
+  }
 
+  // Fall back to legacy .coder/test.json
+  const legacyPath = path.join(repoDir, ".coder", "test.json");
+  if (!existsSync(legacyPath)) return null;
+
+  process.stderr.write(
+    "WARNING: .coder/test.json is deprecated. Move test config to coder.json \"test\" section.\n",
+  );
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = JSON.parse(readFileSync(legacyPath, "utf8"));
     return TestConfigSchema.parse(raw);
   } catch (err) {
     const details =
       err && typeof err === "object" && "issues" in err
         ? err.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")
         : err?.message || String(err);
-    throw new Error(`Invalid test config at ${p}: ${details}`);
+    throw new Error(`Invalid test config at ${legacyPath}: ${details}`);
   }
 }
 

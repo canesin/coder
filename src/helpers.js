@@ -418,8 +418,8 @@ Reference specific sections in the plan when identifying over-engineering.`;
   return result.status ?? 0;
 }
 
-export async function runPpcommit(repoDir) {
-  return await runPpcommitNative(repoDir);
+export async function runPpcommit(repoDir, ppcommitConfig) {
+  return await runPpcommitNative(repoDir, ppcommitConfig);
 }
 
 export function computeGitWorktreeFingerprint(repoDir) {

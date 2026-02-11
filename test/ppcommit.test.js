@@ -24,11 +24,10 @@ function makeRepo() {
   return dir;
 }
 
-test("ppcommit: skip via git config", async () => {
+test("ppcommit: skip via config", async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "a.js"), "// TODO: should be ignored\n", "utf8");
-  run("git", ["config", "ppcommit.skip", "true"], repo);
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { skip: true });
   assert.equal(r.exitCode, 0);
   assert.match(r.stdout, /skipped/i);
 });
@@ -66,8 +65,7 @@ test("ppcommit: treatWarningsAsErrors upgrades warnings", async () => {
   // Emoji in code should be a warning by default.
   const smile = String.fromCodePoint(0x1F642);
   writeFileSync(path.join(repo, "a.js"), `// hello ${smile}\n`, "utf8");
-  run("git", ["config", "ppcommit.treatWarningsAsErrors", "true"], repo);
-  const r = await runPpcommitNative(repo);
+  const r = await runPpcommitNative(repo, { treatWarningsAsErrors: true });
   assert.equal(r.exitCode, 1);
   assert.match(r.stdout, /^ERROR: Emoji character in code at a\.js:1$/m);
 });
@@ -151,14 +149,13 @@ test("ppcommit branch: clean files pass checks", async () => {
   assert.equal(r.exitCode, 0);
 });
 
-test("ppcommit branch: skip via git config", async () => {
+test("ppcommit branch: skip via config", async () => {
   const repo = makeRepoWithMainBranch();
   run("git", ["checkout", "-b", "feat"], repo);
   writeFileSync(path.join(repo, "a.js"), "// TODO: should be ignored\n", "utf8");
   run("git", ["add", "a.js"], repo);
   run("git", ["commit", "-m", "add a.js"], repo);
-  run("git", ["config", "ppcommit.skip", "true"], repo);
-  const r = await runPpcommitBranch(repo, "main");
+  const r = await runPpcommitBranch(repo, "main", { skip: true });
   assert.equal(r.exitCode, 0);
   assert.match(r.stdout, /skipped/i);
 });

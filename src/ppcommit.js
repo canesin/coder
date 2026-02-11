@@ -16,6 +16,7 @@ import path from "node:path";
 import process from "node:process";
 import { jsonrepair } from "jsonrepair";
 import { GoogleGenAI } from "@google/genai";
+import { loadConfig, PpcommitConfigSchema } from "./config.js";
 
 const require = createRequire(import.meta.url);
 
@@ -208,60 +209,12 @@ function runGitleaksDetect(repoDir, fileFilter) {
 const MAGIC_NUMBER_THRESHOLD = 10;
 const MAGIC_NUMBER_ALLOWLIST = new Set([100, 1000, 60, 24, 365, 360, 180, 90]);
 
-// --- Git config ---
-
-function parseGitBool(value, defaultValue) {
-  if (!value) return defaultValue;
-  const v = value.trim().toLowerCase();
-  if (["true", "1", "yes", "on"].includes(v)) return true;
-  if (["false", "0", "no", "off"].includes(v)) return false;
-  return defaultValue;
-}
-
-function gitConfigGet(repoDir, key) {
-  const res = spawnSync("git", ["config", "--get", key], { cwd: repoDir, encoding: "utf8" });
-  if (res.status !== 0) return "";
-  return (res.stdout || "").trim();
-}
-
-function getGitBool(repoDir, keys, defaultValue) {
-  for (const key of keys) {
-    const val = gitConfigGet(repoDir, key);
-    if (val) return parseGitBool(val, defaultValue);
-  }
-  return defaultValue;
-}
-
-function getConfig(repoDir) {
-  const k = (suffixes) => suffixes.map((s) => `ppcommit.${s}`);
-
-  const skip = getGitBool(repoDir, k(["skip"]), false);
-  if (skip) return { skip: true };
-
-  const disableGeminiByEnv =
-    process.env.PPCOMMIT_DISABLE_GEMINI === "1" ||
-    process.env.NODE_ENV === "test";
-
-  return {
-    skip: false,
-    blockNewMarkdown: getGitBool(repoDir, k(["blockNewMarkdown"]), true),
-    // Prevent committing workflow/tool internals by default.
-    blockWorkflowArtifacts: getGitBool(repoDir, k(["blockWorkflowArtifacts"]), true),
-    blockEmojisInCode: getGitBool(repoDir, k(["blockEmojisInCode", "blockEmojis"]), true),
-    blockTodos: getGitBool(repoDir, k(["blockTodos"]), true),
-    blockFixmes: getGitBool(repoDir, k(["blockFixmes"]), true),
-    blockMagicNumbers: getGitBool(repoDir, k(["blockMagicNumbers"]), true),
-    blockNarrationComments: getGitBool(repoDir, k(["blockNarrationComments"]), true),
-    blockLlmMarkers: getGitBool(repoDir, k(["blockLlmMarkers"]), true),
-    blockPlaceholderCode: getGitBool(repoDir, k(["blockPlaceholderCode"]), true),
-    blockSecrets: getGitBool(repoDir, k(["blockSecrets"]), true),
-    blockCompatHacks: getGitBool(repoDir, k(["blockCompatHacks"]), true),
-    blockOverEngineering: getGitBool(repoDir, k(["blockOverEngineering"]), true),
-    treatWarningsAsErrors: getGitBool(repoDir, k(["treatWarningsAsErrors"]), false),
-    // Optional: can be slow and adds network dependency. Enabled by default, but
-    // forced off for tests (and when PPCOMMIT_DISABLE_GEMINI=1).
-    enableGemini: disableGeminiByEnv ? false : getGitBool(repoDir, k(["enableGemini"]), true),
-  };
+function resolvePpcommitConfig(repoDir, ppcommitConfig) {
+  if (ppcommitConfig) return PpcommitConfigSchema.parse(ppcommitConfig);
+  const disableGemini = process.env.PPCOMMIT_DISABLE_GEMINI === "1" || process.env.NODE_ENV === "test";
+  const config = loadConfig(repoDir).ppcommit;
+  if (disableGemini) return { ...config, enableGemini: false };
+  return config;
 }
 
 // --- File discovery ---
@@ -774,7 +727,7 @@ Respond with ONLY a JSON array. Each item:
     const t = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: config?.geminiModel || "gemini-3-flash-preview",
         contents: prompt,
         config: {
           abortSignal: controller.signal,
@@ -979,8 +932,8 @@ async function _runChecks(repoDir, ordered, newFiles, config) {
  * @param {string} repoDir - Path to the git repository
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
-export async function runPpcommitNative(repoDir) {
-  const config = getConfig(repoDir);
+export async function runPpcommitNative(repoDir, ppcommitConfig) {
+  const config = resolvePpcommitConfig(repoDir, ppcommitConfig);
   if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
 
   const { ordered, newFiles } = listUncommittedFiles(repoDir);
@@ -997,8 +950,8 @@ export async function runPpcommitNative(repoDir) {
  * @param {string} baseBranch - Base branch to diff against (e.g. "main")
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
-export async function runPpcommitBranch(repoDir, baseBranch) {
-  const config = getConfig(repoDir);
+export async function runPpcommitBranch(repoDir, baseBranch, ppcommitConfig) {
+  const config = resolvePpcommitConfig(repoDir, ppcommitConfig);
   if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
 
   const { ordered, newFiles, error } = listFilesSinceBase(repoDir, baseBranch);
@@ -1015,8 +968,8 @@ export async function runPpcommitBranch(repoDir, baseBranch) {
  * @param {string} repoDir - Path to the git repository
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
-export async function runPpcommitAll(repoDir) {
-  const config = getConfig(repoDir);
+export async function runPpcommitAll(repoDir, ppcommitConfig) {
+  const config = resolvePpcommitConfig(repoDir, ppcommitConfig);
   if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
 
   const { ordered, newFiles } = listAllFiles(repoDir);

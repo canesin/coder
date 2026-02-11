@@ -1,0 +1,151 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import {
+  deepMerge,
+  loadConfig,
+  resolveConfig,
+  userConfigPath,
+  userConfigDir,
+  repoConfigPath,
+  CoderConfigSchema,
+} from "../src/config.js";
+
+test("deepMerge: nested objects", () => {
+  const base = { a: { b: 1, c: 2 }, d: 3 };
+  const override = { a: { b: 10 }, e: 4 };
+  const result = deepMerge(base, override);
+  assert.deepEqual(result, { a: { b: 10, c: 2 }, d: 3, e: 4 });
+});
+
+test("deepMerge: arrays replace, not concat", () => {
+  const base = { items: [1, 2, 3] };
+  const override = { items: [4, 5] };
+  const result = deepMerge(base, override);
+  assert.deepEqual(result, { items: [4, 5] });
+});
+
+test("deepMerge: null values override", () => {
+  const base = { a: { b: 1 } };
+  const override = { a: null };
+  const result = deepMerge(base, override);
+  assert.equal(result.a, null);
+});
+
+test("deepMerge: undefined values are skipped", () => {
+  const base = { a: 1, b: 2 };
+  const override = { a: undefined, b: 3 };
+  const result = deepMerge(base, override);
+  assert.deepEqual(result, { a: 1, b: 3 });
+});
+
+test("loadConfig: no files returns all defaults", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = loadConfig(dir);
+  const defaults = CoderConfigSchema.parse({});
+  assert.deepEqual(config, defaults);
+});
+
+test("loadConfig: user config only merges with defaults", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const xdg = mkdtempSync(path.join(os.tmpdir(), "coder-xdg-"));
+  mkdirSync(path.join(xdg, "coder"), { recursive: true });
+  writeFileSync(
+    path.join(xdg, "coder", "config.json"),
+    JSON.stringify({ verbose: true, models: { claude: "claude-sonnet-4-5-20250929" } }),
+  );
+
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = xdg;
+  try {
+    const config = loadConfig(dir);
+    assert.equal(config.verbose, true);
+    assert.equal(config.models.claude, "claude-sonnet-4-5-20250929");
+    assert.equal(config.models.gemini, "gemini-2.5-flash"); // default preserved
+  } finally {
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+  }
+});
+
+test("loadConfig: repo config overrides user config", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const xdg = mkdtempSync(path.join(os.tmpdir(), "coder-xdg-"));
+  mkdirSync(path.join(xdg, "coder"), { recursive: true });
+  writeFileSync(
+    path.join(xdg, "coder", "config.json"),
+    JSON.stringify({ ppcommit: { blockTodos: false }, verbose: true }),
+  );
+  writeFileSync(
+    path.join(dir, "coder.json"),
+    JSON.stringify({ ppcommit: { blockTodos: true }, verbose: false }),
+  );
+
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = xdg;
+  try {
+    const config = loadConfig(dir);
+    assert.equal(config.ppcommit.blockTodos, true); // repo wins
+    assert.equal(config.verbose, false); // repo wins
+  } finally {
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+  }
+});
+
+test("resolveConfig: CLI overrides win over all", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  writeFileSync(
+    path.join(dir, "coder.json"),
+    JSON.stringify({ verbose: false }),
+  );
+  const config = resolveConfig(dir, { verbose: true });
+  assert.equal(config.verbose, true);
+});
+
+test("resolveConfig: deep overrides merge correctly", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir, { test: { command: "npm test" } });
+  assert.equal(config.test.command, "npm test");
+  assert.equal(config.test.timeoutMs, 600000); // default preserved
+});
+
+test("userConfigPath: respects XDG_CONFIG_HOME", () => {
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = "/custom/config";
+  try {
+    assert.equal(userConfigPath(), "/custom/config/coder/config.json");
+  } finally {
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+  }
+});
+
+test("userConfigDir: respects XDG_CONFIG_HOME", () => {
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = "/custom/config";
+  try {
+    assert.equal(userConfigDir(), "/custom/config/coder");
+  } finally {
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+  }
+});
+
+test("userConfigPath: falls back to ~/.config", () => {
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  delete process.env.XDG_CONFIG_HOME;
+  try {
+    const expected = path.join(os.homedir(), ".config", "coder", "config.json");
+    assert.equal(userConfigPath(), expected);
+  } finally {
+    if (origXdg !== undefined) process.env.XDG_CONFIG_HOME = origXdg;
+  }
+});
+
+test("repoConfigPath: returns coder.json in workspace", () => {
+  assert.equal(repoConfigPath("/some/workspace"), "/some/workspace/coder.json");
+});

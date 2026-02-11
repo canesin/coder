@@ -14,6 +14,7 @@ import { HostSandboxProvider } from "../src/host-sandbox.js";
 import { closeAllLoggers, ensureLogsDir, makeJsonlLogger } from "../src/logging.js";
 import { runPpcommitNative, runPpcommitBranch, runPpcommitAll } from "../src/ppcommit.js";
 import { runPlanreview, upsertIssueCompletionBlock } from "../src/helpers.js";
+import { loadConfig } from "../src/config.js";
 import { loadState, saveState, statePathFor } from "../src/state.js";
 import { detectTestCommand, runTestCommand } from "../src/test-runner.js";
 import { sanitizeBranchForRef, worktreePath, ensureWorktree } from "../src/worktrees.js";
@@ -281,8 +282,8 @@ function gitCleanOrThrow(repoDir) {
 
 // runPlanreview is imported from helpers.js (uses Gemini CLI)
 
-async function runPpcommit(repoDir) {
-  return await runPpcommitNative(repoDir);
+async function runPpcommit(repoDir, ppcommitConfig) {
+  return await runPpcommitNative(repoDir, ppcommitConfig);
 }
 
 function runHostTests(repoDir, args) {
@@ -372,6 +373,8 @@ async function run() {
   const workspaceDir = path.resolve(args.workspace);
   if (!existsSync(workspaceDir)) throw new Error(`Workspace does not exist: ${workspaceDir}`);
 
+  const config = loadConfig(workspaceDir);
+
   mkdirSync(path.join(workspaceDir, ".coder"), { recursive: true });
   ensureLogsDir(workspaceDir);
 
@@ -430,7 +433,7 @@ Return ONLY valid JSON in this schema:
     }
   ]
 }`;
-    const projCmd = heredocPipe(projPrompt, "gemini --model gemini-3-flash-preview --yolo");
+    const projCmd = heredocPipe(projPrompt, `gemini --model ${config.models.geminiPreview} --yolo`);
     const projRes = await gemini.executeCommand(projCmd, { timeoutMs: 1000 * 60 * 5 });
     if (projRes.exitCode !== 0) throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
     const projPayload = ProjectsPayloadSchema.parse(extractJson(projRes.stdout));
@@ -486,7 +489,7 @@ Return ONLY valid JSON in this schema:
   "recommended_index": number
 }`;
 
-    const cmd = heredocPipe(listPrompt, "gemini --model gemini-3-flash-preview --yolo");
+    const cmd = heredocPipe(listPrompt, `gemini --model ${config.models.geminiPreview} --yolo`);
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
     if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini issue listing failed", res));
     issuesPayload = IssuesPayloadSchema.parse(extractJson(res.stdout));
@@ -568,7 +571,7 @@ Ask EXACTLY 3 clarifying questions that are essential to implement this issue co
 Return ONLY valid JSON:
 {"questions":["q1","q2","q3"]}`;
 
-    const cmd = heredocPipe(qPrompt, "gemini --model gemini-3-flash-preview --yolo");
+    const cmd = heredocPipe(qPrompt, `gemini --model ${config.models.geminiPreview} --yolo`);
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 5 });
     if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini questions failed", res));
     const qPayload = QuestionsPayloadSchema.parse(extractJson(res.stdout));
@@ -610,7 +613,7 @@ Include a short section at the top with:
 - Issue ID
 - Repo Root (relative path if possible)
 `;
-    const cmd = heredocPipe(issuePrompt, "gemini --model gemini-3-flash-preview --yolo");
+    const cmd = heredocPipe(issuePrompt, `gemini --model ${config.models.geminiPreview} --yolo`);
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
     if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini ISSUE.md drafting failed", res));
     writeFileSync(issuePath, res.stdout.trimEnd() + "\n");
@@ -631,7 +634,7 @@ Constraints:
 
     const cmd = heredocPipe(
       planPrompt,
-      `claude -p --output-format stream-json --model claude-opus-4-6${
+      `claude -p --output-format stream-json --model ${config.models.claude}${
         args.claudeDangerouslySkipPermissions ? " --dangerously-skip-permissions" : ""
       }`,
     );
@@ -676,7 +679,7 @@ Constraints:
 
     const cmd = heredocPipe(
       implPrompt,
-      `claude -p --output-format stream-json --model claude-opus-4-6${
+      `claude -p --output-format stream-json --model ${config.models.claude}${
         args.claudeDangerouslySkipPermissions ? " --dangerously-skip-permissions" : ""
       }`,
     );
@@ -689,7 +692,7 @@ Constraints:
   // --- Step 7: Codex runs ppcommit, fixes, and tests ---
   if (!state.steps.codexReviewed) {
     process.stdout.write("\n[7/7] Codex: ppcommit + fixes + tests...\n");
-    const ppBefore = await runPpcommit(repoWorktree);
+    const ppBefore = await runPpcommit(repoWorktree, config.ppcommit);
     log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
 
     const codexPrompt = `You are reviewing uncommitted changes. Run ppcommit and fix ALL issues it reports.
@@ -711,7 +714,7 @@ ppcommit output:
 
   // Hard gate: ppcommit must be clean after Codex
   process.stdout.write("\n[7.1/7] Verifying: ppcommit checks are clean...\n");
-  const ppAfter = await runPpcommit(repoWorktree);
+  const ppAfter = await runPpcommit(repoWorktree, config.ppcommit);
   if (ppAfter.exitCode !== 0) {
     process.stdout.write(ppAfter.stdout || ppAfter.stderr);
     throw new Error("ppcommit still reports issues after Codex pass.");
@@ -770,11 +773,13 @@ async function runPpcommitCli() {
     process.exit(1);
   }
 
+  const ppConfig = loadConfig(repoDir).ppcommit;
+
   let result;
   if (hasBase) {
-    result = await runPpcommitBranch(repoDir, baseBranch);
+    result = await runPpcommitBranch(repoDir, baseBranch, ppConfig);
   } else {
-    result = await runPpcommitAll(repoDir);
+    result = await runPpcommitAll(repoDir, ppConfig);
   }
   process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);

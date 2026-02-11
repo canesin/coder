@@ -8,6 +8,7 @@ import { AgentRunner } from "./agent-runner.js";
 import { HostSandboxProvider } from "./host-sandbox.js";
 import { ensureLogsDir, makeJsonlLogger, closeAllLoggers } from "./logging.js";
 import { loadState, saveState, loadLoopState, saveLoopState, statePathFor } from "./state.js";
+import { resolveConfig } from "./config.js";
 import { sanitizeBranchForRef } from "./worktrees.js";
 import { IssuesPayloadSchema, QuestionsPayloadSchema, ProjectsPayloadSchema } from "./schemas.js";
 import {
@@ -30,7 +31,6 @@ import {
   detectDefaultBranch,
 } from "./helpers.js";
 
-const GEMINI_LIST_MODEL = "gemini-2.5-flash";
 const GEMINI_DEFAULT_HANG_TIMEOUT_MS = 1000 * 60;
 const GEMINI_PROJECT_LIST_HANG_TIMEOUT_MS = 1000 * 120;
 const GEMINI_AUTH_FAILURE_PATTERNS = [
@@ -53,45 +53,45 @@ export class CoderOrchestrator {
    */
   constructor(workspaceDir, opts = {}) {
     this.workspaceDir = path.resolve(workspaceDir);
+
+    // Build config overrides from opts
+    const overrides = {};
+    if (opts.verbose !== undefined) overrides.verbose = opts.verbose;
+    if (opts.testCmd) overrides.test = { ...overrides.test, command: opts.testCmd };
+    if (opts.allowNoTests !== undefined) overrides.test = { ...overrides.test, allowNoTests: opts.allowNoTests };
+    if (opts.strictMcpStartup !== undefined) overrides.mcp = { strictStartup: opts.strictMcpStartup };
+    if (opts.claudeDangerouslySkipPermissions !== undefined) overrides.claude = { skipPermissions: opts.claudeDangerouslySkipPermissions };
+
+    this.config = resolveConfig(this.workspaceDir, overrides);
     this.passEnv = opts.passEnv || DEFAULT_PASS_ENV;
-    this.verbose = opts.verbose || false;
-    this.testCmd = opts.testCmd || "";
+    this.verbose = this.config.verbose;
+    this.testCmd = this.config.test.command;
     this.testConfigPath = opts.testConfigPath || "";
-    this.allowNoTests = opts.allowNoTests || false;
+    this.allowNoTests = this.config.test.allowNoTests;
 
     this.issueFile = "ISSUE.md";
     this.planFile = "PLAN.md";
     this.critiqueFile = "PLANREVIEW.md";
-    // Default artifact layout: keep human-facing workflow files under .coder/artifacts
-    // to avoid clutter and reduce the chance they get committed.
     this.artifactsDir = path.join(this.workspaceDir, ".coder", "artifacts");
 
     mkdirSync(path.join(this.workspaceDir, ".coder"), { recursive: true });
     mkdirSync(this.artifactsDir, { recursive: true });
     ensureLogsDir(this.workspaceDir);
 
-    // Ensure coder artifacts are gitignored so only real work gets committed
     this._ensureGitignore();
 
     this.log = makeJsonlLogger(this.workspaceDir, "coder");
     this.secrets = buildSecrets(this.passEnv);
 
-    // Lazily-initialized agents
     this._gemini = null;
     this._claude = null;
     this._codex = null;
 
-    // Cooperative cancel/pause flags for async lifecycle control
     this._cancelRequested = false;
     this._pauseRequested = false;
 
-    // MCP health option
-    this.strictMcpStartup = opts.strictMcpStartup || false;
-
-    // If true, Claude Code won't stop for permission prompts. This is powerful but risky:
-    // prompt injection can lead to destructive commands or exfiltration. Keep it opt-in.
-    this.claudeDangerouslySkipPermissions =
-      opts.claudeDangerouslySkipPermissions ?? (process.env.CODER_CLAUDE_DANGEROUS !== "0");
+    this.strictMcpStartup = this.config.mcp.strictStartup;
+    this.claudeDangerouslySkipPermissions = this.config.claude.skipPermissions;
   }
 
   requestCancel() { this._cancelRequested = true; }
@@ -580,7 +580,7 @@ Return ONLY valid JSON in this schema:
     }
   ]
 }`;
-          const projCmd = geminiJsonPipeWithModel(projPrompt, GEMINI_LIST_MODEL);
+          const projCmd = geminiJsonPipeWithModel(projPrompt, this.config.models.gemini);
           const projRes = await this._executeWithRetry(gemini, projCmd, {
             timeoutMs: 1000 * 60 * 5,
             hangTimeoutMs: GEMINI_PROJECT_LIST_HANG_TIMEOUT_MS,
@@ -643,7 +643,7 @@ Return ONLY valid JSON in this schema:
   "recommended_index": number
 }`;
 
-      const cmd = geminiJsonPipeWithModel(listPrompt, GEMINI_LIST_MODEL);
+      const cmd = geminiJsonPipeWithModel(listPrompt, this.config.models.gemini);
       const res = await this._executeWithRetry(gemini, cmd, {
         timeoutMs: 1000 * 60 * 10,
         hangTimeoutMs: GEMINI_DEFAULT_HANG_TIMEOUT_MS,
@@ -1182,7 +1182,7 @@ Hard constraints:
         if (res.exitCode !== 0) throw new Error("Codex review/fix failed.");
       };
 
-      const ppBefore = await runPpcommit(workDir);
+      const ppBefore = await runPpcommit(workDir, this.config.ppcommit);
       state.steps.ppcommitInitiallyClean = ppBefore.exitCode === 0;
       this.log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
       this._saveState(state);
@@ -1202,14 +1202,14 @@ Hard constraints:
       // Hard gate: ppcommit must be clean. Retry Codex with explicit ppcommit
       // output to avoid silent drift between initial/final checks.
       const maxPpcommitRetries = 2;
-      let ppAfter = await runPpcommit(workDir);
+      let ppAfter = await runPpcommit(workDir, this.config.ppcommit);
       this.log({ event: "ppcommit_after", attempt: 0, exitCode: ppAfter.exitCode });
       for (let attempt = 1; attempt <= maxPpcommitRetries && ppAfter.exitCode !== 0; attempt++) {
         const ppAfterOutput = (ppAfter.stdout || ppAfter.stderr || "").trim();
         this.log({ event: "ppcommit_retry", attempt, exitCode: ppAfter.exitCode });
         const retrySection = `ppcommit still failing after Codex pass. Fix ALL remaining ppcommit issues:\n---\n${ppAfterOutput}\n---`;
         await runCodexReview(retrySection);
-        ppAfter = await runPpcommit(workDir);
+        ppAfter = await runPpcommit(workDir, this.config.ppcommit);
         this.log({ event: "ppcommit_after", attempt, exitCode: ppAfter.exitCode });
       }
       if (ppAfter.exitCode !== 0) {
@@ -1298,7 +1298,7 @@ Hard constraints:
       }
 
       // Defense-in-depth: run ppcommit again immediately before committing/pushing.
-      const ppNow = await runPpcommit(repoRoot);
+      const ppNow = await runPpcommit(repoRoot, this.config.ppcommit);
       if (ppNow.exitCode !== 0) {
         throw new Error(`ppcommit reports issues prior to PR creation:\n${ppNow.stdout || ppNow.stderr}`);
       }
@@ -1531,7 +1531,7 @@ Return ONLY valid JSON in this schema:
   ]
 }`;
 
-    const cmd = geminiJsonPipeWithModel(prompt, GEMINI_LIST_MODEL);
+    const cmd = geminiJsonPipeWithModel(prompt, this.config.models.gemini);
     const res = await this._executeWithRetry(gemini, cmd, {
       timeoutMs: 1000 * 60 * 5,
       hangTimeoutMs: GEMINI_DEFAULT_HANG_TIMEOUT_MS,
