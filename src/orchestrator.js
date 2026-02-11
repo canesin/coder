@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import pRetry from "p-retry";
 
 import { AgentRunner } from "./agent-runner.js";
 import { HostSandboxProvider } from "./host-sandbox.js";
@@ -400,10 +401,8 @@ export class CoderOrchestrator {
   }
 
   /**
-   * Retry wrapper with exponential backoff. Does not retry timeout errors.
-   * @param {object} agent - AgentRunner instance
-   * @param {string} cmd - Command to execute
-   * @param {{ timeoutMs?: number, hangTimeoutMs?: number, retries?: number, backoffMs?: number, agentName?: string|null, retryOnRateLimit?: boolean }} opts
+   * Retry wrapper with exponential backoff via p-retry.
+   * Does not retry timeout, auth, or MCP startup errors.
    */
   async _executeWithRetry(agent, cmd, {
     timeoutMs = 1000 * 60 * 10,
@@ -415,6 +414,9 @@ export class CoderOrchestrator {
     agentName = null,
     retryOnRateLimit = false,
   } = {}) {
+    const isRateLimited = (txt) =>
+      /rate limit|429|resource_exhausted|quota/i.test(String(txt || ""));
+
     const parseRetryAfterMs = (txt) => {
       const m = String(txt || "").match(/retry(?:ing)?(?:\s+after|\s+in)?\s+(\d+)\s*(ms|milliseconds|s|sec|seconds|m|min|minutes)?/i);
       if (!m) return null;
@@ -426,51 +428,47 @@ export class CoderOrchestrator {
       return num * 1000;
     };
 
-    const isRateLimited = (txt) =>
-      /rate limit|429|resource_exhausted|quota/i.test(String(txt || ""));
+    return pRetry(async () => {
+      const res = await this._executeAgentCommand(agentName, agent, cmd, {
+        timeoutMs, hangTimeoutMs, hangResetOnStderr, killOnStderrPatterns,
+      });
 
-    let lastErr;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const res = await this._executeAgentCommand(agentName, agent, cmd, {
-          timeoutMs,
-          hangTimeoutMs,
-          hangResetOnStderr,
-          killOnStderrPatterns,
-        });
-
-        if (retryOnRateLimit && res.exitCode !== 0) {
-          const details = `${res.stderr || ""}\n${res.stdout || ""}`;
-          if (isRateLimited(details)) {
-            const rateErr = new Error(`Rate limited while executing command: ${details.slice(0, 300)}`);
-            rateErr.name = "RateLimitError";
-            rateErr.rateLimitDetails = details;
-            throw rateErr;
-          }
-        }
-
-        return res;
-      } catch (err) {
-        lastErr = err;
-        // Don't retry timeout errors (they're unlikely to succeed)
-        if (err.name === "CommandTimeoutError") throw err;
-        // Auth failures are deterministic until credentials are refreshed.
-        if (err.name === "CommandAuthError") throw err;
-        // Strict MCP startup failures should fail fast.
-        if ((err.message || "").startsWith("MCP startup failure")) throw err;
-        if (attempt < retries) {
-          const details = `${err.rateLimitDetails || ""}\n${err.message || ""}`;
-          const rateLimited = isRateLimited(details);
-          const parsedRetryAfterMs = parseRetryAfterMs(details);
-          const delay = rateLimited
-            ? Math.max(parsedRetryAfterMs || 15000, 5000)
-            : backoffMs * Math.pow(2, attempt);
-          this.log({ event: "retry", attempt: attempt + 1, delay, error: err.message });
-          await new Promise((r) => setTimeout(r, delay));
+      if (retryOnRateLimit && res.exitCode !== 0) {
+        const details = `${res.stderr || ""}\n${res.stdout || ""}`;
+        if (isRateLimited(details)) {
+          const rateErr = new Error(`Rate limited: ${details.slice(0, 300)}`);
+          rateErr.name = "RateLimitError";
+          rateErr.rateLimitDetails = details;
+          throw rateErr;
         }
       }
-    }
-    throw lastErr;
+
+      return res;
+    }, {
+      retries,
+      minTimeout: backoffMs,
+      factor: 2,
+      shouldRetry: (ctx) => {
+        // p-retry passes { error, attemptNumber, retriesLeft, retriesConsumed }
+        const err = ctx.error;
+        // Don't retry deterministic failures
+        if (err.name === "CommandTimeoutError") return false;
+        if (err.name === "CommandAuthError") return false;
+        if ((err.message || "").startsWith("MCP startup failure")) return false;
+        return true;
+      },
+      onFailedAttempt: async (err) => {
+        // For rate limits, override p-retry's backoff with the server's retry-after
+        const details = `${err.rateLimitDetails || ""}\n${err.message || ""}`;
+        if (isRateLimited(details)) {
+          const serverDelay = parseRetryAfterMs(details);
+          if (serverDelay && serverDelay > backoffMs) {
+            await new Promise((r) => setTimeout(r, serverDelay - backoffMs));
+          }
+        }
+        this.log({ event: "retry", attempt: err.attemptNumber, error: err.message });
+      },
+    });
   }
 
   /**
