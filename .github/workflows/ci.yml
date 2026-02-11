@@ -13,6 +13,12 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - name: Install gitleaks
+        run: |
+          tag=$(curl -sSf https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+          ver=${tag#v}
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/${tag}/gitleaks_${ver}_linux_x64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin gitleaks
       - run: npm ci
       - run: npm test
       - run: npm audit --audit-level=high
