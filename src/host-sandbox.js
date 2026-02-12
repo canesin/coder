@@ -7,12 +7,24 @@ import {
   stopSystemdUnit,
 } from "./systemd-run.js";
 
+// Keep only the tail of stdout/stderr to avoid OOM on long agent runs.
+const MAX_OUTPUT_BYTES = 2 * 1024 * 1024; // 2 MB
+
 export class CommandTimeoutError extends Error {
   constructor(command, timeoutMs) {
     super(`Command timeout after ${timeoutMs}ms: ${command.slice(0, 200)}`);
     this.name = "CommandTimeoutError";
     this.command = command;
     this.timeoutMs = timeoutMs;
+  }
+}
+
+export class McpStartupError extends Error {
+  constructor(agentName, failedServers) {
+    super(`MCP startup failure for ${agentName}: failed servers: ${failedServers}`);
+    this.name = "McpStartupError";
+    this.agentName = agentName;
+    this.failedServers = failedServers;
   }
 }
 
@@ -170,6 +182,11 @@ class HostSandboxInstance extends EventEmitter {
 
       let stdout = "";
       let stderr = "";
+      const appendCapped = (buf, chunk) => {
+        buf += chunk;
+        if (buf.length > MAX_OUTPUT_BYTES) buf = buf.slice(-MAX_OUTPUT_BYTES);
+        return buf;
+      };
 
       let settled = false;
       let killTimer = null;
@@ -220,7 +237,7 @@ class HostSandboxInstance extends EventEmitter {
 
       child.stdout.on("data", (buf) => {
         const chunk = buf.toString();
-        stdout += chunk;
+        stdout = appendCapped(stdout, chunk);
         this.lastActivityTs = Date.now();
         resetHangTimer();
         options.onStdout?.(chunk);
@@ -228,7 +245,7 @@ class HostSandboxInstance extends EventEmitter {
       });
       child.stderr.on("data", (buf) => {
         const chunk = buf.toString();
-        stderr += chunk;
+        stderr = appendCapped(stderr, chunk);
         this.lastActivityTs = Date.now();
         if (hangResetOnStderr) resetHangTimer();
         options.onStderr?.(chunk);

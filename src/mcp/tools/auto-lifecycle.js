@@ -1,20 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CoderOrchestrator } from "../../orchestrator.js";
+import { AgentRolesInputSchema } from "../../config.js";
 import { loadLoopState, saveLoopState } from "../../state.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
 /** @type {Map<string, { orchestrator: CoderOrchestrator, workspace: string, promise: Promise, startedAt: string }>} */
 const activeRuns = new Map();
 
-const AgentRolesInput = z.object({
-  issueSelector: z.enum(["gemini", "claude", "codex"]).optional(),
-  planner: z.enum(["gemini", "claude", "codex"]).optional(),
-  planReviewer: z.enum(["gemini", "claude", "codex"]).optional(),
-  programmer: z.enum(["gemini", "claude", "codex"]).optional(),
-  reviewer: z.enum(["gemini", "claude", "codex"]).optional(),
-  committer: z.enum(["gemini", "claude", "codex"]).optional(),
-});
+const AgentRolesInput = AgentRolesInputSchema;
 
 export function registerAutoLifecycleTools(server, defaultWorkspace) {
   const markRunTerminalOnDisk = (workspaceDir, runId, status) => {

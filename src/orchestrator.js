@@ -6,7 +6,7 @@ import process from "node:process";
 import pRetry from "p-retry";
 
 import { AgentRunner } from "./agent-runner.js";
-import { HostSandboxProvider } from "./host-sandbox.js";
+import { HostSandboxProvider, McpStartupError } from "./host-sandbox.js";
 import { ensureLogsDir, makeJsonlLogger, closeAllLoggers, sanitizeLogEvent } from "./logging.js";
 import { loadState, saveState, loadLoopState, saveLoopState, statePathFor } from "./state.js";
 import { resolveConfig } from "./config.js";
@@ -34,6 +34,7 @@ import {
 
 const GEMINI_DEFAULT_HANG_TIMEOUT_MS = 1000 * 60;
 const GEMINI_PROJECT_LIST_HANG_TIMEOUT_MS = 1000 * 120;
+const MAX_PAUSE_MS = 1000 * 60 * 60 * 24; // 24 hours
 const GEMINI_AUTH_FAILURE_PATTERNS = [
   "rejected stored OAuth token",
   "Please re-authenticate using: /mcp auth",
@@ -121,10 +122,10 @@ export class CoderOrchestrator {
       const health = JSON.parse(readFileSync(healthPath, "utf8"));
       const entry = health[agentName];
       if (entry && entry.failed && entry.failed !== "0" && entry.failed.toLowerCase() !== "none") {
-        throw new Error(`MCP startup failure for ${agentName}: failed servers: ${entry.failed}`);
+        throw new McpStartupError(agentName, entry.failed);
       }
     } catch (err) {
-      if (err.message.startsWith("MCP startup failure")) throw err;
+      if (err.name === "McpStartupError") throw err;
       // parse error — ignore
     }
   }
@@ -281,26 +282,16 @@ export class CoderOrchestrator {
   // --- Gitignore ---
 
   _ensureGitignore() {
-    // Keep workflow internals out of git.
+    // Keep workflow internals out of git — single read-modify-write to avoid races.
     const gitignorePath = path.join(this.workspaceDir, ".gitignore");
-    let giContent = "";
-    if (existsSync(gitignorePath)) {
-      giContent = readFileSync(gitignorePath, "utf8");
-    }
-    if (!giContent.split("\n").some((line) => line.trim() === ".coder/")) {
+    let giContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
+    const giLines = giContent.split("\n").map((l) => l.trim());
+    const needed = [".coder/", ".gemini/", ".coder/logs/"];
+    const missing = needed.filter((rule) => !giLines.includes(rule));
+    if (missing.length > 0) {
       const suffix = giContent.endsWith("\n") || giContent === "" ? "" : "\n";
-      writeFileSync(gitignorePath, giContent + `${suffix}# coder workflow artifacts\n.coder/\n`);
-    }
-    if (!giContent.split("\n").some((line) => line.trim() === ".gemini/")) {
-      // Re-read in case we just wrote .coder/ above
-      const updated = readFileSync(gitignorePath, "utf8");
-      const suffix = updated.endsWith("\n") || updated === "" ? "" : "\n";
-      writeFileSync(gitignorePath, updated + `${suffix}.gemini/\n`);
-    }
-    const latestGitignore = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
-    if (!latestGitignore.split("\n").some((line) => line.trim() === ".coder/logs/")) {
-      const suffix = latestGitignore.endsWith("\n") || latestGitignore === "" ? "" : "\n";
-      writeFileSync(gitignorePath, latestGitignore + `${suffix}.coder/logs/\n`);
+      giContent += `${suffix}# coder workflow artifacts\n${missing.join("\n")}\n`;
+      writeFileSync(gitignorePath, giContent);
     }
 
     const artifacts = [this.issueFile, this.planFile, this.critiqueFile];
@@ -510,7 +501,7 @@ export class CoderOrchestrator {
         // Don't retry deterministic failures
         if (err.name === "CommandTimeoutError") return false;
         if (err.name === "CommandAuthError") return false;
-        if ((err.message || "").startsWith("MCP startup failure")) return false;
+        if (err.name === "McpStartupError") return false;
         return true;
       },
       shouldConsumeRetry: (ctx) => {
@@ -546,7 +537,13 @@ export class CoderOrchestrator {
       loopState.status = "paused";
       saveLoopState(this.workspaceDir, loopState);
       this._appendAutoLog({ event: "auto_paused", stage: stageName });
+      const pauseStart = Date.now();
       while (this._pauseRequested && !this._cancelRequested) {
+        if (Date.now() - pauseStart > MAX_PAUSE_MS) {
+          this._appendAutoLog({ event: "auto_pause_timeout", stage: stageName });
+          this._cancelRequested = true;
+          break;
+        }
         await new Promise((r) => setTimeout(r, 1000));
       }
       if (this._cancelRequested) throw new Error("Run cancelled");
@@ -1397,7 +1394,8 @@ Hard constraints:
       });
       const hasChanges = (status.stdout || "").trim().length > 0;
       if (hasChanges) {
-        const add = spawnSync("git", ["add", "-A"], {
+        // Use -u (tracked files only) to avoid staging accidental untracked files.
+        const add = spawnSync("git", ["add", "-u"], {
           cwd: repoRoot,
           encoding: "utf8",
         });
@@ -1846,7 +1844,13 @@ Return ONLY valid JSON in this schema:
         loopState.status = "paused";
         saveLoopState(this.workspaceDir, loopState);
         this._appendAutoLog({ event: "auto_paused" });
+        const pauseStart = Date.now();
         while (this._pauseRequested && !this._cancelRequested) {
+          if (Date.now() - pauseStart > MAX_PAUSE_MS) {
+            this._appendAutoLog({ event: "auto_pause_timeout" });
+            this._cancelRequested = true;
+            break;
+          }
           await new Promise((r) => setTimeout(r, 1000));
         }
         if (this._cancelRequested) {

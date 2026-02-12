@@ -1,6 +1,11 @@
 import { existsSync, writeFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
+import { jsonrepair } from "jsonrepair";
+import { detectTestCommand, runTestCommand, loadTestConfig, runTestConfig } from "./test-runner.js";
+import { runPpcommitNative } from "./ppcommit.js";
+import { runShellSync } from "./systemd-run.js";
 
 /**
  * Detect the default branch for a git repository.
@@ -26,11 +31,6 @@ export function detectDefaultBranch(repoDir) {
   });
   return mainCheck.status === 0 ? "main" : "master";
 }
-import { createHash } from "node:crypto";
-import { jsonrepair } from "jsonrepair";
-import { detectTestCommand, runTestCommand, loadTestConfig, runTestConfig } from "./test-runner.js";
-import { runPpcommitNative } from "./ppcommit.js";
-import { runShellSync } from "./systemd-run.js";
 
 export const DEFAULT_PASS_ENV = [
   "GOOGLE_API_KEY",

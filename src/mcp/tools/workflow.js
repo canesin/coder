@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CoderOrchestrator } from "../../orchestrator.js";
+import { AgentRolesInputSchema } from "../../config.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
 const LoopIssueResultShape = {
@@ -25,14 +26,7 @@ const AutoResultShape = {
   results: z.array(z.object(LoopIssueResultShape)),
 };
 
-const AgentRolesInput = z.object({
-  issueSelector: z.enum(["gemini", "claude", "codex"]).optional(),
-  planner: z.enum(["gemini", "claude", "codex"]).optional(),
-  planReviewer: z.enum(["gemini", "claude", "codex"]).optional(),
-  programmer: z.enum(["gemini", "claude", "codex"]).optional(),
-  reviewer: z.enum(["gemini", "claude", "codex"]).optional(),
-  committer: z.enum(["gemini", "claude", "codex"]).optional(),
-});
+const AgentRolesInput = AgentRolesInputSchema;
 
 export function registerWorkflowTools(server, defaultWorkspace) {
   // --- Step 1: coder_list_issues ---

@@ -54,6 +54,16 @@ export const WorkflowAgentRolesSchema = z.object({
   committer: AgentNameSchema.default("codex"),
 });
 
+/** Optional per-step agent overrides (all fields optional, for MCP tool inputs). */
+export const AgentRolesInputSchema = z.object({
+  issueSelector: AgentNameSchema.optional(),
+  planner: AgentNameSchema.optional(),
+  planReviewer: AgentNameSchema.optional(),
+  programmer: AgentNameSchema.optional(),
+  reviewer: AgentNameSchema.optional(),
+  committer: AgentNameSchema.optional(),
+});
+
 export const CoderConfigSchema = z.object({
   models: z.object({
     gemini: z.string().default("gemini-2.5-flash"),
