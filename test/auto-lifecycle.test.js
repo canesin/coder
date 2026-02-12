@@ -1,12 +1,12 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import { registerAutoLifecycleTools } from "../src/mcp/tools/auto-lifecycle.js";
 import { CoderOrchestrator } from "../src/orchestrator.js";
-import { saveLoopState, loadLoopState } from "../src/state.js";
+import { loadLoopState, saveLoopState } from "../src/state.js";
 
 function makeWorkspace() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-auto-lifecycle-"));
@@ -71,7 +71,13 @@ test("coder_auto_start creates .coder and loop-state on fresh workspace", async 
 
   const originalRunAuto = CoderOrchestrator.prototype.runAuto;
   CoderOrchestrator.prototype.runAuto = async function runAutoStub() {
-    return { status: "completed", completed: 0, failed: 0, skipped: 0, results: [] };
+    return {
+      status: "completed",
+      completed: 0,
+      failed: 0,
+      skipped: 0,
+      results: [],
+    };
   };
 
   try {
@@ -131,7 +137,9 @@ test("coder_auto_cancel can cancel stale persisted run without active in-memory 
 
 test("coder_auto_start rejects workspace outside server root by default", async () => {
   const ws = makeWorkspace();
-  const outside = mkdtempSync(path.join(os.tmpdir(), "coder-auto-lifecycle-outside-"));
+  const outside = mkdtempSync(
+    path.join(os.tmpdir(), "coder-auto-lifecycle-outside-"),
+  );
   const server = makeServer();
 
   registerAutoLifecycleTools(server, ws);

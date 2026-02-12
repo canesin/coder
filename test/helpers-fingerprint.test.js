@@ -1,12 +1,13 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
-
-import { computeGitWorktreeFingerprint, upsertIssueCompletionBlock } from "../src/helpers.js";
-import { readFileSync } from "node:fs";
+import test from "node:test";
+import {
+  computeGitWorktreeFingerprint,
+  upsertIssueCompletionBlock,
+} from "../src/helpers.js";
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
@@ -49,9 +50,17 @@ test("upsertIssueCompletionBlock is idempotent (replaces existing block)", () =>
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-issue-"));
   const p = path.join(dir, "ISSUE.md");
   writeFileSync(p, "# Title\n\nBody.\n", "utf8");
-  upsertIssueCompletionBlock(p, { ppcommitClean: true, testsPassed: true, note: "first" });
+  upsertIssueCompletionBlock(p, {
+    ppcommitClean: true,
+    testsPassed: true,
+    note: "first",
+  });
   const a = readFileSync(p, "utf8");
-  upsertIssueCompletionBlock(p, { ppcommitClean: true, testsPassed: true, note: "second" });
+  upsertIssueCompletionBlock(p, {
+    ppcommitClean: true,
+    testsPassed: true,
+    note: "second",
+  });
   const b = readFileSync(p, "utf8");
 
   assert.match(a, /coder:completion:start/);

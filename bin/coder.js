@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
@@ -9,26 +9,39 @@ import { parseArgs as nodeParseArgs } from "node:util";
 import Table from "cli-table3";
 
 import { AgentRunner } from "../src/agent-runner.js";
-import { HostSandboxProvider } from "../src/host-sandbox.js";
-import { closeAllLoggers, ensureLogsDir, makeJsonlLogger, sanitizeLogEvent } from "../src/logging.js";
-import { runPpcommitNative, runPpcommitBranch, runPpcommitAll } from "../src/ppcommit.js";
+import { loadConfig } from "../src/config.js";
 import {
   buildSecrets,
+  DEFAULT_PASS_ENV,
   extractJson,
   formatCommandFailure,
   gitCleanOrThrow,
   heredocPipe,
-  requireEnvOneOf,
   requireCommandOnPath,
+  requireEnvOneOf,
   runHostTests,
   runPlanreview,
   upsertIssueCompletionBlock,
-  DEFAULT_PASS_ENV,
 } from "../src/helpers.js";
-import { loadConfig } from "../src/config.js";
-import { IssuesPayloadSchema, QuestionsPayloadSchema, ProjectsPayloadSchema } from "../src/schemas.js";
+import { HostSandboxProvider } from "../src/host-sandbox.js";
+import {
+  closeAllLoggers,
+  ensureLogsDir,
+  makeJsonlLogger,
+  sanitizeLogEvent,
+} from "../src/logging.js";
+import {
+  runPpcommitAll,
+  runPpcommitBranch,
+  runPpcommitNative,
+} from "../src/ppcommit.js";
+import {
+  IssuesPayloadSchema,
+  ProjectsPayloadSchema,
+  QuestionsPayloadSchema,
+} from "../src/schemas.js";
 import { loadState, saveState, statePathFor } from "../src/state.js";
-import { sanitizeBranchForRef, ensureWorktree } from "../src/worktrees.js";
+import { ensureWorktree, sanitizeBranchForRef } from "../src/worktrees.js";
 
 function usage() {
   return `coder (multi-agent orchestrator; host sandbox)
@@ -77,14 +90,17 @@ function parseArgs(argv) {
     },
   });
 
-  const claudeDangerouslySkipPermissions =
-    values["claude-require-permissions"] ? false : values["claude-dangerously-skip-permissions"];
+  const claudeDangerouslySkipPermissions = values["claude-require-permissions"]
+    ? false
+    : values["claude-dangerously-skip-permissions"];
 
   return {
     help: values.help,
     workspace: values.workspace,
     repo: values.repo,
-    issueIndex: values["issue-index"] ? Number.parseInt(values["issue-index"], 10) : -1,
+    issueIndex: values["issue-index"]
+      ? Number.parseInt(values["issue-index"], 10)
+      : -1,
     verbose: values.verbose,
     issueFile: "ISSUE.md",
     planFile: "PLAN.md",
@@ -93,13 +109,19 @@ function parseArgs(argv) {
     testCmd: values["test-cmd"],
     claudeDangerouslySkipPermissions,
     passEnv: values["pass-env"]
-      ? values["pass-env"].split(",").map((s) => s.trim()).filter(Boolean)
+      ? values["pass-env"]
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
       : DEFAULT_PASS_ENV,
   };
 }
 
 async function promptText(question) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
   try {
     const answer = await rl.question(question);
     return answer.trim();
@@ -150,7 +172,8 @@ async function run() {
   // planreview and ppcommit are now built-in (no external dependencies)
 
   const workspaceDir = path.resolve(args.workspace);
-  if (!existsSync(workspaceDir)) throw new Error(`Workspace does not exist: ${workspaceDir}`);
+  if (!existsSync(workspaceDir))
+    throw new Error(`Workspace does not exist: ${workspaceDir}`);
 
   const config = loadConfig(workspaceDir);
 
@@ -187,18 +210,28 @@ async function run() {
     vk.on("update", (d) => agentLog({ stream: "update", data: d }));
     vk.on("error", (d) => agentLog({ stream: "error", data: d }));
     if (args.verbose) {
-      vk.on("stdout", (d) => process.stdout.write(`[${name}] ${sanitizeLogEvent(String(d))}`));
-      vk.on("stderr", (d) => process.stderr.write(`[${name}] ${sanitizeLogEvent(String(d))}`));
+      vk.on("stdout", (d) =>
+        process.stdout.write(`[${name}] ${sanitizeLogEvent(String(d))}`),
+      );
+      vk.on("stderr", (d) =>
+        process.stderr.write(`[${name}] ${sanitizeLogEvent(String(d))}`),
+      );
     }
   };
 
   // Gemini runs at workspace scope.
-  const geminiProvider = new HostSandboxProvider({ defaultCwd: workspaceDir, baseEnv: secrets });
+  const geminiProvider = new HostSandboxProvider({
+    defaultCwd: workspaceDir,
+    baseEnv: secrets,
+  });
   const gemini = new AgentRunner(geminiProvider);
   attachAgentLogging("gemini", gemini);
 
   // --- Step 0: Linear project selection ---
-  if (secrets.LINEAR_API_KEY && (!state.steps.listedProjects || !state.linearProjects)) {
+  if (
+    secrets.LINEAR_API_KEY &&
+    (!state.steps.listedProjects || !state.linearProjects)
+  ) {
     process.stdout.write("\n[0/8] Gemini: listing Linear teams...\n");
     const projPrompt = `Use your Linear MCP to list all teams I have access to.
 
@@ -212,10 +245,20 @@ Return ONLY valid JSON in this schema:
     }
   ]
 }`;
-    const projCmd = heredocPipe(projPrompt, `gemini --model ${config.models.geminiPreview} --yolo`);
-    const projRes = await gemini.executeCommand(projCmd, { timeoutMs: 1000 * 60 * 5 });
-    if (projRes.exitCode !== 0) throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
-    const projPayload = ProjectsPayloadSchema.parse(extractJson(projRes.stdout));
+    const projCmd = heredocPipe(
+      projPrompt,
+      `gemini --model ${config.models.geminiPreview} --yolo`,
+    );
+    const projRes = await gemini.executeCommand(projCmd, {
+      timeoutMs: 1000 * 60 * 5,
+    });
+    if (projRes.exitCode !== 0)
+      throw new Error(
+        formatCommandFailure("Gemini project listing failed", projRes),
+      );
+    const projPayload = ProjectsPayloadSchema.parse(
+      extractJson(projRes.stdout),
+    );
     state.linearProjects = projPayload.projects;
 
     if (state.linearProjects.length > 0) {
@@ -230,7 +273,11 @@ Return ONLY valid JSON in this schema:
       );
       if (raw) {
         const idx = Number.parseInt(raw, 10);
-        if (!Number.isInteger(idx) || idx < 1 || idx > state.linearProjects.length) {
+        if (
+          !Number.isInteger(idx) ||
+          idx < 1 ||
+          idx > state.linearProjects.length
+        ) {
           throw new Error("Invalid project selection.");
         }
         state.selectedProject = state.linearProjects[idx - 1];
@@ -268,9 +315,13 @@ Return ONLY valid JSON in this schema:
   "recommended_index": number
 }`;
 
-    const cmd = heredocPipe(listPrompt, `gemini --model ${config.models.geminiPreview} --yolo`);
+    const cmd = heredocPipe(
+      listPrompt,
+      `gemini --model ${config.models.geminiPreview} --yolo`,
+    );
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
-    if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini issue listing failed", res));
+    if (res.exitCode !== 0)
+      throw new Error(formatCommandFailure("Gemini issue listing failed", res));
     issuesPayload = IssuesPayloadSchema.parse(extractJson(res.stdout));
     state.steps.listedIssues = true;
     state.issuesPayload = issuesPayload;
@@ -288,30 +339,46 @@ Return ONLY valid JSON in this schema:
   // --- Step 1.5: choose issue and repo ---
   if (!state.selected || !state.repoPath || !state.branch) {
     let selected;
-    if (Number.isInteger(args.issueIndex) && args.issueIndex >= 0 && args.issueIndex < issues.length) {
+    if (
+      Number.isInteger(args.issueIndex) &&
+      args.issueIndex >= 0 &&
+      args.issueIndex < issues.length
+    ) {
       selected = issues[args.issueIndex];
     } else {
       process.stdout.write("\n");
-      process.stdout.write(renderIssuesTable(issues, issuesPayload.recommended_index));
+      process.stdout.write(
+        renderIssuesTable(issues, issuesPayload.recommended_index),
+      );
       process.stdout.write("\n");
       const raw = await promptText("Pick an issue number: ");
       const idx = Number.parseInt(raw, 10);
-      if (!Number.isInteger(idx) || idx < 1 || idx > issues.length) throw new Error("Invalid issue selection.");
+      if (!Number.isInteger(idx) || idx < 1 || idx > issues.length)
+        throw new Error("Invalid issue selection.");
       selected = issues[idx - 1];
     }
 
     let repoPath = (args.repo || selected.repo_path || "").trim();
-    if (!repoPath) repoPath = await promptText("Repo subfolder to work in (relative to workspace): ");
+    if (!repoPath)
+      repoPath = await promptText(
+        "Repo subfolder to work in (relative to workspace): ",
+      );
 
     state.selected = selected;
     state.repoPath = repoPath;
-    state.branch = sanitizeBranchForRef(`coder/${selected.source}-${selected.id}`);
+    state.branch = sanitizeBranchForRef(
+      `coder/${selected.source}-${selected.id}`,
+    );
     saveState(workspaceDir, state);
   }
 
   const repoRoot = path.resolve(workspaceDir, state.repoPath);
-  if (!existsSync(repoRoot)) throw new Error(`Repo root does not exist: ${repoRoot}`);
-  const isGit = spawnSync("git", ["rev-parse", "--git-dir"], { cwd: repoRoot, encoding: "utf8" });
+  if (!existsSync(repoRoot))
+    throw new Error(`Repo root does not exist: ${repoRoot}`);
+  const isGit = spawnSync("git", ["rev-parse", "--git-dir"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
   if (isGit.status !== 0) throw new Error(`Not a git repository: ${repoRoot}`);
 
   // Hard gate: require repo clean before any agent writes code.
@@ -322,13 +389,21 @@ Return ONLY valid JSON in this schema:
     saveState(workspaceDir, state);
   }
 
-  const worktreesRoot = path.join(workspaceDir, ".coder", "worktrees", state.repoPath.replaceAll("/", "__"));
+  const worktreesRoot = path.join(
+    workspaceDir,
+    ".coder",
+    "worktrees",
+    state.repoPath.replaceAll("/", "__"),
+  );
   mkdirSync(worktreesRoot, { recursive: true });
   const repoWorktree = ensureWorktree(repoRoot, worktreesRoot, state.branch);
 
   // Repo-scoped agents operate from the worktree directory.
   const makeRepoAgent = (name) => {
-    const provider = new HostSandboxProvider({ defaultCwd: repoWorktree, baseEnv: secrets });
+    const provider = new HostSandboxProvider({
+      defaultCwd: repoWorktree,
+      baseEnv: secrets,
+    });
     const agent = new AgentRunner(provider);
     attachAgentLogging(name, agent);
     return agent;
@@ -338,8 +413,15 @@ Return ONLY valid JSON in this schema:
   const codex = makeRepoAgent("codex");
 
   // --- Step 2: Gemini asks 3 questions (only human interaction) ---
-  if (!state.questions || !state.answers || state.questions.length !== 3 || state.answers.length !== 3) {
-    process.stdout.write("\n[2/7] Gemini: generating 3 clarification questions...\n");
+  if (
+    !state.questions ||
+    !state.answers ||
+    state.questions.length !== 3 ||
+    state.answers.length !== 3
+  ) {
+    process.stdout.write(
+      "\n[2/7] Gemini: generating 3 clarification questions...\n",
+    );
     const qPrompt = `We chose this issue:
 - source: ${state.selected.source}
 - id: ${state.selected.id}
@@ -350,9 +432,13 @@ Ask EXACTLY 3 clarifying questions that are essential to implement this issue co
 Return ONLY valid JSON:
 {"questions":["q1","q2","q3"]}`;
 
-    const cmd = heredocPipe(qPrompt, `gemini --model ${config.models.geminiPreview} --yolo`);
+    const cmd = heredocPipe(
+      qPrompt,
+      `gemini --model ${config.models.geminiPreview} --yolo`,
+    );
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 5 });
-    if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini questions failed", res));
+    if (res.exitCode !== 0)
+      throw new Error(formatCommandFailure("Gemini questions failed", res));
     const qPayload = QuestionsPayloadSchema.parse(extractJson(res.stdout));
 
     const answers = [];
@@ -392,9 +478,15 @@ Include a short section at the top with:
 - Issue ID
 - Repo Root (relative path if possible)
 `;
-    const cmd = heredocPipe(issuePrompt, `gemini --model ${config.models.geminiPreview} --yolo`);
+    const cmd = heredocPipe(
+      issuePrompt,
+      `gemini --model ${config.models.geminiPreview} --yolo`,
+    );
     const res = await gemini.executeCommand(cmd, { timeoutMs: 1000 * 60 * 10 });
-    if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini ISSUE.md drafting failed", res));
+    if (res.exitCode !== 0)
+      throw new Error(
+        formatCommandFailure("Gemini ISSUE.md drafting failed", res),
+      );
     writeFileSync(issuePath, res.stdout.trimEnd() + "\n");
     process.stdout.write(`Wrote ${issuePath}\n`);
     state.steps.wroteIssue = true;
@@ -414,25 +506,36 @@ Constraints:
     const cmd = heredocPipe(
       planPrompt,
       `claude -p --output-format stream-json --model ${config.models.claude}${
-        args.claudeDangerouslySkipPermissions ? " --dangerously-skip-permissions" : ""
+        args.claudeDangerouslySkipPermissions
+          ? " --dangerously-skip-permissions"
+          : ""
       }`,
     );
     const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 20 });
     if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
 
     // Hard gate: Claude must not change the repo during planning
-    const status = spawnSync("git", ["status", "--porcelain"], { cwd: repoWorktree, encoding: "utf8" });
-    if (status.status !== 0) throw new Error("Failed to check git status after planning.");
+    const status = spawnSync("git", ["status", "--porcelain"], {
+      cwd: repoWorktree,
+      encoding: "utf8",
+    });
+    if (status.status !== 0)
+      throw new Error("Failed to check git status after planning.");
     // Planning must not modify the repo. Allow internal tool dirs only.
     const artifactFiles = [".coder/", ".gemini/"];
     const dirtyLines = (status.stdout || "")
       .split("\n")
-      .filter((l) => l.trim() !== "" && !artifactFiles.some((a) => l.includes(a)));
+      .filter(
+        (l) => l.trim() !== "" && !artifactFiles.some((a) => l.includes(a)),
+      );
     if (dirtyLines.length > 0) {
-      throw new Error(`Planning step modified the repository. Aborting.\n${dirtyLines.join("\n")}`);
+      throw new Error(
+        `Planning step modified the repository. Aborting.\n${dirtyLines.join("\n")}`,
+      );
     }
 
-    if (!existsSync(planPath)) throw new Error(`PLAN.md not found: ${planPath}`);
+    if (!existsSync(planPath))
+      throw new Error(`PLAN.md not found: ${planPath}`);
     state.steps.wrotePlan = true;
     saveState(workspaceDir, state);
   }
@@ -441,7 +544,10 @@ Constraints:
   if (!state.steps.wroteCritique) {
     process.stdout.write("\n[5/7] planreview: critiquing PLAN.md...\n");
     const rc = runPlanreview(repoWorktree, planPath, critiquePath);
-    if (rc !== 0) process.stdout.write("WARNING: planreview exited non-zero. Continuing.\n");
+    if (rc !== 0)
+      process.stdout.write(
+        "WARNING: planreview exited non-zero. Continuing.\n",
+      );
     state.steps.wroteCritique = true;
     saveState(workspaceDir, state);
   }
@@ -459,7 +565,9 @@ Constraints:
     const cmd = heredocPipe(
       implPrompt,
       `claude -p --output-format stream-json --model ${config.models.claude}${
-        args.claudeDangerouslySkipPermissions ? " --dangerously-skip-permissions" : ""
+        args.claudeDangerouslySkipPermissions
+          ? " --dangerously-skip-permissions"
+          : ""
       }`,
     );
     const res = await claude.executeCommand(cmd, { timeoutMs: 1000 * 60 * 60 });
@@ -504,7 +612,8 @@ ppcommit output:
   // Hard gate: tests must pass on host
   process.stdout.write("\n[7.2/7] Running tests on host...\n");
   const testRes = await runHostTests(repoWorktree, args);
-  if (testRes.cmd) process.stdout.write(`Test command: ${testRes.cmd.join(" ")}\n`);
+  if (testRes.cmd)
+    process.stdout.write(`Test command: ${testRes.cmd.join(" ")}\n`);
   if (testRes.exitCode !== 0) {
     process.stdout.write(testRes.stdout);
     process.stderr.write(testRes.stderr);
@@ -546,7 +655,10 @@ async function runPpcommitCli() {
   }
 
   const repoDir = process.cwd();
-  const isGit = spawnSync("git", ["rev-parse", "--git-dir"], { cwd: repoDir, encoding: "utf8" });
+  const isGit = spawnSync("git", ["rev-parse", "--git-dir"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
   if (isGit.status !== 0) {
     process.stderr.write("ERROR: Not a git repository.\n");
     process.exit(1);

@@ -26,9 +26,18 @@ function sanitizeSensitiveText(input) {
   // Common token formats.
   text = text.replace(/\bgh[opurs]_[A-Za-z0-9]{20,}\b/g, REDACTED);
   text = text.replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, REDACTED);
-  text = text.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, REDACTED);
-  text = text.replace(/\b(Bearer)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, `$1 ${REDACTED}`);
-  text = text.replace(/([?&](?:access_token|refresh_token|id_token|token)=)[^&\s]+/gi, `$1${REDACTED}`);
+  text = text.replace(
+    /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+    REDACTED,
+  );
+  text = text.replace(
+    /\b(Bearer)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi,
+    `$1 ${REDACTED}`,
+  );
+  text = text.replace(
+    /([?&](?:access_token|refresh_token|id_token|token)=)[^&\s]+/gi,
+    `$1${REDACTED}`,
+  );
 
   return text;
 }

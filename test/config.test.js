@@ -1,17 +1,17 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import {
+  CoderConfigSchema,
   deepMerge,
   loadConfig,
-  resolveConfig,
-  userConfigPath,
-  userConfigDir,
   repoConfigPath,
-  CoderConfigSchema,
+  resolveConfig,
+  userConfigDir,
+  userConfigPath,
 } from "../src/config.js";
 
 test("deepMerge: nested objects", () => {
@@ -55,7 +55,10 @@ test("loadConfig: user config only merges with defaults", () => {
   mkdirSync(path.join(xdg, "coder"), { recursive: true });
   writeFileSync(
     path.join(xdg, "coder", "config.json"),
-    JSON.stringify({ verbose: true, models: { claude: "claude-sonnet-4-5-20250929" } }),
+    JSON.stringify({
+      verbose: true,
+      models: { claude: "claude-sonnet-4-5-20250929" },
+    }),
   );
 
   const origXdg = process.env.XDG_CONFIG_HOME;

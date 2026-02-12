@@ -1,5 +1,5 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import { HostSandboxProvider } from "../src/host-sandbox.js";
 
 test("host sandbox aborts command on configured stderr auth-failure pattern", async () => {
@@ -10,7 +10,10 @@ test("host sandbox aborts command on configured stderr auth-failure pattern", as
     async () =>
       sandbox.commands.run(
         `echo "MCP server 'linear' rejected stored OAuth token" 1>&2; sleep 2; echo "should-not-print"`,
-        { timeoutMs: 5000, killOnStderrPatterns: ["rejected stored OAuth token"] },
+        {
+          timeoutMs: 5000,
+          killOnStderrPatterns: ["rejected stored OAuth token"],
+        },
       ),
     /Command aborted after stderr auth failure/,
   );
@@ -35,7 +38,10 @@ test("host sandbox throwOnNonZero includes exit metadata", async () => {
   const sandbox = await provider.create();
 
   await assert.rejects(
-    async () => sandbox.commands.run(`echo "out"; echo "err" 1>&2; exit 3`, { throwOnNonZero: true }),
+    async () =>
+      sandbox.commands.run(`echo "out"; echo "err" 1>&2; exit 3`, {
+        throwOnNonZero: true,
+      }),
     (err) => {
       assert.equal(err.exitCode, 3);
       assert.match(err.stdout, /out/);

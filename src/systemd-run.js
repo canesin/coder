@@ -23,10 +23,14 @@ export function canUseSystemdRun() {
   if (cachedSystemdAvailability !== null) return cachedSystemdAvailability;
 
   try {
-    const probe = spawnSync("systemd-run", ["--user", "--scope", "--quiet", "true"], {
-      encoding: "utf8",
-      timeout: SYSTEMD_PROBE_TIMEOUT_MS,
-    });
+    const probe = spawnSync(
+      "systemd-run",
+      ["--user", "--scope", "--quiet", "true"],
+      {
+        encoding: "utf8",
+        timeout: SYSTEMD_PROBE_TIMEOUT_MS,
+      },
+    );
     cachedSystemdAvailability = probe.status === 0;
   } catch {
     cachedSystemdAvailability = false;
@@ -40,14 +44,17 @@ export function makeSystemdUnitName(prefix = "coder") {
   return `${prefix}-${stamp}-${rand}.service`;
 }
 
-export function buildSystemdRunArgs(command, {
-  unitName,
-  cwd,
-  timeoutMs = 0,
-  wait = true,
-  pipe = true,
-  privateNetwork = false,
-} = {}) {
+export function buildSystemdRunArgs(
+  command,
+  {
+    unitName,
+    cwd,
+    timeoutMs = 0,
+    wait = true,
+    pipe = true,
+    privateNetwork = false,
+  } = {},
+) {
   const args = [
     "--user",
     "--quiet",
@@ -64,7 +71,9 @@ export function buildSystemdRunArgs(command, {
   if (cwd) args.push(`--working-directory=${cwd}`);
 
   if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-    args.push(`--property=RuntimeMaxSec=${Math.max(1, Math.ceil(timeoutMs / 1000))}`);
+    args.push(
+      `--property=RuntimeMaxSec=${Math.max(1, Math.ceil(timeoutMs / 1000))}`,
+    );
   }
 
   args.push("bash", "-lc", command);
@@ -83,14 +92,17 @@ export function stopSystemdUnit(unitName) {
   }
 }
 
-export function runShellSync(command, {
-  cwd,
-  env,
-  timeoutMs = 0,
-  preferSystemd = true,
-  privateNetwork = false,
-  unitPrefix = "coder-sync",
-} = {}) {
+export function runShellSync(
+  command,
+  {
+    cwd,
+    env,
+    timeoutMs = 0,
+    preferSystemd = true,
+    privateNetwork = false,
+    unitPrefix = "coder-sync",
+  } = {},
+) {
   if (preferSystemd && canUseSystemdRun()) {
     const unitName = makeSystemdUnitName(unitPrefix);
     const args = buildSystemdRunArgs(command, {

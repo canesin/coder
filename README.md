@@ -12,7 +12,13 @@ This tool is designed for a workspace folder that contains one or more git repos
 
 ## Usage
 
-Install from this repo:
+Install globally (once published):
+
+```bash
+npm install -g <published-package-name>
+```
+
+Install from source:
 
 ```bash
 cd coder
@@ -135,3 +141,11 @@ When running as an MCP server (`coder-mcp`), use `coder_auto` for unattended bat
 - Dependency-aware stacked mode is enabled: if issue `B` depends on `A`, `B` is drafted on top of `A`'s branch and its PR is created with `--base <A-branch>`.
 - Safe reset is default: repo cleanup between issues does not discard local changes unless `destructiveReset: true` is explicitly set.
 - `destructiveReset: true` checks out the repo's default branch between issues and runs `git restore`/`git clean`. If your `testCmd` assumes files that only exist on an unmerged feature branch (e.g. `Cargo.toml` only added in a previous PR), tests will fail due to missing infrastructure. In this case, either merge the prerequisite branch, stack dependent issues via dependencies, or adjust `testCmd`/`.coder/test.json` to match the repo.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md).

@@ -1,11 +1,15 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import test from "node:test";
 
-import { runPpcommitNative, runPpcommitBranch, runPpcommitAll } from "../src/ppcommit.js";
+import {
+  runPpcommitAll,
+  runPpcommitBranch,
+  runPpcommitNative,
+} from "../src/ppcommit.js";
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
@@ -26,7 +30,11 @@ function makeRepo() {
 
 test("ppcommit: skip via config", async () => {
   const repo = makeRepo();
-  writeFileSync(path.join(repo, "a.js"), "// TODO: should be ignored\n", "utf8");
+  writeFileSync(
+    path.join(repo, "a.js"),
+    "// TODO: should be ignored\n",
+    "utf8",
+  );
   const r = await runPpcommitNative(repo, { skip: true });
   assert.equal(r.exitCode, 0);
   assert.match(r.stdout, /skipped/i);
@@ -63,7 +71,7 @@ test("ppcommit: does not flag edits to existing markdown", async () => {
 test("ppcommit: treatWarningsAsErrors upgrades warnings", async () => {
   const repo = makeRepo();
   // Emoji in code should be a warning by default.
-  const smile = String.fromCodePoint(0x1F642);
+  const smile = String.fromCodePoint(0x1f642);
   writeFileSync(path.join(repo, "a.js"), `// hello ${smile}\n`, "utf8");
   const r = await runPpcommitNative(repo, { treatWarningsAsErrors: true });
   assert.equal(r.exitCode, 1);
@@ -72,7 +80,11 @@ test("ppcommit: treatWarningsAsErrors upgrades warnings", async () => {
 
 test("ppcommit: does not crash when optional parsers are unavailable", async () => {
   const repo = makeRepo();
-  writeFileSync(path.join(repo, "a.js"), "const x = 123;\nconsole.log(x);\n", "utf8");
+  writeFileSync(
+    path.join(repo, "a.js"),
+    "const x = 123;\nconsole.log(x);\n",
+    "utf8",
+  );
   const r = await runPpcommitNative(repo);
   assert.equal(r.exitCode, 0);
 });
@@ -142,7 +154,11 @@ test("ppcommit branch: detects TODO in files changed since base", async () => {
 test("ppcommit branch: clean files pass checks", async () => {
   const repo = makeRepoWithMainBranch();
   run("git", ["checkout", "-b", "feat"], repo);
-  writeFileSync(path.join(repo, "b.js"), "const x = 1;\nconsole.log(x);\n", "utf8");
+  writeFileSync(
+    path.join(repo, "b.js"),
+    "const x = 1;\nconsole.log(x);\n",
+    "utf8",
+  );
   run("git", ["add", "b.js"], repo);
   run("git", ["commit", "-m", "add b.js"], repo);
   const r = await runPpcommitBranch(repo, "main");
@@ -152,7 +168,11 @@ test("ppcommit branch: clean files pass checks", async () => {
 test("ppcommit branch: skip via config", async () => {
   const repo = makeRepoWithMainBranch();
   run("git", ["checkout", "-b", "feat"], repo);
-  writeFileSync(path.join(repo, "a.js"), "// TODO: should be ignored\n", "utf8");
+  writeFileSync(
+    path.join(repo, "a.js"),
+    "// TODO: should be ignored\n",
+    "utf8",
+  );
   run("git", ["add", "a.js"], repo);
   run("git", ["commit", "-m", "add a.js"], repo);
   const r = await runPpcommitBranch(repo, "main", { skip: true });

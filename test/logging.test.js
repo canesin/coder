@@ -1,10 +1,15 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
-import { makeJsonlLogger, closeAllLoggers, logsDir, sanitizeLogEvent } from "../src/logging.js";
+import {
+  closeAllLoggers,
+  logsDir,
+  makeJsonlLogger,
+  sanitizeLogEvent,
+} from "../src/logging.js";
 
 test("sanitizeLogEvent redacts common credential fields in strings", () => {
   // Keep values short/low-entropy to avoid tripping external secret scanners in tests.

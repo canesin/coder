@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { CoderOrchestrator } from "../../orchestrator.js";
 import { AgentRolesInputSchema } from "../../config.js";
+import { CoderOrchestrator } from "../../orchestrator.js";
 import { loadLoopState, saveLoopState } from "../../state.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
@@ -34,16 +34,49 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         "Start an autonomous run in the background. Returns immediately with a runId. " +
         "Use coder_auto_status to poll progress and coder_auto_cancel to stop.",
       inputSchema: {
-        workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
-        goal: z.string().default("resolve all assigned issues").describe("High-level goal passed as context to each issue"),
-        projectFilter: z.string().optional().describe("Optional project/team name to filter issues by"),
-        maxIssues: z.number().int().min(1).optional().describe("Max number of issues to process"),
-        allowNoTests: z.boolean().default(false).describe("Allow the workflow to proceed even if no test command is detected"),
-        testCmd: z.string().default("").describe("Explicit test command to run"),
-        testConfigPath: z.string().default("").describe("Path to test config JSON"),
-        destructiveReset: z.boolean().default(false).describe("Aggressively discard repo changes between issues"),
-        strictMcpStartup: z.boolean().default(false).describe("Fail if any agent has failed MCP servers"),
-        agentRoles: AgentRolesInput.optional().describe("Optional per-step agent selection overrides"),
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        goal: z
+          .string()
+          .default("resolve all assigned issues")
+          .describe("High-level goal passed as context to each issue"),
+        projectFilter: z
+          .string()
+          .optional()
+          .describe("Optional project/team name to filter issues by"),
+        maxIssues: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Max number of issues to process"),
+        allowNoTests: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Allow the workflow to proceed even if no test command is detected",
+          ),
+        testCmd: z
+          .string()
+          .default("")
+          .describe("Explicit test command to run"),
+        testConfigPath: z
+          .string()
+          .default("")
+          .describe("Path to test config JSON"),
+        destructiveReset: z
+          .boolean()
+          .default(false)
+          .describe("Aggressively discard repo changes between issues"),
+        strictMcpStartup: z
+          .boolean()
+          .default(false)
+          .describe("Fail if any agent has failed MCP servers"),
+        agentRoles: AgentRolesInput.optional().describe(
+          "Optional per-step agent selection overrides",
+        ),
       },
       annotations: {
         readOnlyHint: false,
@@ -52,7 +85,18 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         openWorldHint: true,
       },
     },
-    async ({ workspace, goal, projectFilter, maxIssues, allowNoTests, testCmd, testConfigPath, destructiveReset, strictMcpStartup, agentRoles }) => {
+    async ({
+      workspace,
+      goal,
+      projectFilter,
+      maxIssues,
+      allowNoTests,
+      testCmd,
+      testConfigPath,
+      destructiveReset,
+      strictMcpStartup,
+      agentRoles,
+    }) => {
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
         const initialAgent = agentRoles?.issueSelector || "gemini";
@@ -62,12 +106,21 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         for (const [id, run] of activeRuns) {
           if (run.workspace === ws) {
             const diskState = loadLoopState(ws);
-            if (["completed", "failed", "cancelled"].includes(diskState.status)) {
+            if (
+              ["completed", "failed", "cancelled"].includes(diskState.status)
+            ) {
               activeRuns.delete(id);
               continue;
             }
             return {
-              content: [{ type: "text", text: JSON.stringify({ error: `Workspace already has active run: ${id}` }) }],
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: `Workspace already has active run: ${id}`,
+                  }),
+                },
+              ],
               isError: true,
             };
           }
@@ -94,31 +147,40 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
           completedAt: null,
         });
 
-        const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup, agentRoles });
-
-        const promise = orch.runAuto({
-          goal,
-          projectFilter: projectFilter || undefined,
-          maxIssues: maxIssues || undefined,
+        const orch = new CoderOrchestrator(ws, {
+          allowNoTests,
           testCmd,
           testConfigPath,
-          allowNoTests,
-          destructiveReset,
-          runId,
-        }).catch((err) => {
-          // Keep background failures from surfacing as unhandled rejections.
-          markRunTerminalOnDisk(ws, runId, "failed");
-          console.error(`[coder_auto_start] Run ${runId} failed:`, err);
-          return {
-            status: "failed",
-            completed: 0,
-            failed: 0,
-            skipped: 0,
-            results: [],
-          };
-        }).finally(() => {
-          activeRuns.delete(runId);
+          strictMcpStartup,
+          agentRoles,
         });
+
+        const promise = orch
+          .runAuto({
+            goal,
+            projectFilter: projectFilter || undefined,
+            maxIssues: maxIssues || undefined,
+            testCmd,
+            testConfigPath,
+            allowNoTests,
+            destructiveReset,
+            runId,
+          })
+          .catch((err) => {
+            // Keep background failures from surfacing as unhandled rejections.
+            markRunTerminalOnDisk(ws, runId, "failed");
+            console.error(`[coder_auto_start] Run ${runId} failed:`, err);
+            return {
+              status: "failed",
+              completed: 0,
+              failed: 0,
+              skipped: 0,
+              results: [],
+            };
+          })
+          .finally(() => {
+            activeRuns.delete(runId);
+          });
 
         activeRuns.set(runId, {
           orchestrator: orch,
@@ -128,11 +190,18 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         });
 
         return {
-          content: [{ type: "text", text: JSON.stringify({ runId, status: "started" }) }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ runId, status: "started" }),
+            },
+          ],
         };
       } catch (err) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: err.message }) }],
+          content: [
+            { type: "text", text: JSON.stringify({ error: err.message }) },
+          ],
           isError: true,
         };
       }
@@ -143,10 +212,14 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
   server.registerTool(
     "coder_auto_cancel",
     {
-      description: "Request cancellation of a running autonomous loop by runId.",
+      description:
+        "Request cancellation of a running autonomous loop by runId.",
       inputSchema: {
         runId: z.string().describe("The run ID returned by coder_auto_start"),
-        workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
       },
       annotations: {
         readOnlyHint: false,
@@ -165,21 +238,40 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
           const cancelledOnDisk = markRunTerminalOnDisk(ws, runId, "cancelled");
           if (cancelledOnDisk) {
             return {
-              content: [{ type: "text", text: JSON.stringify({ runId, status: "cancelled_offline" }) }],
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ runId, status: "cancelled_offline" }),
+                },
+              ],
             };
           }
           return {
-            content: [{ type: "text", text: JSON.stringify({ error: `No active run found: ${runId}` }) }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: `No active run found: ${runId}`,
+                }),
+              },
+            ],
             isError: true,
           };
         }
         run.orchestrator.requestCancel();
         return {
-          content: [{ type: "text", text: JSON.stringify({ runId, status: "cancel_requested" }) }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ runId, status: "cancel_requested" }),
+            },
+          ],
         };
       } catch (err) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: err.message }) }],
+          content: [
+            { type: "text", text: JSON.stringify({ error: err.message }) },
+          ],
           isError: true,
         };
       }
@@ -190,7 +282,8 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
   server.registerTool(
     "coder_auto_pause",
     {
-      description: "Request pause of a running autonomous loop. The loop will pause between stages.",
+      description:
+        "Request pause of a running autonomous loop. The loop will pause between stages.",
       inputSchema: {
         runId: z.string().describe("The run ID returned by coder_auto_start"),
       },
@@ -205,13 +298,23 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
       const run = activeRuns.get(runId);
       if (!run) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: `No active run found: ${runId}` }) }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `No active run found: ${runId}` }),
+            },
+          ],
           isError: true,
         };
       }
       run.orchestrator.requestPause();
       return {
-        content: [{ type: "text", text: JSON.stringify({ runId, status: "pause_requested" }) }],
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ runId, status: "pause_requested" }),
+          },
+        ],
       };
     },
   );
@@ -235,13 +338,20 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
       const run = activeRuns.get(runId);
       if (!run) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: `No active run found: ${runId}` }) }],
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `No active run found: ${runId}` }),
+            },
+          ],
           isError: true,
         };
       }
       run.orchestrator.requestResume();
       return {
-        content: [{ type: "text", text: JSON.stringify({ runId, status: "resumed" }) }],
+        content: [
+          { type: "text", text: JSON.stringify({ runId, status: "resumed" }) },
+        ],
       };
     },
   );

@@ -1,8 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import { registerAutoStatusTools } from "../src/mcp/tools/auto-status.js";
 import { saveLoopState } from "../src/state.js";
@@ -53,4 +53,3 @@ test("coder_auto_status reports stale when heartbeat is old for running loop", a
   assert.equal(parsed.isStale, true);
   assert.ok(parsed.staleReason);
 });
-

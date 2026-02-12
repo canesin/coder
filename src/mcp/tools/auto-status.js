@@ -26,7 +26,10 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
         "Read-only snapshot of the autonomous loop: run ID, queue status, current stage, " +
         "heartbeat, agent activity, and MCP health. Lightweight — does not create an orchestrator.",
       inputSchema: {
-        workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
       },
       annotations: {
         readOnlyHint: true,
@@ -39,19 +42,34 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
         const loopState = loadLoopState(ws);
-        const heartbeatTs = loopState.lastHeartbeatAt ? Date.parse(loopState.lastHeartbeatAt) : NaN;
-        const heartbeatAgeMs = Number.isFinite(heartbeatTs) ? Math.max(0, Date.now() - heartbeatTs) : null;
+        const heartbeatTs = loopState.lastHeartbeatAt
+          ? Date.parse(loopState.lastHeartbeatAt)
+          : NaN;
+        const heartbeatAgeMs = Number.isFinite(heartbeatTs)
+          ? Math.max(0, Date.now() - heartbeatTs)
+          : null;
         const runnerPid = loopState.runnerPid ?? null;
         const runnerAlive = isPidAlive(runnerPid);
-        const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > HEARTBEAT_STALE_MS;
-        const shouldCheckStale = loopState.status === "running" || loopState.status === "paused";
+        const heartbeatStale =
+          heartbeatAgeMs !== null && heartbeatAgeMs > HEARTBEAT_STALE_MS;
+        const shouldCheckStale =
+          loopState.status === "running" || loopState.status === "paused";
         const pidStale = shouldCheckStale && runnerAlive === false;
         const isStale = shouldCheckStale && (heartbeatStale || pidStale);
         const staleReason = isStale
-          ? (pidStale ? "runner_process_not_alive" : "heartbeat_stale")
+          ? pidStale
+            ? "runner_process_not_alive"
+            : "heartbeat_stale"
           : null;
 
-        const counts = { total: 0, completed: 0, failed: 0, skipped: 0, pending: 0, inProgress: 0 };
+        const counts = {
+          total: 0,
+          completed: 0,
+          failed: 0,
+          skipped: 0,
+          pending: 0,
+          inProgress: 0,
+        };
         for (const entry of loopState.issueQueue) {
           counts.total++;
           if (entry.status === "completed") counts.completed++;
@@ -74,14 +92,22 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
         let agentActivity = null;
         const activityPath = path.join(ws, ".coder", "activity.json");
         if (existsSync(activityPath)) {
-          try { agentActivity = JSON.parse(readFileSync(activityPath, "utf8")); } catch { /* */ }
+          try {
+            agentActivity = JSON.parse(readFileSync(activityPath, "utf8"));
+          } catch {
+            /* */
+          }
         }
 
         // Read MCP health (best-effort)
         let mcpHealth = null;
         const healthPath = path.join(ws, ".coder", "mcp-health.json");
         if (existsSync(healthPath)) {
-          try { mcpHealth = JSON.parse(readFileSync(healthPath, "utf8")); } catch { /* */ }
+          try {
+            mcpHealth = JSON.parse(readFileSync(healthPath, "utf8"));
+          } catch {
+            /* */
+          }
         }
 
         const result = {
@@ -108,7 +134,9 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
         };
       } catch (err) {
         return {
-          content: [{ type: "text", text: `Failed to get auto status: ${err.message}` }],
+          content: [
+            { type: "text", text: `Failed to get auto status: ${err.message}` },
+          ],
           isError: true,
         };
       }
@@ -123,9 +151,25 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
         "Read structured events from the autonomous loop log (.coder/logs/auto.jsonl). " +
         "Supports cursor-based pagination via afterSeq/limit for polling.",
       inputSchema: {
-        workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
-        afterSeq: z.number().int().min(0).default(0).describe("0-based line offset — return events after this sequence number (default: 0 = from start)"),
-        limit: z.number().int().min(1).max(500).default(50).describe("Max events to return (default: 50, max: 500)"),
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        afterSeq: z
+          .number()
+          .int()
+          .min(0)
+          .default(0)
+          .describe(
+            "0-based line offset — return events after this sequence number (default: 0 = from start)",
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .default(50)
+          .describe("Max events to return (default: 50, max: 500)"),
       },
       annotations: {
         readOnlyHint: true,
@@ -140,7 +184,12 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
         const logPath = path.join(ws, ".coder", "logs", "auto.jsonl");
         if (!existsSync(logPath)) {
           return {
-            content: [{ type: "text", text: JSON.stringify({ events: [], nextSeq: 0, totalLines: 0 }) }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ events: [], nextSeq: 0, totalLines: 0 }),
+              },
+            ],
           };
         }
 
@@ -166,7 +215,12 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
         };
       } catch (err) {
         return {
-          content: [{ type: "text", text: `Failed to read auto events: ${err.message}` }],
+          content: [
+            {
+              type: "text",
+              text: `Failed to read auto events: ${err.message}`,
+            },
+          ],
           isError: true,
         };
       }

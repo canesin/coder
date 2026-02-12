@@ -1,9 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { spawnSync } from "node:child_process";
-import { TestConfigSchema } from "./schemas.js";
 import { loadConfig } from "./config.js";
+import { TestConfigSchema } from "./schemas.js";
 import { runShellSync } from "./systemd-run.js";
 
 export function detectTestCommand(repoDir) {
@@ -14,7 +14,8 @@ export function detectTestCommand(repoDir) {
   if (has("package-lock.json")) return ["npm", "test"];
   if (has("package.json")) return ["npm", "test"];
 
-  if (has("pyproject.toml") || has("pytest.ini") || has("tox.ini")) return ["python3", "-m", "pytest"];
+  if (has("pyproject.toml") || has("pytest.ini") || has("tox.ini"))
+    return ["python3", "-m", "pytest"];
 
   if (has("go.mod")) return ["go", "test", "./..."];
   if (has("Cargo.toml")) return ["cargo", "test"];
@@ -78,7 +79,9 @@ export function loadTestConfig(repoDir, configPath) {
     } catch (err) {
       const details =
         err && typeof err === "object" && "issues" in err
-          ? err.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")
+          ? err.issues
+              .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+              .join("; ")
           : err?.message || String(err);
       throw new Error(`Invalid test config at ${p}: ${details}`);
     }
@@ -101,7 +104,7 @@ export function loadTestConfig(repoDir, configPath) {
   if (!existsSync(legacyPath)) return null;
 
   process.stderr.write(
-    "WARNING: .coder/test.json is deprecated. Move test config to coder.json \"test\" section.\n",
+    'WARNING: .coder/test.json is deprecated. Move test config to coder.json "test" section.\n',
   );
   try {
     const raw = JSON.parse(readFileSync(legacyPath, "utf8"));
@@ -109,7 +112,9 @@ export function loadTestConfig(repoDir, configPath) {
   } catch (err) {
     const details =
       err && typeof err === "object" && "issues" in err
-        ? err.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")
+        ? err.issues
+            .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+            .join("; ")
         : err?.message || String(err);
     throw new Error(`Invalid test config at ${legacyPath}: ${details}`);
   }
@@ -128,7 +133,10 @@ export async function waitForHealthCheck(url, retries, intervalMs) {
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), 10_000);
       try {
-        const res = await fetch(url, { signal: controller.signal, redirect: "error" });
+        const res = await fetch(url, {
+          signal: controller.signal,
+          redirect: "error",
+        });
         if (res.ok) return;
       } finally {
         clearTimeout(t);
@@ -176,7 +184,11 @@ export async function runTestConfig(repoDir, config) {
         await waitForHealthCheck(hc.url, hc.retries, hc.intervalMs);
         details.healthCheck = { url: hc.url, status: "passed" };
       } catch (err) {
-        details.healthCheck = { url: hc.url, status: "failed", error: err.message };
+        details.healthCheck = {
+          url: hc.url,
+          status: "failed",
+          error: err.message,
+        };
         return {
           cmd: `healthCheck: ${hc.url}`,
           exitCode: 1,

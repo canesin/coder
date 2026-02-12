@@ -1,9 +1,15 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import test from "node:test";
 
 import { CoderOrchestrator } from "../src/orchestrator.js";
 import { loadState } from "../src/state.js";
@@ -17,7 +23,11 @@ function makeWorkspace() {
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
-  assert.equal(res.status, 0, `command failed: ${cmd} ${args.join(" ")}\n${res.stderr || res.stdout}`);
+  assert.equal(
+    res.status,
+    0,
+    `command failed: ${cmd} ${args.join(" ")}\n${res.stderr || res.stdout}`,
+  );
   return res;
 }
 
@@ -61,10 +71,22 @@ class StubPlanOrchestrator extends CoderOrchestrator {
   async _executeAgentCommand(agentName, _agent, _cmd) {
     // Simulate Claude writing PLAN.md and creating untracked exploration artifacts.
     if (agentName === "claude") {
-      writeFileSync(path.join(this.workspaceDir, ".coder", "artifacts", "PLAN.md"), "# Plan\n", "utf8");
-      writeFileSync(path.join(this.workspaceDir, "Cargo.toml"), "[package]\nname='x'\n", "utf8");
+      writeFileSync(
+        path.join(this.workspaceDir, ".coder", "artifacts", "PLAN.md"),
+        "# Plan\n",
+        "utf8",
+      );
+      writeFileSync(
+        path.join(this.workspaceDir, "Cargo.toml"),
+        "[package]\nname='x'\n",
+        "utf8",
+      );
       mkdirSync(path.join(this.workspaceDir, "src"), { recursive: true });
-      writeFileSync(path.join(this.workspaceDir, "src", "lib.rs"), "pub fn x() {}\n", "utf8");
+      writeFileSync(
+        path.join(this.workspaceDir, "src", "lib.rs"),
+        "pub fn x() {}\n",
+        "utf8",
+      );
       return { exitCode: 0, stdout: "", stderr: "" };
     }
     return { exitCode: 0, stdout: "", stderr: "" };
@@ -78,8 +100,20 @@ class StubAutoInfraOrchestrator extends CoderOrchestrator {
   async listIssues() {
     return {
       issues: [
-        { source: "github", id: "1", title: "Issue 1", repo_path: ".", difficulty: 1 },
-        { source: "github", id: "2", title: "Issue 2", repo_path: ".", difficulty: 1 },
+        {
+          source: "github",
+          id: "1",
+          title: "Issue 1",
+          repo_path: ".",
+          difficulty: 1,
+        },
+        {
+          source: "github",
+          id: "2",
+          title: "Issue 2",
+          repo_path: ".",
+          difficulty: 1,
+        },
       ],
       recommended_index: 0,
       linearProjects: [],
@@ -87,8 +121,34 @@ class StubAutoInfraOrchestrator extends CoderOrchestrator {
   }
   async _buildAutoQueue() {
     return [
-      { source: "github", id: "1", title: "Issue 1", repoPath: ".", baseBranch: null, status: "pending", branch: null, prUrl: null, error: null, startedAt: null, completedAt: null, dependsOn: [] },
-      { source: "github", id: "2", title: "Issue 2", repoPath: ".", baseBranch: null, status: "pending", branch: null, prUrl: null, error: null, startedAt: null, completedAt: null, dependsOn: [] },
+      {
+        source: "github",
+        id: "1",
+        title: "Issue 1",
+        repoPath: ".",
+        baseBranch: null,
+        status: "pending",
+        branch: null,
+        prUrl: null,
+        error: null,
+        startedAt: null,
+        completedAt: null,
+        dependsOn: [],
+      },
+      {
+        source: "github",
+        id: "2",
+        title: "Issue 2",
+        repoPath: ".",
+        baseBranch: null,
+        status: "pending",
+        branch: null,
+        prUrl: null,
+        error: null,
+        startedAt: null,
+        completedAt: null,
+        dependsOn: [],
+      },
     ];
   }
   _resetForNextIssue() {}
@@ -96,22 +156,50 @@ class StubAutoInfraOrchestrator extends CoderOrchestrator {
     const state = loadState(this.workspaceDir);
     state.repoPath = ".";
     state.branch = "coder/github-1";
-    state.steps = { ...(state.steps || {}), wroteIssue: true, verifiedCleanRepo: true };
-    writeFileSync(path.join(this.workspaceDir, ".coder", "artifacts", "ISSUE.md"), "# Issue\n", "utf8");
+    state.steps = {
+      ...(state.steps || {}),
+      wroteIssue: true,
+      verifiedCleanRepo: true,
+    };
+    writeFileSync(
+      path.join(this.workspaceDir, ".coder", "artifacts", "ISSUE.md"),
+      "# Issue\n",
+      "utf8",
+    );
     run("git", ["checkout", "-B", state.branch], this.workspaceDir);
-    writeFileSync(path.join(this.workspaceDir, ".coder", "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
+    writeFileSync(
+      path.join(this.workspaceDir, ".coder", "state.json"),
+      JSON.stringify(state, null, 2) + "\n",
+      "utf8",
+    );
   }
   async createPlan() {
     const state = loadState(this.workspaceDir);
-    state.steps = { ...(state.steps || {}), wrotePlan: true, wroteCritique: true };
-    writeFileSync(path.join(this.workspaceDir, ".coder", "artifacts", "PLAN.md"), "# Plan\n", "utf8");
-    writeFileSync(path.join(this.workspaceDir, ".coder", "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
+    state.steps = {
+      ...(state.steps || {}),
+      wrotePlan: true,
+      wroteCritique: true,
+    };
+    writeFileSync(
+      path.join(this.workspaceDir, ".coder", "artifacts", "PLAN.md"),
+      "# Plan\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(this.workspaceDir, ".coder", "state.json"),
+      JSON.stringify(state, null, 2) + "\n",
+      "utf8",
+    );
     return { planMd: "# Plan\n", critiqueMd: "" };
   }
   async implement() {
     const state = loadState(this.workspaceDir);
     state.steps = { ...(state.steps || {}), implemented: true };
-    writeFileSync(path.join(this.workspaceDir, ".coder", "state.json"), JSON.stringify(state, null, 2) + "\n", "utf8");
+    writeFileSync(
+      path.join(this.workspaceDir, ".coder", "state.json"),
+      JSON.stringify(state, null, 2) + "\n",
+      "utf8",
+    );
     return { summary: "ok" };
   }
   async reviewAndTest() {
@@ -127,7 +215,11 @@ test("_normalizeRepoPath keeps valid workspace-relative paths and rejects invali
   mkdirSync(path.join(ws, "subrepo"), { recursive: true });
   run("git", ["init"], path.join(ws, "subrepo"));
   mkdirSync(path.join(ws, "subrepo", "src"), { recursive: true });
-  writeFileSync(path.join(ws, "subrepo", "src", "file.js"), "console.log('x');\n", "utf8");
+  writeFileSync(
+    path.join(ws, "subrepo", "src", "file.js"),
+    "console.log('x');\n",
+    "utf8",
+  );
   const orch = new CoderOrchestrator(ws);
 
   assert.equal(orch._normalizeRepoPath("subrepo"), "subrepo");
@@ -142,18 +234,22 @@ test("workflow agent role overrides are applied", () => {
   const ws = makeWorkspace();
   writeFileSync(
     path.join(ws, "coder.json"),
-    JSON.stringify({
-      workflow: {
-        agentRoles: {
-          issueSelector: "claude",
-          planner: "codex",
-          planReviewer: "claude",
-          programmer: "codex",
-          reviewer: "gemini",
-          committer: "claude",
+    JSON.stringify(
+      {
+        workflow: {
+          agentRoles: {
+            issueSelector: "claude",
+            planner: "codex",
+            planReviewer: "claude",
+            programmer: "codex",
+            reviewer: "gemini",
+            committer: "claude",
+          },
         },
       },
-    }, null, 2) + "\n",
+      null,
+      2,
+    ) + "\n",
     "utf8",
   );
   const orch = new CoderOrchestrator(ws, { allowNoTests: true });
@@ -177,7 +273,11 @@ test("listIssues continues when optional Linear project listing fails", async ()
   });
 
   const result = await orch.listIssues();
-  assert.deepEqual(result, { issues: [], recommended_index: 0, linearProjects: [] });
+  assert.deepEqual(result, {
+    issues: [],
+    recommended_index: 0,
+    linearProjects: [],
+  });
 
   const state = loadState(ws);
   assert.equal(state.steps.listedProjects, true);
@@ -217,8 +317,20 @@ test("_buildAutoQueue normalizes invalid repo_path from Gemini output", async ()
 
   const queue = await orch._buildAutoQueue(
     [
-      { source: "github", id: "1", title: "Issue 1", repo_path: ".", difficulty: 1 },
-      { source: "github", id: "2", title: "Issue 2", repo_path: ".", difficulty: 1 },
+      {
+        source: "github",
+        id: "1",
+        title: "Issue 1",
+        repo_path: ".",
+        difficulty: 1,
+      },
+      {
+        source: "github",
+        id: "2",
+        title: "Issue 2",
+        repo_path: ".",
+        difficulty: 1,
+      },
     ],
     "resolve all",
   );
@@ -245,7 +357,11 @@ test("_executeWithRetry enforces strict MCP startup checks and does not retry", 
   };
 
   await assert.rejects(
-    async () => orch._executeWithRetry(fakeAgent, "noop", { retries: 3, agentName: "gemini" }),
+    async () =>
+      orch._executeWithRetry(fakeAgent, "noop", {
+        retries: 3,
+        agentName: "gemini",
+      }),
     /MCP startup failure for gemini/,
   );
   assert.equal(calls, 1);
@@ -268,22 +384,36 @@ test("createPlan allows untracked exploration artifacts but cleans up newly-crea
   const ws = makeWorkspace();
   commitInitial(ws);
   const orch = new StubPlanOrchestrator(ws);
-  writeFileSync(path.join(ws, ".coder", "artifacts", "ISSUE.md"), "# Issue\n", "utf8");
+  writeFileSync(
+    path.join(ws, ".coder", "artifacts", "ISSUE.md"),
+    "# Issue\n",
+    "utf8",
+  );
   writeFileSync(
     path.join(ws, ".coder", "state.json"),
-    JSON.stringify({
-      repoPath: ".",
-      branch: "coder/github-1",
-      selected: { source: "github", id: "1", title: "Issue 1" },
-      steps: { wroteIssue: true, wroteCritique: true },
-    }, null, 2) + "\n",
+    JSON.stringify(
+      {
+        repoPath: ".",
+        branch: "coder/github-1",
+        selected: { source: "github", id: "1", title: "Issue 1" },
+        steps: { wroteIssue: true, wroteCritique: true },
+      },
+      null,
+      2,
+    ) + "\n",
     "utf8",
   );
   run("git", ["checkout", "-B", "coder/github-1"], ws);
 
   await orch.createPlan();
 
-  assert.equal(readFileSync(path.join(ws, ".coder", "artifacts", "PLAN.md"), "utf8").includes("# Plan"), true);
+  assert.equal(
+    readFileSync(
+      path.join(ws, ".coder", "artifacts", "PLAN.md"),
+      "utf8",
+    ).includes("# Plan"),
+    true,
+  );
   assert.equal(existsSync(path.join(ws, "Cargo.toml")), false);
   assert.equal(existsSync(path.join(ws, "src")), false);
 });
@@ -309,17 +439,42 @@ test("_resetForNextIssue removes .coder/artifacts files and preserves workspace 
   writeFileSync(rootPlan, "user file\n", "utf8");
   writeFileSync(rootCritique, "user file\n", "utf8");
 
-  writeFileSync(path.join(ws, ".coder", "state.json"), JSON.stringify({ repoPath: "." }) + "\n", "utf8");
-  writeFileSync(path.join(ws, ".coder", "artifacts", "ISSUE.md"), "artifact\n", "utf8");
-  writeFileSync(path.join(ws, ".coder", "artifacts", "PLAN.md"), "artifact\n", "utf8");
-  writeFileSync(path.join(ws, ".coder", "artifacts", "PLANREVIEW.md"), "artifact\n", "utf8");
+  writeFileSync(
+    path.join(ws, ".coder", "state.json"),
+    JSON.stringify({ repoPath: "." }) + "\n",
+    "utf8",
+  );
+  writeFileSync(
+    path.join(ws, ".coder", "artifacts", "ISSUE.md"),
+    "artifact\n",
+    "utf8",
+  );
+  writeFileSync(
+    path.join(ws, ".coder", "artifacts", "PLAN.md"),
+    "artifact\n",
+    "utf8",
+  );
+  writeFileSync(
+    path.join(ws, ".coder", "artifacts", "PLANREVIEW.md"),
+    "artifact\n",
+    "utf8",
+  );
 
   orch._resetForNextIssue(null);
 
   assert.equal(existsSync(path.join(ws, ".coder", "state.json")), false);
-  assert.equal(existsSync(path.join(ws, ".coder", "artifacts", "ISSUE.md")), false);
-  assert.equal(existsSync(path.join(ws, ".coder", "artifacts", "PLAN.md")), false);
-  assert.equal(existsSync(path.join(ws, ".coder", "artifacts", "PLANREVIEW.md")), false);
+  assert.equal(
+    existsSync(path.join(ws, ".coder", "artifacts", "ISSUE.md")),
+    false,
+  );
+  assert.equal(
+    existsSync(path.join(ws, ".coder", "artifacts", "PLAN.md")),
+    false,
+  );
+  assert.equal(
+    existsSync(path.join(ws, ".coder", "artifacts", "PLANREVIEW.md")),
+    false,
+  );
   assert.equal(existsSync(rootIssue), true);
   assert.equal(existsSync(rootPlan), true);
   assert.equal(existsSync(rootCritique), true);

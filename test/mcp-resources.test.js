@@ -1,8 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 import { registerResources } from "../src/mcp/resources.js";
 
 function makeWorkspace() {
@@ -23,9 +23,21 @@ function makeServer() {
 
 test("MCP markdown resources read from .coder/artifacts", async () => {
   const ws = makeWorkspace();
-  writeFileSync(path.join(ws, ".coder", "artifacts", "ISSUE.md"), "# Issue\n", "utf8");
-  writeFileSync(path.join(ws, ".coder", "artifacts", "PLAN.md"), "# Plan\n", "utf8");
-  writeFileSync(path.join(ws, ".coder", "artifacts", "PLANREVIEW.md"), "# Critique\n", "utf8");
+  writeFileSync(
+    path.join(ws, ".coder", "artifacts", "ISSUE.md"),
+    "# Issue\n",
+    "utf8",
+  );
+  writeFileSync(
+    path.join(ws, ".coder", "artifacts", "PLAN.md"),
+    "# Plan\n",
+    "utf8",
+  );
+  writeFileSync(
+    path.join(ws, ".coder", "artifacts", "PLANREVIEW.md"),
+    "# Critique\n",
+    "utf8",
+  );
 
   const server = makeServer();
   registerResources(server, ws);

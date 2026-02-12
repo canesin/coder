@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import os from "node:os";
 import merge from "deepmerge";
 import { z } from "zod";
 
@@ -21,7 +21,9 @@ export const PpcommitConfigSchema = z.object({
   blockOverEngineering: z.boolean().default(true),
   treatWarningsAsErrors: z.boolean().default(false),
   enableLlm: z.boolean().default(true),
-  llmServiceUrl: z.string().default("https://generativelanguage.googleapis.com/v1beta/openai"),
+  llmServiceUrl: z
+    .string()
+    .default("https://generativelanguage.googleapis.com/v1beta/openai"),
   llmApiKey: z.string().default(""),
   llmApiKeyEnv: z.string().default("GEMINI_API_KEY"),
   llmModel: z.string().default("gemini-3-flash-preview"),
@@ -65,22 +67,30 @@ export const AgentRolesInputSchema = z.object({
 });
 
 export const CoderConfigSchema = z.object({
-  models: z.object({
-    gemini: z.string().default("gemini-2.5-flash"),
-    geminiPreview: z.string().default("gemini-3-flash-preview"),
-    claude: z.string().default("claude-opus-4-6"),
-  }).default({}),
+  models: z
+    .object({
+      gemini: z.string().default("gemini-2.5-flash"),
+      geminiPreview: z.string().default("gemini-3-flash-preview"),
+      claude: z.string().default("claude-opus-4-6"),
+    })
+    .default({}),
   ppcommit: PpcommitConfigSchema.default({}),
   test: TestSectionSchema.default({}),
-  claude: z.object({
-    skipPermissions: z.boolean().default(true),
-  }).default({}),
-  mcp: z.object({
-    strictStartup: z.boolean().default(false),
-  }).default({}),
-  workflow: z.object({
-    agentRoles: WorkflowAgentRolesSchema.default({}),
-  }).default({}),
+  claude: z
+    .object({
+      skipPermissions: z.boolean().default(true),
+    })
+    .default({}),
+  mcp: z
+    .object({
+      strictStartup: z.boolean().default(false),
+    })
+    .default({}),
+  workflow: z
+    .object({
+      agentRoles: WorkflowAgentRolesSchema.default({}),
+    })
+    .default({}),
   verbose: z.boolean().default(false),
 });
 
@@ -111,7 +121,12 @@ function dropUndefined(obj) {
 
 export function deepMerge(base, override) {
   if (override === undefined) return base;
-  if (override === null || typeof override !== "object" || Array.isArray(override)) return override;
+  if (
+    override === null ||
+    typeof override !== "object" ||
+    Array.isArray(override)
+  )
+    return override;
   if (!base || typeof base !== "object" || Array.isArray(base)) return override;
   return merge(base, dropUndefined(override), { arrayMerge: overwriteMerge });
 }

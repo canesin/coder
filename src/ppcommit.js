@@ -9,9 +9,15 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, unlinkSync, existsSync, lstatSync, realpathSync } from "node:fs";
-import os from "node:os";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { jsonrepair } from "jsonrepair";
@@ -58,15 +64,31 @@ const CODE_EXTENSIONS = new Set([
 ]);
 
 // Directories to skip when checking files
-const SKIP_DIRS = new Set(["node_modules", "venv", ".venv", "__pycache__", ".git", "dist", "build", ".coder", ".gemini"]);
+const SKIP_DIRS = new Set([
+  "node_modules",
+  "venv",
+  ".venv",
+  "__pycache__",
+  ".git",
+  "dist",
+  "build",
+  ".coder",
+  ".gemini",
+]);
 
 const MARKDOWN_ALLOWED_DIRS = new Set(["docs", "doc", ".github"]);
-const MARKDOWN_ALLOWED_FILES = new Set(["README.md", "CHANGELOG.md", "LICENSE.md", "CONTRIBUTING.md"]);
+const MARKDOWN_ALLOWED_FILES = new Set([
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE.md",
+  "CONTRIBUTING.md",
+]);
 
 // --- Pattern Definitions ---
 
 // Emoji detection pattern (covers most common emoji ranges)
-const EMOJI_PATTERN = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2702}-\u{27B0}\u{24C2}-\u{1F251}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}]/u;
+const EMOJI_PATTERN =
+  /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2702}-\u{27B0}\u{24C2}-\u{1F251}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}]/u;
 
 const TODO_PATTERN = /\bTODO\b/i;
 const FIXME_PATTERN = /\bFIXME\b/i;
@@ -105,18 +127,37 @@ const PLACEHOLDER_PATTERNS = [
 
 // Backwards-compatibility hack patterns
 const COMPAT_HACK_PATTERNS = [
-  { pattern: /^\s*(?:const|let|var)\s+_[a-zA-Z]\w*\s*=\s*\w+.*;?\s*(?:\/\/.*(?:unused|compat|legacy))?$/i, name: "Unused variable with underscore prefix" },
-  { pattern: /^\s*export\s*\{[^}]*\}.*\/[/*].*(?:compat|legacy|deprecated)/i, name: "Compatibility re-export" },
-  { pattern: /\/[/*]\s*(?:removed|deprecated|legacy|for backwards? compat)/i, name: "Deprecated/removed comment marker" },
+  {
+    pattern:
+      /^\s*(?:const|let|var)\s+_[a-zA-Z]\w*\s*=\s*\w+.*;?\s*(?:\/\/.*(?:unused|compat|legacy))?$/i,
+    name: "Unused variable with underscore prefix",
+  },
+  {
+    pattern: /^\s*export\s*\{[^}]*\}.*\/[/*].*(?:compat|legacy|deprecated)/i,
+    name: "Compatibility re-export",
+  },
+  {
+    pattern: /\/[/*]\s*(?:removed|deprecated|legacy|for backwards? compat)/i,
+    name: "Deprecated/removed comment marker",
+  },
   { pattern: /catch\s*\([^)]*\)\s*\{\s*\}/, name: "Empty catch block" },
 ];
 
 // Over-engineering patterns (line-based detection)
 const OVER_ENGINEERING_PATTERNS = [
-  { pattern: /function\s+create[A-Z]\w*Factory\s*\(/i, name: "Factory function for potentially simple object" },
+  {
+    pattern: /function\s+create[A-Z]\w*Factory\s*\(/i,
+    name: "Factory function for potentially simple object",
+  },
   { pattern: /class\s+\w+Factory\s*[{<]/i, name: "Factory class" },
-  { pattern: /class\s+Abstract\w+\s*[{<]/i, name: "Abstract base class (verify single impl)" },
-  { pattern: /try\s*\{[^}]*try\s*\{[^}]*try\s*\{/s, name: "Excessive try-catch nesting (3+ levels)" },
+  {
+    pattern: /class\s+Abstract\w+\s*[{<]/i,
+    name: "Abstract base class (verify single impl)",
+  },
+  {
+    pattern: /try\s*\{[^}]*try\s*\{[^}]*try\s*\{/s,
+    name: "Excessive try-catch nesting (3+ levels)",
+  },
 ];
 
 // --- Gitleaks integration (secret detection) ---
@@ -128,11 +169,14 @@ let _gitleaksChecked = false;
  */
 function assertGitleaksInstalled() {
   if (_gitleaksChecked) return;
-  const res = spawnSync("gitleaks", ["version"], { encoding: "utf8", timeout: 5000 });
+  const res = spawnSync("gitleaks", ["version"], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
   if (res.status !== 0) {
     throw new Error(
       "gitleaks is required for secret detection but was not found in PATH. " +
-      "Install it: https://github.com/gitleaks/gitleaks#installing"
+        "Install it: https://github.com/gitleaks/gitleaks#installing",
     );
   }
   _gitleaksChecked = true;
@@ -149,8 +193,20 @@ function assertGitleaksInstalled() {
 function runGitleaksDetect(repoDir, fileFilter) {
   assertGitleaksInstalled();
 
-  const tmpReport = path.join(os.tmpdir(), `gitleaks-${process.pid}-${Date.now()}.json`);
-  const args = ["detect", "--no-git", "-s", repoDir, "-r", tmpReport, "-f", "json"];
+  const tmpReport = path.join(
+    os.tmpdir(),
+    `gitleaks-${process.pid}-${Date.now()}.json`,
+  );
+  const args = [
+    "detect",
+    "--no-git",
+    "-s",
+    repoDir,
+    "-r",
+    tmpReport,
+    "-f",
+    "json",
+  ];
 
   // Use repo-local gitleaks.toml if present
   const configPath = path.join(repoDir, "gitleaks.toml");
@@ -166,13 +222,17 @@ function runGitleaksDetect(repoDir, fileFilter) {
 
   // Exit code 0 = no leaks, 1 = leaks found, other = gitleaks error
   if (res.status !== 0 && res.status !== 1) {
-    try { unlinkSync(tmpReport); } catch {}
-    return [{
-      level: "ERROR",
-      message: `gitleaks failed (exit ${res.status}): ${(res.stderr || "").trim().slice(0, 200)}`,
-      file: ".",
-      line: 0,
-    }];
+    try {
+      unlinkSync(tmpReport);
+    } catch {}
+    return [
+      {
+        level: "ERROR",
+        message: `gitleaks failed (exit ${res.status}): ${(res.stderr || "").trim().slice(0, 200)}`,
+        file: ".",
+        line: 0,
+      },
+    ];
   }
 
   let findings;
@@ -182,7 +242,9 @@ function runGitleaksDetect(repoDir, fileFilter) {
   } catch {
     return [];
   } finally {
-    try { unlinkSync(tmpReport); } catch {}
+    try {
+      unlinkSync(tmpReport);
+    } catch {}
   }
 
   if (!Array.isArray(findings) || findings.length === 0) return [];
@@ -210,7 +272,8 @@ const MAGIC_NUMBER_ALLOWLIST = new Set([100, 1000, 60, 24, 365, 360, 180, 90]);
 
 function resolvePpcommitConfig(repoDir, ppcommitConfig) {
   if (ppcommitConfig) return PpcommitConfigSchema.parse(ppcommitConfig);
-  const disableLlm = process.env.PPCOMMIT_DISABLE_LLM === "1" || process.env.NODE_ENV === "test";
+  const disableLlm =
+    process.env.PPCOMMIT_DISABLE_LLM === "1" || process.env.NODE_ENV === "test";
   const config = loadConfig(repoDir).ppcommit;
   if (disableLlm) return { ...config, enableLlm: false };
   return config;
@@ -223,22 +286,38 @@ function splitLines(s) {
 }
 
 function listUncommittedFiles(repoDir) {
-  const stagedAdded = spawnSync("git", ["diff", "--cached", "--name-only", "--diff-filter=A"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
-  const staged = spawnSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMR"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
-  const unstaged = spawnSync("git", ["diff", "--name-only", "--diff-filter=ACMR"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
-  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
+  const stagedAdded = spawnSync(
+    "git",
+    ["diff", "--cached", "--name-only", "--diff-filter=A"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
+  const staged = spawnSync(
+    "git",
+    ["diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
+  const unstaged = spawnSync(
+    "git",
+    ["diff", "--name-only", "--diff-filter=ACMR"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
+  const untracked = spawnSync(
+    "git",
+    ["ls-files", "--others", "--exclude-standard"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
 
   /** @type {Set<string>} */
   const newFiles = new Set();
@@ -247,10 +326,14 @@ function listUncommittedFiles(repoDir) {
   /** @type {Set<string>} */
   const seen = new Set();
 
-  for (const f of splitLines(stagedAdded.stdout || "").map((l) => l.trim()).filter(Boolean)) {
+  for (const f of splitLines(stagedAdded.stdout || "")
+    .map((l) => l.trim())
+    .filter(Boolean)) {
     newFiles.add(f);
   }
-  for (const f of splitLines(untracked.stdout || "").map((l) => l.trim()).filter(Boolean)) {
+  for (const f of splitLines(untracked.stdout || "")
+    .map((l) => l.trim())
+    .filter(Boolean)) {
     newFiles.add(f);
   }
 
@@ -335,14 +418,16 @@ function checkWorkflowArtifacts(filePath, config, issues) {
   const normalized = String(filePath || "").replace(/\\/g, "/");
   if (!normalized) return;
 
-  const isDirOrWithin = (prefix) => normalized === prefix || normalized.startsWith(prefix + "/");
+  const isDirOrWithin = (prefix) =>
+    normalized === prefix || normalized.startsWith(prefix + "/");
 
   // Directories that should never be committed. If a repo genuinely uses these,
   // it can opt out via `git config ppcommit.blockWorkflowArtifacts false`.
   if (isDirOrWithin(".coder")) {
     pushIssue(issues, {
       level: "ERROR",
-      message: "Workflow artifact detected (.coder/) — do not commit tool internals",
+      message:
+        "Workflow artifact detected (.coder/) — do not commit tool internals",
       file: filePath,
       line: 1,
     });
@@ -351,7 +436,8 @@ function checkWorkflowArtifacts(filePath, config, issues) {
   if (isDirOrWithin(".gemini")) {
     pushIssue(issues, {
       level: "ERROR",
-      message: "Workflow artifact detected (.gemini/) — do not commit tool internals",
+      message:
+        "Workflow artifact detected (.gemini/) — do not commit tool internals",
       file: filePath,
       line: 1,
     });
@@ -360,7 +446,8 @@ function checkWorkflowArtifacts(filePath, config, issues) {
   if (normalized === ".geminiignore") {
     pushIssue(issues, {
       level: "ERROR",
-      message: "Workflow artifact detected (.geminiignore) — do not commit tool internals",
+      message:
+        "Workflow artifact detected (.geminiignore) — do not commit tool internals",
       file: filePath,
       line: 1,
     });
@@ -374,7 +461,12 @@ function checkEmojis(content, filePath, config, issues) {
   const lines = splitLines(content);
   for (let i = 0; i < lines.length; i++) {
     if (EMOJI_PATTERN.test(lines[i])) {
-      pushIssue(issues, { level: "WARNING", message: "Emoji character in code", file: filePath, line: i + 1 });
+      pushIssue(issues, {
+        level: "WARNING",
+        message: "Emoji character in code",
+        file: filePath,
+        line: i + 1,
+      });
     }
   }
 }
@@ -388,7 +480,8 @@ function checkTodosFixmes(content, filePath, config, issues) {
     if (config.blockTodos && TODO_PATTERN.test(line)) {
       pushIssue(issues, {
         level: "ERROR",
-        message: "TODO comment found. Finish the task or create a tracked issue.",
+        message:
+          "TODO comment found. Finish the task or create a tracked issue.",
         file: filePath,
         line: i + 1,
       });
@@ -396,7 +489,8 @@ function checkTodosFixmes(content, filePath, config, issues) {
     if (config.blockFixmes && FIXME_PATTERN.test(line)) {
       pushIssue(issues, {
         level: "ERROR",
-        message: "FIXME comment found. Finish the task or create a tracked issue.",
+        message:
+          "FIXME comment found. Finish the task or create a tracked issue.",
         file: filePath,
         line: i + 1,
       });
@@ -450,7 +544,8 @@ function checkPlaceholderCode(content, filePath, config, issues) {
   if (!config.blockPlaceholderCode) return;
   if (!isCodeFile(filePath)) return;
 
-  const isTestFile = /(^|\/|\\)(test|tests)(\/|\\)/i.test(filePath) || /test/i.test(filePath);
+  const isTestFile =
+    /(^|\/|\\)(test|tests)(\/|\\)/i.test(filePath) || /test/i.test(filePath);
   const lines = splitLines(content);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -459,7 +554,8 @@ function checkPlaceholderCode(content, filePath, config, issues) {
       if (pattern.test(line)) {
         pushIssue(issues, {
           level: "ERROR",
-          message: "Placeholder code detected. Complete the implementation before committing.",
+          message:
+            "Placeholder code detected. Complete the implementation before committing.",
           file: filePath,
           line: i + 1,
         });
@@ -687,20 +783,28 @@ function extractJsonArray(text) {
   return [];
 }
 
-async function runLlmIssues(repoDir, files, config) {
+async function runLlmIssues(_repoDir, files, config) {
   // Best-effort: do not fail ppcommit if LLM analysis is unavailable.
   if (!config?.enableLlm) return /** @type {any[]} */ ([]);
 
   const explicitKey = String(config?.llmApiKey || "").trim();
   const keyEnvName = String(config?.llmApiKeyEnv || "").trim();
   const envKey = keyEnvName ? process.env[keyEnvName] : "";
-  const apiKey = explicitKey || envKey || process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const apiKey =
+    explicitKey ||
+    envKey ||
+    process.env.OPENAI_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY;
   if (!apiKey) return /** @type {any[]} */ ([]);
 
   const maxFiles = 3;
   const snippets = files
     .slice(0, maxFiles)
-    .map(({ filePath, content }) => `File: ${filePath}\n\`\`\`\n${content.slice(0, 4000)}\n\`\`\``)
+    .map(
+      ({ filePath, content }) =>
+        `File: ${filePath}\n\`\`\`\n${content.slice(0, 4000)}\n\`\`\``,
+    )
     .join("\n\n");
 
   if (!snippets) return /** @type {any[]} */ ([]);
@@ -734,8 +838,9 @@ Respond with ONLY a JSON array. Each item:
 	If no issues found, respond with [].
 	Only report clear issues, not speculation. Be specific about what's wrong.`;
 
-  const serviceUrl = String(config?.llmServiceUrl || "").trim()
-    || "https://generativelanguage.googleapis.com/v1beta/openai";
+  const serviceUrl =
+    String(config?.llmServiceUrl || "").trim() ||
+    "https://generativelanguage.googleapis.com/v1beta/openai";
   const baseUrl = serviceUrl.replace(/\/+$/, "");
   const endpoint = /\/chat\/completions$/i.test(baseUrl)
     ? baseUrl
@@ -792,7 +897,8 @@ function formatIssues(issues, treatWarningsAsErrors) {
   return (
     issues
       .map((i) => {
-        const level = treatWarningsAsErrors && i.level === "WARNING" ? "ERROR" : i.level;
+        const level =
+          treatWarningsAsErrors && i.level === "WARNING" ? "ERROR" : i.level;
         return `${level}: ${i.message} at ${i.file}:${i.line}`;
       })
       .join("\n") + "\n"
@@ -811,10 +917,14 @@ function listAllFiles(repoDir) {
     cwd: repoDir,
     encoding: "utf8",
   });
-  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
+  const untracked = spawnSync(
+    "git",
+    ["ls-files", "--others", "--exclude-standard"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
 
   /** @type {Set<string>} */
   const newFiles = new Set();
@@ -847,7 +957,11 @@ function listAllFiles(repoDir) {
 function listFilesSinceBase(repoDir, baseBranch) {
   const base = (baseBranch || "").trim();
   if (!base) {
-    return { ordered: [], newFiles: new Set(), error: "ERROR: --base must be a non-empty git ref.\n" };
+    return {
+      ordered: [],
+      newFiles: new Set(),
+      error: "ERROR: --base must be a non-empty git ref.\n",
+    };
   }
 
   const diffRange = `${base}...HEAD`;
@@ -862,16 +976,23 @@ function listFilesSinceBase(repoDir, baseBranch) {
     cwd: repoDir,
     encoding: "utf8",
   });
-  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
+  const untracked = spawnSync(
+    "git",
+    ["ls-files", "--others", "--exclude-standard"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
 
   // If the base ref is missing/invalid, git writes errors to stderr and exits non-zero.
   // Treat that as a hard error; otherwise `stdout` is empty and we'd incorrectly report "no changes".
   if (diffNew.status !== 0 || diffAll.status !== 0) {
     const failing = diffNew.status !== 0 ? diffNew : diffAll;
-    const details = ((failing.stderr || "") + (failing.error ? "\n" + failing.error.message : "")).trim();
+    const details = (
+      (failing.stderr || "") +
+      (failing.error ? "\n" + failing.error.message : "")
+    ).trim();
     let error = `ERROR: Failed to diff against base '${base}'. Ensure the ref exists locally (try 'git fetch') and is spelled correctly.\n`;
     if (details) error += details + "\n";
     return { ordered: [], newFiles: new Set(), error };
@@ -884,10 +1005,14 @@ function listFilesSinceBase(repoDir, baseBranch) {
   /** @type {Set<string>} */
   const seen = new Set();
 
-  for (const f of splitLines(diffNew.stdout || "").map((l) => l.trim()).filter(Boolean)) {
+  for (const f of splitLines(diffNew.stdout || "")
+    .map((l) => l.trim())
+    .filter(Boolean)) {
     newFiles.add(f);
   }
-  for (const f of splitLines(untracked.stdout || "").map((l) => l.trim()).filter(Boolean)) {
+  for (const f of splitLines(untracked.stdout || "")
+    .map((l) => l.trim())
+    .filter(Boolean)) {
     newFiles.add(f);
   }
 
@@ -958,11 +1083,18 @@ async function _runChecks(repoDir, ordered, newFiles, config) {
     const issue = typeof r.issue === "string" ? r.issue : "";
     const severity = r.severity === "ERROR" ? "ERROR" : "WARNING";
     if (!file || !issue) continue;
-    pushIssue(issues, { level: severity, message: `LLM analysis: ${issue.slice(0, 200)}`, file, line });
+    pushIssue(issues, {
+      level: severity,
+      message: `LLM analysis: ${issue.slice(0, 200)}`,
+      file,
+      line,
+    });
   }
 
   const stdout = formatIssues(issues, config.treatWarningsAsErrors);
-  const hasErrors = issues.some((i) => i.level === "ERROR") || (config.treatWarningsAsErrors && issues.some((i) => i.level === "WARNING"));
+  const hasErrors =
+    issues.some((i) => i.level === "ERROR") ||
+    (config.treatWarningsAsErrors && issues.some((i) => i.level === "WARNING"));
   return { exitCode: hasErrors ? 1 : 0, stdout, stderr: "" };
 }
 
@@ -974,10 +1106,20 @@ async function _runChecks(repoDir, ordered, newFiles, config) {
  */
 export async function runPpcommitNative(repoDir, ppcommitConfig) {
   const config = resolvePpcommitConfig(repoDir, ppcommitConfig);
-  if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
+  if (config.skip)
+    return {
+      exitCode: 0,
+      stdout: "ppcommit checks skipped via config\n",
+      stderr: "",
+    };
 
   const { ordered, newFiles } = listUncommittedFiles(repoDir);
-  if (ordered.length === 0) return { exitCode: 0, stdout: "No uncommitted files to check\n", stderr: "" };
+  if (ordered.length === 0)
+    return {
+      exitCode: 0,
+      stdout: "No uncommitted files to check\n",
+      stderr: "",
+    };
 
   return await _runChecks(repoDir, ordered, newFiles, config);
 }
@@ -992,11 +1134,21 @@ export async function runPpcommitNative(repoDir, ppcommitConfig) {
  */
 export async function runPpcommitBranch(repoDir, baseBranch, ppcommitConfig) {
   const config = resolvePpcommitConfig(repoDir, ppcommitConfig);
-  if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
+  if (config.skip)
+    return {
+      exitCode: 0,
+      stdout: "ppcommit checks skipped via config\n",
+      stderr: "",
+    };
 
   const { ordered, newFiles, error } = listFilesSinceBase(repoDir, baseBranch);
   if (error) return { exitCode: 2, stdout: "", stderr: error };
-  if (ordered.length === 0) return { exitCode: 0, stdout: "No files changed since " + baseBranch + "\n", stderr: "" };
+  if (ordered.length === 0)
+    return {
+      exitCode: 0,
+      stdout: "No files changed since " + baseBranch + "\n",
+      stderr: "",
+    };
 
   return await _runChecks(repoDir, ordered, newFiles, config);
 }
@@ -1010,10 +1162,16 @@ export async function runPpcommitBranch(repoDir, baseBranch, ppcommitConfig) {
  */
 export async function runPpcommitAll(repoDir, ppcommitConfig) {
   const config = resolvePpcommitConfig(repoDir, ppcommitConfig);
-  if (config.skip) return { exitCode: 0, stdout: "ppcommit checks skipped via config\n", stderr: "" };
+  if (config.skip)
+    return {
+      exitCode: 0,
+      stdout: "ppcommit checks skipped via config\n",
+      stderr: "",
+    };
 
   const { ordered, newFiles } = listAllFiles(repoDir);
-  if (ordered.length === 0) return { exitCode: 0, stdout: "No files to check\n", stderr: "" };
+  if (ordered.length === 0)
+    return { exitCode: 0, stdout: "No files to check\n", stderr: "" };
 
   return await _runChecks(repoDir, ordered, newFiles, config);
 }

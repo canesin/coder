@@ -2,15 +2,48 @@
   "name": "coder",
   "version": "0.3.0",
   "description": "Multi-agent coding workflow orchestrator (gemini-cli + claude-code + codex-cli)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/canesin/coder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/canesin/coder/issues"
+  },
+  "homepage": "https://github.com/canesin/coder#readme",
+  "keywords": [
+    "mcp",
+    "cli",
+    "agents",
+    "codex",
+    "claude",
+    "gemini"
+  ],
   "type": "module",
   "bin": {
     "coder": "./bin/coder.js",
     "coder-mcp": "./bin/coder-mcp.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    ".mcp.example.json",
+    ".claude/settings.example.json",
+    "coder.example.json"
+  ],
   "scripts": {
     "coder": "node ./bin/coder.js",
     "mcp": "node ./bin/coder-mcp.js",
-    "test": "NODE_ENV=test node --test test/*.test.js"
+    "lint": "biome check ./bin ./src ./test package.json",
+    "lint:fix": "biome check --write ./bin ./src ./test package.json",
+    "format": "biome format --write ./bin ./src ./test package.json",
+    "format:check": "biome format ./bin ./src ./test package.json",
+    "test": "NODE_ENV=test node --test test/*.test.js",
+    "prepublishOnly": "npm run lint && npm test"
   },
   "engines": {
     "node": ">=20"
@@ -41,5 +74,8 @@
     "tree-sitter-typescript": {
       "tree-sitter": "$tree-sitter"
     }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.15"
   }
 }

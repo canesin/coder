@@ -1,20 +1,20 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import {
-  buildSecretsWithFallback,
   buildPrBodyFromIssue,
+  buildSecretsWithFallback,
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
   gitCleanOrThrow,
+  runHostTests,
   sanitizeIssueMarkdown,
   stripAgentNoise,
-  runHostTests,
   TestInfrastructureError,
 } from "../src/helpers.js";
 
@@ -31,7 +31,9 @@ function setupGitRepo(files) {
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
     if (res.status !== 0) {
-      throw new Error(`git ${args.join(" ")} failed: ${res.stderr || res.stdout}`);
+      throw new Error(
+        `git ${args.join(" ")} failed: ${res.stderr || res.stdout}`,
+      );
     }
   };
 
@@ -81,7 +83,8 @@ test("buildSecretsWithFallback uses shell fallback when process env is missing",
     ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"],
     {
       env: {},
-      shellLookup: (name) => (name === "GEMINI_API_KEY" ? "shell-gemini-key" : ""),
+      shellLookup: (name) =>
+        name === "GEMINI_API_KEY" ? "shell-gemini-key" : "",
     },
   );
 
@@ -106,13 +109,18 @@ test("formatCommandFailure extracts nested gemini JSON error and includes hint",
 });
 
 test("formatCommandFailure filters MCP noise and keeps tail content when truncating", () => {
-  const noise = `Server 'github' supports tool updates. Listening for changes...\n`.repeat(400);
+  const noise =
+    `Server 'github' supports tool updates. Listening for changes...\n`.repeat(
+      400,
+    );
   const res = {
     exitCode: 1,
     stdout: "",
     stderr: noise + "REAL ERROR: boom at the end\n",
   };
-  const msg = formatCommandFailure("Gemini ISSUE.md drafting failed", res, { maxLen: 80 });
+  const msg = formatCommandFailure("Gemini ISSUE.md drafting failed", res, {
+    maxLen: 80,
+  });
   assert.match(msg, /REAL ERROR: boom/);
   assert.doesNotMatch(msg, /supports tool updates/i);
 });

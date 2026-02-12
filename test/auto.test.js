@@ -1,8 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import { CoderOrchestrator } from "../src/orchestrator.js";
 import { loadLoopState } from "../src/state.js";
@@ -93,11 +93,17 @@ class FakeAutoOrchestrator extends CoderOrchestrator {
     const prUrl = `https://example.test/pr/${encodeURIComponent(state.branch || "unknown")}`;
     state.prUrl = prUrl;
     this._saveState(state);
-    return { prUrl, branch: state.branch || "unknown", base: state.baseBranch || null };
+    return {
+      prUrl,
+      branch: state.branch || "unknown",
+      base: state.baseBranch || null,
+    };
   }
 
   _resetForNextIssue(repoPath, { destructive = false } = {}) {
-    this.calls.push(`reset:${repoPath || "."}:${destructive ? "destructive" : "safe"}`);
+    this.calls.push(
+      `reset:${repoPath || "."}:${destructive ? "destructive" : "safe"}`,
+    );
   }
 }
 
@@ -110,7 +116,10 @@ test("runAuto resume: skips already completed items and advances checkpoint", as
     projectFilter: null,
     maxIssues: null,
     issueQueue: [
-      { ...loopEntry({ source: "github", id: "1", status: "completed" }), completedAt: new Date().toISOString() },
+      {
+        ...loopEntry({ source: "github", id: "1", status: "completed" }),
+        completedAt: new Date().toISOString(),
+      },
       loopEntry({ source: "github", id: "2", status: "pending" }),
     ],
     currentIndex: 0,
@@ -142,8 +151,16 @@ test("runAuto dependency handling: skips issue when all dependencies failed", as
     projectFilter: null,
     maxIssues: null,
     issueQueue: [
-      { ...loopEntry({ source: "github", id: "123", status: "failed" }), error: "failed upstream" },
-      loopEntry({ source: "linear", id: "123", status: "pending", dependsOn: ["github#123"] }),
+      {
+        ...loopEntry({ source: "github", id: "123", status: "failed" }),
+        error: "failed upstream",
+      },
+      loopEntry({
+        source: "linear",
+        id: "123",
+        status: "pending",
+        dependsOn: ["github#123"],
+      }),
     ],
     currentIndex: 1,
     startedAt: new Date().toISOString(),
@@ -153,7 +170,10 @@ test("runAuto dependency handling: skips issue when all dependencies failed", as
   const orch = new FakeAutoOrchestrator(ws);
   const result = await orch.runAuto();
 
-  assert.equal(orch.calls.some((c) => c.startsWith("draft:linear#123")), false);
+  assert.equal(
+    orch.calls.some((c) => c.startsWith("draft:linear#123")),
+    false,
+  );
   assert.equal(result.completed, 0);
   assert.equal(result.failed, 1);
   assert.equal(result.skipped, 1);
@@ -176,7 +196,12 @@ test("runAuto stacked mode: dependent issue is drafted on dependency branch", as
         branch: "coder/github-1",
         completedAt: new Date().toISOString(),
       },
-      loopEntry({ source: "github", id: "2", status: "pending", dependsOn: ["github#1"] }),
+      loopEntry({
+        source: "github",
+        id: "2",
+        status: "pending",
+        dependsOn: ["github#1"],
+      }),
     ],
     currentIndex: 1,
     startedAt: new Date().toISOString(),
@@ -210,7 +235,12 @@ test("runAuto dependency handling: proceeds unstacked when dependency has no bra
         branch: null,
         completedAt: new Date().toISOString(),
       },
-      loopEntry({ source: "github", id: "2", status: "pending", dependsOn: ["github#1"] }),
+      loopEntry({
+        source: "github",
+        id: "2",
+        status: "pending",
+        dependsOn: ["github#1"],
+      }),
     ],
     currentIndex: 1,
     startedAt: new Date().toISOString(),
@@ -249,7 +279,10 @@ test("runAuto empty queue: finishes as completed (not failed)", async () => {
 test("runAuto validates maxIssues >= 1", async () => {
   const ws = makeWorkspace();
   const orch = new FakeAutoOrchestrator(ws);
-  await assert.rejects(async () => orch.runAuto({ maxIssues: 0 }), /maxIssues must be an integer >= 1/);
+  await assert.rejects(
+    async () => orch.runAuto({ maxIssues: 0 }),
+    /maxIssues must be an integer >= 1/,
+  );
 });
 
 test("runAuto cancel request marks run as cancelled (not completed)", async () => {

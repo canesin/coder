@@ -4,13 +4,19 @@ export function registerPrompts(server) {
   server.prompt(
     "coder_workflow",
     "Multi-agent coding workflow — guides you through the full pipeline from issue selection to PR creation",
-    { projectFilter: z.string().optional().describe("Optional project name to filter issues") },
+    {
+      projectFilter: z
+        .string()
+        .optional()
+        .describe("Optional project name to filter issues"),
+    },
     ({ projectFilter }) => ({
-      messages: [{
-        role: "user",
-        content: {
-          type: "text",
-          text: `You are orchestrating a multi-agent coding workflow using the coder MCP tools.
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `You are orchestrating a multi-agent coding workflow using the coder MCP tools.
 Follow this sequence strictly — each step depends on the previous one.
 
 ## Workflow Sequence
@@ -102,8 +108,9 @@ If an issue fails, dependent ordering is relaxed and downstream issues are still
 ### Resume behavior
 If the process crashes mid-loop, calling \`coder_auto\` again with the same
 workspace resumes from the last incomplete issue (checkpointed after each issue).`,
+          },
         },
-      }],
+      ],
     }),
   );
 }

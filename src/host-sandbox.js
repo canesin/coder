@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
-  canUseSystemdRun,
   buildSystemdRunArgs,
+  canUseSystemdRun,
   makeSystemdUnitName,
   stopSystemdUnit,
 } from "./systemd-run.js";
@@ -21,7 +21,9 @@ export class CommandTimeoutError extends Error {
 
 export class McpStartupError extends Error {
   constructor(agentName, failedServers) {
-    super(`MCP startup failure for ${agentName}: failed servers: ${failedServers}`);
+    super(
+      `MCP startup failure for ${agentName}: failed servers: ${failedServers}`,
+    );
     this.name = "McpStartupError";
     this.agentName = agentName;
     this.failedServers = failedServers;
@@ -104,7 +106,9 @@ class HostSandboxInstance extends EventEmitter {
     const hangTimeoutMs = options.hangTimeoutMs ?? 0;
     const hangResetOnStderr = options.hangResetOnStderr ?? true;
     const killOnStderrPatterns = Array.isArray(options.killOnStderrPatterns)
-      ? options.killOnStderrPatterns.filter((p) => typeof p === "string" && p.trim() !== "")
+      ? options.killOnStderrPatterns.filter(
+          (p) => typeof p === "string" && p.trim() !== "",
+        )
       : [];
 
     this.currentCommand = command;
@@ -253,10 +257,14 @@ class HostSandboxInstance extends EventEmitter {
 
         if (killOnStderrPatterns.length > 0) {
           const lower = chunk.toLowerCase();
-          const hit = killOnStderrPatterns.find((p) => lower.includes(String(p).toLowerCase()));
+          const hit = killOnStderrPatterns.find((p) =>
+            lower.includes(String(p).toLowerCase()),
+          );
           if (hit) {
             terminateChild();
-            const err = new Error(`Command aborted after stderr auth failure: ${hit}`);
+            const err = new Error(
+              `Command aborted after stderr auth failure: ${hit}`,
+            );
             err.name = "CommandAuthError";
             err.stdout = stdout;
             err.stderr = stderr;
@@ -272,7 +280,9 @@ class HostSandboxInstance extends EventEmitter {
       child.on("close", (code) => {
         const exitCode = code ?? 0;
         if (throwOnNonZero && exitCode !== 0) {
-          const err = new Error(`Command exited with code ${exitCode}: ${command.slice(0, 200)}`);
+          const err = new Error(
+            `Command exited with code ${exitCode}: ${command.slice(0, 200)}`,
+          );
           err.exitCode = exitCode;
           err.stdout = stdout;
           err.stderr = stderr;
@@ -291,7 +301,8 @@ class HostSandboxInstance extends EventEmitter {
     }
     if (this.currentChild) {
       try {
-        if (this.currentChild.pid) process.kill(-this.currentChild.pid, "SIGTERM");
+        if (this.currentChild.pid)
+          process.kill(-this.currentChild.pid, "SIGTERM");
       } catch {
         this.currentChild.kill("SIGTERM");
       }

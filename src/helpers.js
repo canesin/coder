@@ -1,11 +1,16 @@
-import { existsSync, writeFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { jsonrepair } from "jsonrepair";
-import { detectTestCommand, runTestCommand, loadTestConfig, runTestConfig } from "./test-runner.js";
 import { runPpcommitNative } from "./ppcommit.js";
 import { runShellSync } from "./systemd-run.js";
+import {
+  detectTestCommand,
+  loadTestConfig,
+  runTestCommand,
+  runTestConfig,
+} from "./test-runner.js";
 
 /**
  * Detect the default branch for a git repository.
@@ -16,9 +21,14 @@ import { runShellSync } from "./systemd-run.js";
  * @returns {string} The default branch name
  */
 export function detectDefaultBranch(repoDir) {
-  const originHead = spawnSync("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
-    cwd: repoDir, encoding: "utf8",
-  });
+  const originHead = spawnSync(
+    "git",
+    ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
   if (originHead.status === 0) {
     const raw = (originHead.stdout || "").trim();
     if (raw.startsWith("origin/") && raw.length > "origin/".length) {
@@ -27,7 +37,8 @@ export function detectDefaultBranch(repoDir) {
   }
 
   const mainCheck = spawnSync("git", ["rev-parse", "--verify", "main"], {
-    cwd: repoDir, encoding: "utf8",
+    cwd: repoDir,
+    encoding: "utf8",
   });
   return mainCheck.status === 0 ? "main" : "master";
 }
@@ -84,10 +95,15 @@ export function requireEnvOneOf(names) {
 }
 
 export function requireCommandOnPath(name) {
-  const res = spawnSync("bash", ["-lc", `command -v ${JSON.stringify(name)} >/dev/null 2>&1`], {
-    encoding: "utf8",
-  });
-  if (res.status !== 0) throw new Error(`Required command not found on PATH: ${name}`);
+  const res = spawnSync(
+    "bash",
+    ["-lc", `command -v ${JSON.stringify(name)} >/dev/null 2>&1`],
+    {
+      encoding: "utf8",
+    },
+  );
+  if (res.status !== 0)
+    throw new Error(`Required command not found on PATH: ${name}`);
 }
 
 export function buildSecrets(passEnv) {
@@ -117,7 +133,10 @@ function applyGeminiKeyAliases(secrets) {
   }
 }
 
-export function buildSecretsWithFallback(passEnv, { env = process.env, shellLookup = readEnvFromLoginShell } = {}) {
+export function buildSecretsWithFallback(
+  passEnv,
+  { env = process.env, shellLookup = readEnvFromLoginShell } = {},
+) {
   /** @type {Record<string, string>} */
   const secrets = {};
   for (const key of passEnv) {
@@ -162,13 +181,21 @@ export function extractJson(stdout) {
 
   // Fast path: input starts with { or [ — likely already JSON (possibly malformed).
   if (trimmed[0] === "{" || trimmed[0] === "[") {
-    try { return JSON.parse(jsonrepair(trimmed)); } catch { /* fall through */ }
+    try {
+      return JSON.parse(jsonrepair(trimmed));
+    } catch {
+      /* fall through */
+    }
   }
 
   // Extract from markdown code fence.
   const fenced = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/i);
   if (fenced) {
-    try { return JSON.parse(jsonrepair(fenced[1].trim())); } catch { /* fall through */ }
+    try {
+      return JSON.parse(jsonrepair(fenced[1].trim()));
+    } catch {
+      /* fall through */
+    }
   }
 
   // Extract the outermost { … } or [ … ] from surrounding prose.
@@ -177,7 +204,11 @@ export function extractJson(stdout) {
     const isArray = trimmed[open] === "[";
     const close = trimmed.lastIndexOf(isArray ? "]" : "}");
     if (close > open) {
-      try { return JSON.parse(jsonrepair(trimmed.slice(open, close + 1))); } catch { /* fall through */ }
+      try {
+        return JSON.parse(jsonrepair(trimmed.slice(open, close + 1)));
+      } catch {
+        /* fall through */
+      }
     }
   }
 
@@ -222,7 +253,9 @@ export function geminiJsonPipe(prompt) {
 
 export function geminiJsonPipeWithModel(prompt, model) {
   const modelArg = String(model || "").trim();
-  const cmd = modelArg ? `gemini --yolo -m ${modelArg} -o json` : "gemini --yolo -o json";
+  const cmd = modelArg
+    ? `gemini --yolo -m ${modelArg} -o json`
+    : "gemini --yolo -o json";
   return heredocPipe(prompt, cmd);
 }
 
@@ -240,10 +273,15 @@ function isAgentNoiseLine(line) {
 }
 
 export function stripAgentNoise(text, { dropLeadingOnly = false } = {}) {
-  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const lines = String(text || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n");
   if (dropLeadingOnly) {
     let start = 0;
-    while (start < lines.length && (lines[start].trim() === "" || isAgentNoiseLine(lines[start]))) {
+    while (
+      start < lines.length &&
+      (lines[start].trim() === "" || isAgentNoiseLine(lines[start]))
+    ) {
       start += 1;
     }
     return lines.slice(start).join("\n");
@@ -272,9 +310,14 @@ export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {
 }
 
 export function gitCleanOrThrow(repoDir) {
-  const res = spawnSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf8" });
+  const res = spawnSync("git", ["status", "--porcelain"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
   if (res.status !== 0) throw new Error("Failed to run `git status`.");
-  const ignorePatterns = [".coder/", ".gemini/", ".geminiignore"].map((p) => p.replace(/\\/g, "/"));
+  const ignorePatterns = [".coder/", ".gemini/", ".geminiignore"].map((p) =>
+    p.replace(/\\/g, "/"),
+  );
 
   const isIgnored = (filePath) => {
     return ignorePatterns.some((pattern) => {
@@ -283,22 +326,26 @@ export function gitCleanOrThrow(repoDir) {
         return normalizedPath.startsWith(pattern);
       }
       if (pattern.includes("/")) {
-        return normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`);
+        return (
+          normalizedPath === pattern || normalizedPath.startsWith(`${pattern}/`)
+        );
       }
       return normalizedPath === pattern;
     });
   };
 
-  const lines = (res.stdout || "")
-    .split("\n")
-    .filter((l) => {
-      if (l.trim() === "") return false;
-      const pathField = l.slice(3); // skip status prefix (e.g. "?? " or " M ")
-      const filePath = pathField.includes(" -> ") ? pathField.split(" -> ").pop() || pathField : pathField;
-      return !isIgnored(filePath);
-    });
+  const lines = (res.stdout || "").split("\n").filter((l) => {
+    if (l.trim() === "") return false;
+    const pathField = l.slice(3); // skip status prefix (e.g. "?? " or " M ")
+    const filePath = pathField.includes(" -> ")
+      ? pathField.split(" -> ").pop() || pathField
+      : pathField;
+    return !isIgnored(filePath);
+  });
   if (lines.length > 0) {
-    throw new Error(`Repo working tree is not clean: ${repoDir}\n${lines.join("\n")}`);
+    throw new Error(
+      `Repo working tree is not clean: ${repoDir}\n${lines.join("\n")}`,
+    );
   }
 }
 
@@ -406,7 +453,9 @@ Reference specific sections in the plan when identifying over-engineering.`;
   const filtered = stripAgentNoise(cleaned).trim();
   let critique = filtered;
   const critiqueLines = filtered.split("\n");
-  const firstHeader = critiqueLines.findIndex((line) => line.trim().startsWith("#"));
+  const firstHeader = critiqueLines.findIndex((line) =>
+    line.trim().startsWith("#"),
+  );
   if (firstHeader > 0) {
     critique = critiqueLines.slice(firstHeader).join("\n").trim();
   }
@@ -434,20 +483,31 @@ export function computeGitWorktreeFingerprint(repoDir) {
   const diffCached = runGit(["diff", "--cached", "--no-ext-diff"]);
 
   // Include untracked file contents in the fingerprint (git diff won't).
-  const untrackedZ = runGit(["ls-files", "--others", "--exclude-standard", "-z"]);
+  const untrackedZ = runGit([
+    "ls-files",
+    "--others",
+    "--exclude-standard",
+    "-z",
+  ]);
   const untrackedPaths = untrackedZ.split("\0").filter(Boolean).sort();
 
   let untrackedHashes = "";
   if (untrackedPaths.length > 0) {
     const input = untrackedPaths.join("\n") + "\n";
-    const ho = spawnSync("git", ["hash-object", "--stdin-paths"], { cwd: repoDir, encoding: "utf8", input });
+    const ho = spawnSync("git", ["hash-object", "--stdin-paths"], {
+      cwd: repoDir,
+      encoding: "utf8",
+      input,
+    });
     if (ho.status !== 0) {
       const msg = (ho.stderr || ho.stdout || "").trim();
       throw new Error(`git hash-object failed${msg ? `: ${msg}` : ""}`);
     }
     const hashes = (ho.stdout || "").trim().split("\n").filter(Boolean);
     // `git hash-object --stdin-paths` returns hashes in the same order as input paths.
-    untrackedHashes = untrackedPaths.map((p, i) => `${p}\n${hashes[i] || ""}\n`).join("");
+    untrackedHashes = untrackedPaths
+      .map((p, i) => `${p}\n${hashes[i] || ""}\n`)
+      .join("");
   }
 
   const h = createHash("sha256");
@@ -463,7 +523,10 @@ export function computeGitWorktreeFingerprint(repoDir) {
   return h.digest("hex");
 }
 
-export function upsertIssueCompletionBlock(issuePath, { ppcommitClean, testsPassed, note } = {}) {
+export function upsertIssueCompletionBlock(
+  issuePath,
+  { ppcommitClean, testsPassed, note } = {},
+) {
   if (!issuePath || !existsSync(issuePath)) return false;
 
   const start = "<!-- coder:completion:start -->";
@@ -483,8 +546,12 @@ export function upsertIssueCompletionBlock(issuePath, { ppcommitClean, testsPass
     start,
     "## Coder Status",
     `- Updated: ${ts}`,
-    typeof ppcommitClean === "boolean" ? `- ppcommit: ${ppcommitClean ? "clean" : "failed"}` : null,
-    typeof testsPassed === "boolean" ? `- tests: ${testsPassed ? "passed" : "failed"}` : null,
+    typeof ppcommitClean === "boolean"
+      ? `- ppcommit: ${ppcommitClean ? "clean" : "failed"}`
+      : null,
+    typeof testsPassed === "boolean"
+      ? `- tests: ${testsPassed ? "passed" : "failed"}`
+      : null,
     note ? `- note: ${String(note).trim()}` : null,
     end,
     "",
@@ -495,7 +562,10 @@ export function upsertIssueCompletionBlock(issuePath, { ppcommitClean, testsPass
   return true;
 }
 
-export async function runHostTests(repoDir, { testCmd, testConfigPath, allowNoTests } = {}) {
+export async function runHostTests(
+  repoDir,
+  { testCmd, testConfigPath, allowNoTests } = {},
+) {
   // Priority 1: test config file (.coder/test.json or custom path)
   if (testConfigPath) {
     const abs = path.resolve(repoDir, testConfigPath);
@@ -515,7 +585,6 @@ export async function runHostTests(repoDir, { testCmd, testConfigPath, allowNoTe
   // Priority 2: explicit test command
   if (testCmd) {
     const rawCmd = String(testCmd);
-    const cmdLower = rawCmd.toLowerCase();
     // Avoid cascading failures in auto-mode when a repo is reset to a branch
     // that doesn't actually contain the Rust project files required by `cargo`.
     //
@@ -532,7 +601,9 @@ export async function runHostTests(repoDir, { testCmd, testConfigPath, allowNoTe
       // - time cargo test
       //
       // Reject anything that starts with `cd ... &&` or other multi-command scripts.
-      return /^(?:(?:env\b[^;&|]*\s+)?(?:command\s+)?(?:time\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)cargo\b/i.test(t);
+      return /^(?:(?:env\b[^;&|]*\s+)?(?:command\s+)?(?:time\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)cargo\b/i.test(
+        t,
+      );
     };
 
     if (looksLikeRootCargoCmd()) {
