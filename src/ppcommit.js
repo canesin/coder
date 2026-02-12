@@ -2,20 +2,19 @@
  * Native ppcommit implementation for coder.
  *
  * Replaces the external Python `ppcommit --uncommitted` dependency by performing
- * regex checks, AST checks (tree-sitter), and optional LLM checks (Gemini API via @google/genai).
+ * regex checks, AST checks (tree-sitter), and optional LLM checks (Gemini OpenAI-compatible API).
  *
  * Output format (compat with coder workflow):
  *   ERROR|WARNING: <message> at <file>:<line>
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, unlinkSync, existsSync, lstatSync, realpathSync } from "node:fs";
 import os from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { jsonrepair } from "jsonrepair";
-import { GoogleGenAI } from "@google/genai";
 import { loadConfig, PpcommitConfigSchema } from "./config.js";
 
 const require = createRequire(import.meta.url);
@@ -211,9 +210,9 @@ const MAGIC_NUMBER_ALLOWLIST = new Set([100, 1000, 60, 24, 365, 360, 180, 90]);
 
 function resolvePpcommitConfig(repoDir, ppcommitConfig) {
   if (ppcommitConfig) return PpcommitConfigSchema.parse(ppcommitConfig);
-  const disableGemini = process.env.PPCOMMIT_DISABLE_GEMINI === "1" || process.env.NODE_ENV === "test";
+  const disableLlm = process.env.PPCOMMIT_DISABLE_LLM === "1" || process.env.NODE_ENV === "test";
   const config = loadConfig(repoDir).ppcommit;
-  if (disableGemini) return { ...config, enableGemini: false };
+  if (disableLlm) return { ...config, enableLlm: false };
   return config;
 }
 
@@ -275,9 +274,20 @@ function shouldSkipPath(filePath) {
 }
 
 function readUtf8File(repoDir, filePath) {
-  const fullPath = path.join(repoDir, filePath);
+  const repoRoot = path.resolve(repoDir);
+  const fullPath = path.resolve(repoRoot, filePath);
+  const withinRepo = (candidate) => {
+    const rel = path.relative(repoRoot, candidate);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  };
+
   try {
-    return readFileSync(fullPath, "utf8");
+    if (!withinRepo(fullPath)) return "";
+    const st = lstatSync(fullPath);
+    if (st.isSymbolicLink()) return "";
+    const real = realpathSync(fullPath);
+    if (!withinRepo(real)) return "";
+    return readFileSync(real, "utf8");
   } catch {
     return "";
   }
@@ -654,7 +664,7 @@ function checkMagicNumbers(content, filePath, config, issues) {
   });
 }
 
-// --- LLM check (Gemini API via @google/genai) ---
+// --- LLM check (Gemini OpenAI-compatible API) ---
 
 function extractJsonArray(text) {
   const trimmed = String(text || "").trim();
@@ -677,12 +687,14 @@ function extractJsonArray(text) {
   return [];
 }
 
-async function runGeminiIssues(repoDir, files, config) {
-  // Best-effort: do not fail ppcommit if Gemini is unavailable.
-  if (!config?.enableGemini) return /** @type {any[]} */ ([]);
+async function runLlmIssues(repoDir, files, config) {
+  // Best-effort: do not fail ppcommit if LLM analysis is unavailable.
+  if (!config?.enableLlm) return /** @type {any[]} */ ([]);
 
-  // Use API key auth only. This avoids Gemini CLI OAuth prompts entirely.
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const explicitKey = String(config?.llmApiKey || "").trim();
+  const keyEnvName = String(config?.llmApiKeyEnv || "").trim();
+  const envKey = keyEnvName ? process.env[keyEnvName] : "";
+  const apiKey = explicitKey || envKey || process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) return /** @type {any[]} */ ([]);
 
   const maxFiles = 3;
@@ -722,22 +734,48 @@ Respond with ONLY a JSON array. Each item:
 	If no issues found, respond with [].
 	Only report clear issues, not speculation. Be specific about what's wrong.`;
 
+  const serviceUrl = String(config?.llmServiceUrl || "").trim()
+    || "https://generativelanguage.googleapis.com/v1beta/openai";
+  const baseUrl = serviceUrl.replace(/\/+$/, "");
+  const endpoint = /\/chat\/completions$/i.test(baseUrl)
+    ? baseUrl
+    : `${baseUrl}/chat/completions`;
+
+  const extractResponseText = (payload) => {
+    const choices = Array.isArray(payload?.choices) ? payload.choices : [];
+    const first = choices[0] || {};
+    const content = first?.message?.content;
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => (typeof part?.text === "string" ? part.text : ""))
+        .join("")
+        .trim();
+    }
+    return "";
+  };
+
   try {
-    const ai = new GoogleGenAI({ apiKey });
     const controller = new AbortController();
     const timeoutMs = 20000;
     const t = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await ai.models.generateContent({
-        model: config?.geminiModel || "gemini-3-flash-preview",
-        contents: prompt,
-        config: {
-          abortSignal: controller.signal,
-          temperature: 0,
-          responseMimeType: "application/json",
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          model: config?.llmModel || "gemini-3-flash-preview",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0,
+        }),
+        signal: controller.signal,
       });
-      const arr = extractJsonArray(res?.text || "");
+      if (!response.ok) return [];
+      const payload = await response.json();
+      const arr = extractJsonArray(extractResponseText(payload));
       return Array.isArray(arr) ? arr : [];
     } finally {
       clearTimeout(t);
@@ -911,8 +949,8 @@ async function _runChecks(repoDir, ordered, newFiles, config) {
     }
   }
 
-  // LLM analysis is best-effort (and opt-in; see config.enableGemini).
-  const llmResults = await runGeminiIssues(repoDir, llmFiles, config);
+  // LLM analysis is best-effort and configurable (see config.enableLlm).
+  const llmResults = await runLlmIssues(repoDir, llmFiles, config);
   for (const r of llmResults) {
     if (!r || typeof r !== "object") continue;
     const file = typeof r.file === "string" ? r.file : "";

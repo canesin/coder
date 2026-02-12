@@ -7,7 +7,7 @@ import pRetry from "p-retry";
 
 import { AgentRunner } from "./agent-runner.js";
 import { HostSandboxProvider } from "./host-sandbox.js";
-import { ensureLogsDir, makeJsonlLogger, closeAllLoggers } from "./logging.js";
+import { ensureLogsDir, makeJsonlLogger, closeAllLoggers, sanitizeLogEvent } from "./logging.js";
 import { loadState, saveState, loadLoopState, saveLoopState, statePathFor } from "./state.js";
 import { resolveConfig } from "./config.js";
 import { sanitizeBranchForRef } from "./worktrees.js";
@@ -38,6 +38,7 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
   "rejected stored OAuth token",
   "Please re-authenticate using: /mcp auth",
 ];
+const SUPPORTED_AGENTS = new Set(["gemini", "claude", "codex"]);
 
 export class CoderOrchestrator {
   /**
@@ -49,7 +50,15 @@ export class CoderOrchestrator {
    *   testConfigPath?: string,
    *   allowNoTests?: boolean,
    *   strictMcpStartup?: boolean,
-   *   claudeDangerouslySkipPermissions?: boolean
+   *   claudeDangerouslySkipPermissions?: boolean,
+   *   agentRoles?: Partial<{
+   *     issueSelector: "gemini"|"claude"|"codex",
+   *     planner: "gemini"|"claude"|"codex",
+   *     planReviewer: "gemini"|"claude"|"codex",
+   *     programmer: "gemini"|"claude"|"codex",
+   *     reviewer: "gemini"|"claude"|"codex",
+   *     committer: "gemini"|"claude"|"codex",
+   *   }>
    * }} [opts]
    */
   constructor(workspaceDir, opts = {}) {
@@ -62,6 +71,7 @@ export class CoderOrchestrator {
     if (opts.allowNoTests !== undefined) overrides.test = { ...overrides.test, allowNoTests: opts.allowNoTests };
     if (opts.strictMcpStartup !== undefined) overrides.mcp = { strictStartup: opts.strictMcpStartup };
     if (opts.claudeDangerouslySkipPermissions !== undefined) overrides.claude = { skipPermissions: opts.claudeDangerouslySkipPermissions };
+    if (opts.agentRoles) overrides.workflow = { ...overrides.workflow, agentRoles: opts.agentRoles };
 
     this.config = resolveConfig(this.workspaceDir, overrides);
     this.passEnv = opts.passEnv || DEFAULT_PASS_ENV;
@@ -69,6 +79,7 @@ export class CoderOrchestrator {
     this.testCmd = this.config.test.command;
     this.testConfigPath = opts.testConfigPath || "";
     this.allowNoTests = this.config.test.allowNoTests;
+    this.agentRoles = this.config.workflow.agentRoles;
 
     this.issueFile = "ISSUE.md";
     this.planFile = "PLAN.md";
@@ -84,9 +95,8 @@ export class CoderOrchestrator {
     this.log = makeJsonlLogger(this.workspaceDir, "coder");
     this.secrets = buildSecrets(this.passEnv);
 
-    this._gemini = null;
-    this._claude = null;
-    this._codex = null;
+    this._workspaceAgents = new Map();
+    this._repoAgents = new Map();
 
     this._cancelRequested = false;
     this._pauseRequested = false;
@@ -128,8 +138,8 @@ export class CoderOrchestrator {
     vk.on("update", (d) => agentLog({ stream: "update", data: d }));
     vk.on("error", (d) => agentLog({ stream: "error", data: d }));
     if (this.verbose) {
-      vk.on("stdout", (d) => process.stdout.write(`[${name}] ${d}`));
-      vk.on("stderr", (d) => process.stderr.write(`[${name}] ${d}`));
+      vk.on("stdout", (d) => process.stdout.write(`[${name}] ${sanitizeLogEvent(String(d))}`));
+      vk.on("stderr", (d) => process.stderr.write(`[${name}] ${sanitizeLogEvent(String(d))}`));
     }
 
     // MCP health parsing: detect startup health from stderr
@@ -183,44 +193,90 @@ export class CoderOrchestrator {
     vk.on("error", writeActivity);
   }
 
-  _claudeBaseFlags() {
-    let flags = "claude -p --output-format stream-json --verbose";
+  _claudeBaseFlags({ outputFormat = "stream-json" } = {}) {
+    let flags = "claude -p";
+    if (outputFormat) {
+      flags += ` --output-format ${outputFormat}`;
+      if (outputFormat === "stream-json") flags += " --verbose";
+    }
+    if (this.config.models.claude) flags += ` --model ${this.config.models.claude}`;
     if (this.claudeDangerouslySkipPermissions) flags += " --dangerously-skip-permissions";
     return flags;
   }
 
-  _getGemini() {
-    if (!this._gemini) {
-      const provider = new HostSandboxProvider({ defaultCwd: this.workspaceDir, baseEnv: this.secrets });
-      this._gemini = new AgentRunner(provider);
-      this._attachAgentLogging("gemini", this._gemini);
+  _resolveAgentName(name) {
+    const normalized = String(name || "").trim().toLowerCase();
+    if (!SUPPORTED_AGENTS.has(normalized)) {
+      throw new Error(`Unsupported agent: ${name}. Expected one of: gemini, claude, codex.`);
     }
-    return this._gemini;
+    return normalized;
   }
 
-  _makeRepoAgent(name) {
-    const state = this._loadState();
-    const repoRoot = path.resolve(this.workspaceDir, state.repoPath);
+  _roleAgentName(role) {
+    const selected = this.agentRoles?.[role];
+    return this._resolveAgentName(selected);
+  }
 
-    const provider = new HostSandboxProvider({ defaultCwd: repoRoot, baseEnv: this.secrets });
+  _makeAgent(name, cwd) {
+    const provider = new HostSandboxProvider({ defaultCwd: cwd, baseEnv: this.secrets });
     const agent = new AgentRunner(provider);
     this._attachAgentLogging(name, agent);
     return agent;
   }
 
-  _getClaude() {
-    if (!this._claude) {
-      this._claude = this._makeRepoAgent("claude");
+  _getWorkspaceAgent(name) {
+    const agentName = this._resolveAgentName(name);
+    if (!this._workspaceAgents.has(agentName)) {
+      this._workspaceAgents.set(agentName, this._makeAgent(agentName, this.workspaceDir));
     }
-    return this._claude;
+    return this._workspaceAgents.get(agentName);
   }
 
-  _getCodex() {
-    if (!this._codex) {
-      this._codex = this._makeRepoAgent("codex");
+  _getRepoAgent(name) {
+    const agentName = this._resolveAgentName(name);
+    if (!this._repoAgents.has(agentName)) {
+      const state = this._loadState();
+      const repoRoot = path.resolve(this.workspaceDir, state.repoPath || ".");
+      this._repoAgents.set(agentName, this._makeAgent(agentName, repoRoot));
     }
-    return this._codex;
+    return this._repoAgents.get(agentName);
   }
+
+  _getRoleAgent(role, { scope = "repo" } = {}) {
+    const agentName = this._roleAgentName(role);
+    const agent = scope === "workspace" ? this._getWorkspaceAgent(agentName) : this._getRepoAgent(agentName);
+    return { agentName, agent };
+  }
+
+  _buildPromptCommand(agentName, prompt, { structured = false, sessionId, resumeId } = {}) {
+    const selected = this._resolveAgentName(agentName);
+    if (selected === "gemini") {
+      if (structured) return geminiJsonPipeWithModel(prompt, this.config.models.gemini);
+      const model = this.config.models.gemini;
+      const cmd = model ? `gemini --yolo -m ${model}` : "gemini --yolo";
+      return heredocPipe(prompt, cmd);
+    }
+
+    if (selected === "claude") {
+      let flags = this._claudeBaseFlags({ outputFormat: null });
+      if (sessionId) flags += ` --session-id ${sessionId}`;
+      if (resumeId) flags += ` --resume ${resumeId}`;
+      return heredocPipe(prompt, flags);
+    }
+
+    // codex
+    return `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
+  }
+
+  _parseStructuredAgentPayload(agentName, stdout) {
+    return this._resolveAgentName(agentName) === "gemini"
+      ? extractGeminiPayloadJson(stdout)
+      : extractJson(stdout);
+  }
+
+  _getGemini() { return this._getWorkspaceAgent("gemini"); }
+  _getClaude() { return this._getRepoAgent("claude"); }
+  _getCodex() { return this._getRepoAgent("codex"); }
 
   // --- Gitignore ---
 
@@ -565,7 +621,7 @@ export class CoderOrchestrator {
     try {
       const state = this._loadState();
       state.steps ||= {};
-      const gemini = this._getGemini();
+      const { agentName: issueSelectorName, agent: issueSelector } = this._getRoleAgent("issueSelector", { scope: "workspace" });
 
       // Sub-step: list Linear teams if available and not cached
       if (this.secrets.LINEAR_API_KEY && (!state.steps.listedProjects || !state.linearProjects)) {
@@ -583,18 +639,18 @@ Return ONLY valid JSON in this schema:
     }
   ]
 }`;
-          const projCmd = geminiJsonPipeWithModel(projPrompt, this.config.models.gemini);
-          const projRes = await this._executeWithRetry(gemini, projCmd, {
+          const projCmd = this._buildPromptCommand(issueSelectorName, projPrompt, { structured: true });
+          const projRes = await this._executeWithRetry(issueSelector, projCmd, {
             timeoutMs: 1000 * 60 * 5,
             hangTimeoutMs: GEMINI_PROJECT_LIST_HANG_TIMEOUT_MS,
             retries: 2,
-            agentName: "gemini",
+            agentName: issueSelectorName,
             retryOnRateLimit: true,
           });
           if (projRes.exitCode !== 0) {
-            throw new Error(formatCommandFailure("Gemini project listing failed", projRes));
+            throw new Error(formatCommandFailure(`${issueSelectorName} project listing failed`, projRes));
           }
-          const projPayload = ProjectsPayloadSchema.parse(extractGeminiPayloadJson(projRes.stdout));
+          const projPayload = ProjectsPayloadSchema.parse(this._parseStructuredAgentPayload(issueSelectorName, projRes.stdout));
           state.linearProjects = projPayload.projects;
 
           // If projectFilter is given, auto-select matching project
@@ -646,18 +702,18 @@ Return ONLY valid JSON in this schema:
   "recommended_index": number
 }`;
 
-      const cmd = geminiJsonPipeWithModel(listPrompt, this.config.models.gemini);
-      const res = await this._executeWithRetry(gemini, cmd, {
+      const cmd = this._buildPromptCommand(issueSelectorName, listPrompt, { structured: true });
+      const res = await this._executeWithRetry(issueSelector, cmd, {
         timeoutMs: 1000 * 60 * 10,
         hangTimeoutMs: GEMINI_DEFAULT_HANG_TIMEOUT_MS,
         retries: 2,
-        agentName: "gemini",
+        agentName: issueSelectorName,
         retryOnRateLimit: true,
       });
       if (res.exitCode !== 0) {
-        throw new Error(formatCommandFailure("Gemini issue listing failed", res));
+        throw new Error(formatCommandFailure(`${issueSelectorName} issue listing failed`, res));
       }
-      const issuesPayload = IssuesPayloadSchema.parse(extractGeminiPayloadJson(res.stdout));
+      const issuesPayload = IssuesPayloadSchema.parse(this._parseStructuredAgentPayload(issueSelectorName, res.stdout));
 
       state.steps.listedIssues = true;
       state.issuesPayload = issuesPayload;
@@ -747,7 +803,7 @@ Return ONLY valid JSON in this schema:
       // Draft ISSUE.md
       this.log({ event: "step2_draft_issue", issue });
       const { issue: issuePath } = this._artifactPaths();
-      const gemini = this._getGemini();
+      const { agentName: issueSelectorName, agent: issueSelector } = this._getRoleAgent("issueSelector", { scope: "workspace" });
 
       const issuePrompt = `Draft an ISSUE.md for the chosen issue. Use the local codebase in ${repoRoot} as ground truth.
 
@@ -770,10 +826,10 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 5. **Out of Scope**: What this does NOT include
 `;
 
-      const cmd = heredocPipe(issuePrompt, "gemini --yolo");
-      const res = await this._executeAgentCommand("gemini", gemini, cmd, { timeoutMs: 1000 * 60 * 10 });
+      const cmd = this._buildPromptCommand(issueSelectorName, issuePrompt);
+      const res = await this._executeAgentCommand(issueSelectorName, issueSelector, cmd, { timeoutMs: 1000 * 60 * 10 });
       if (res.exitCode !== 0) {
-        throw new Error(formatCommandFailure("Gemini ISSUE.md drafting failed", res));
+        throw new Error(formatCommandFailure(`${issueSelectorName} ISSUE.md drafting failed`, res));
       }
 
       // Gemini may write the file via tool use and respond conversationally,
@@ -796,7 +852,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
           if (!fallback.startsWith("#")) {
             const rawPreview = (res.stdout || "").slice(0, 300).replace(/\n/g, "\\n");
             throw new Error(
-              "Gemini draft output did not contain valid ISSUE.md markdown after sanitization. " +
+              `${issueSelectorName} draft output did not contain valid ISSUE.md markdown after sanitization. ` +
               `Raw output preview (first 300 chars): "${rawPreview}"`,
             );
           }
@@ -818,7 +874,8 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
   // --- Step 3: Create Plan ---
 
   /**
-   * Have Claude write PLAN.md, then run built-in plan review (Gemini) to critique it.
+   * Have the configured planner write PLAN.md, then run the configured
+   * plan-reviewer to critique it.
    * Requires ISSUE.md to exist.
    * @returns {Promise<{ planMd: string, critiqueMd: string }>}
    */
@@ -837,9 +894,10 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
       this._ensureBranch(state);
 
       this.log({ event: "step3_create_plan" });
-      const claude = this._getClaude();
+      const { agentName: plannerName, agent: plannerAgent } = this._getRoleAgent("planner", { scope: "repo" });
+      const { agentName: planReviewerName, agent: planReviewerAgent } = this._getRoleAgent("planReviewer", { scope: "repo" });
 
-      // Step 3a: Claude writes PLAN.md
+      // Step 3a: Planner writes PLAN.md
       if (!state.steps.wrotePlan) {
         const repoRoot = this._repoRoot(state);
         const artifactFiles = [this.issueFile, this.planFile, this.critiqueFile, ".coder/", ".gemini/"];
@@ -869,8 +927,8 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
         const pre = gitPorcelain();
         const preUntracked = new Set(pre.filter((e) => e.status === "??").map((e) => e.path));
 
-        // Generate a session ID for Claude session reuse across steps
-        if (!state.claudeSessionId) {
+        // Generate a session ID for Claude session reuse across steps.
+        if (plannerName === "claude" && !state.claudeSessionId) {
           state.claudeSessionId = randomUUID();
           this._saveState(state);
         }
@@ -925,14 +983,13 @@ Constraints:
 - Do NOT invent APIs - verify they exist in actual documentation
 - Do NOT ask questions; use repo conventions and ISSUE.md as ground truth`;
 
-        const cmd = heredocPipe(
-          planPrompt,
-          `${this._claudeBaseFlags()} --session-id ${state.claudeSessionId}`,
-        );
-        const res = await this._executeAgentCommand("claude", claude, cmd, { timeoutMs: 1000 * 60 * 20 });
-        if (res.exitCode !== 0) throw new Error("Claude plan generation failed.");
+        const cmd = this._buildPromptCommand(plannerName, planPrompt, {
+          sessionId: plannerName === "claude" ? state.claudeSessionId : undefined,
+        });
+        const res = await this._executeAgentCommand(plannerName, plannerAgent, cmd, { timeoutMs: 1000 * 60 * 20 });
+        if (res.exitCode !== 0) throw new Error(formatCommandFailure(`${plannerName} plan generation failed`, res));
 
-        // Hard gate: Claude must not change tracked files during planning.
+        // Hard gate: planner must not change tracked files during planning.
         // But allow untracked exploration artifacts (e.g. cargo init) and clean up newly-created ones
         // to avoid contaminating later stages.
         const post = gitPorcelain();
@@ -962,10 +1019,39 @@ Constraints:
         this._saveState(state);
       }
 
-      // Step 3b: built-in plan review (Gemini)
+      // Step 3b: Plan review
       if (!state.steps.wroteCritique) {
-        const rc = runPlanreview(this._repoRoot(state), paths.plan, paths.critique);
-        if (rc !== 0) this.log({ event: "plan_review_nonzero", exitCode: rc });
+        if (planReviewerName === "gemini") {
+          const rc = runPlanreview(this._repoRoot(state), paths.plan, paths.critique);
+          if (rc !== 0) this.log({ event: "plan_review_nonzero", exitCode: rc });
+        } else {
+          const reviewPrompt = `Review ${paths.plan} and write a critical plan critique to ${paths.critique}.
+
+Required sections (in order):
+1. Critical Issues (Must Fix)
+2. Over-Engineering Concerns
+3. Concerns (Should Address)
+4. Questions (Need Clarification)
+5. Verdict (REJECT | REVISE | PROCEED WITH CAUTION | APPROVED)
+
+Constraints:
+- Do not modify tracked files.
+- Keep critique concrete with file-level references when possible.
+- Write markdown content directly to ${paths.critique}.`;
+          const reviewCmd = this._buildPromptCommand(planReviewerName, reviewPrompt);
+          const reviewRes = await this._executeAgentCommand(planReviewerName, planReviewerAgent, reviewCmd, {
+            timeoutMs: 1000 * 60 * 20,
+          });
+          if (reviewRes.exitCode !== 0) {
+            throw new Error(formatCommandFailure(`${planReviewerName} plan review failed`, reviewRes));
+          }
+          if (!existsSync(paths.critique)) {
+            const cleaned = stripAgentNoise(reviewRes.stdout || "", { dropLeadingOnly: true });
+            const filtered = stripAgentNoise(cleaned).trim();
+            if (!filtered) throw new Error(`${planReviewerName} plan review produced no critique output.`);
+            writeFileSync(paths.critique, filtered + "\n", "utf8");
+          }
+        }
         state.steps.wroteCritique = true;
         this._saveState(state);
       }
@@ -983,7 +1069,7 @@ Constraints:
   // --- Step 4: Implement ---
 
   /**
-   * Have Claude implement the feature based on PLAN.md + PLANREVIEW.md.
+   * Have the configured programmer implement the feature based on PLAN.md + PLANREVIEW.md.
    * @returns {Promise<{ summary: string }>}
    */
   async implement() {
@@ -1003,7 +1089,7 @@ Constraints:
       }
 
       this.log({ event: "step4_implement" });
-      const claude = this._getClaude();
+      const { agentName: programmerName, agent: programmerAgent } = this._getRoleAgent("programmer", { scope: "repo" });
 
       // Gather branch context for recovery (Feature 9)
       const repoRoot = this._repoRoot(state);
@@ -1079,15 +1165,11 @@ FORBIDDEN patterns:
 - Do not bypass tests
 - Use the repo's normal commands (lint, format, test)`;
 
-      // Session reuse: resume from planning context if available
-      let claudeFlags = this._claudeBaseFlags();
-      if (state.claudeSessionId) {
-        claudeFlags += ` --resume ${state.claudeSessionId}`;
-      }
-
-      const cmd = heredocPipe(implPrompt, claudeFlags);
-      const res = await this._executeAgentCommand("claude", claude, cmd, { timeoutMs: 1000 * 60 * 60 });
-      if (res.exitCode !== 0) throw new Error("Claude implementation failed.");
+      const cmd = this._buildPromptCommand(programmerName, implPrompt, {
+        resumeId: programmerName === "claude" ? state.claudeSessionId : undefined,
+      });
+      const res = await this._executeAgentCommand(programmerName, programmerAgent, cmd, { timeoutMs: 1000 * 60 * 60 });
+      if (res.exitCode !== 0) throw new Error(formatCommandFailure(`${programmerName} implementation failed`, res));
 
       state.steps.implemented = true;
       this._saveState(state);
@@ -1106,7 +1188,8 @@ FORBIDDEN patterns:
   // --- Step 5: Review and Test ---
 
   /**
-   * Have Codex review changes, run ppcommit, fix issues, run tests.
+   * Have the configured reviewer/committer run review fixes, then enforce
+   * ppcommit and host tests.
    * @returns {Promise<{ ppcommitStatus: string, testResults: object }>}
    */
   async reviewAndTest() {
@@ -1121,11 +1204,12 @@ FORBIDDEN patterns:
       this._ensureBranch(state);
 
       const workDir = this._repoRoot(state);
-      const codex = this._getCodex();
+      const { agentName: reviewerName, agent: reviewerAgent } = this._getRoleAgent("reviewer", { scope: "repo" });
+      const { agentName: committerName, agent: committerAgent } = this._getRoleAgent("committer", { scope: "repo" });
       const paths = this._artifactPaths();
 
-      const runCodexReview = async (ppSection) => {
-        const codexPrompt = `You are reviewing uncommitted changes for commit readiness.
+      const runReviewerPass = async (agentName, agent, ppSection, label) => {
+        const prompt = `You are reviewing uncommitted changes for commit readiness.
 Read ${paths.issue} to understand what was originally requested.
 
 ## Checklist
@@ -1179,10 +1263,9 @@ Hard constraints:
 - Never bypass tests or reduce coverage/quality
 - If a command fails, fix the underlying issue and re-run until it passes
 - Remove ALL unnecessary code, comments, and abstractions`;
-
-        const cmd = `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(codexPrompt)}`;
-        const res = await this._executeAgentCommand("codex", codex, cmd, { timeoutMs: 1000 * 60 * 90 });
-        if (res.exitCode !== 0) throw new Error("Codex review/fix failed.");
+        const cmd = this._buildPromptCommand(agentName, prompt);
+        const res = await this._executeAgentCommand(agentName, agent, cmd, { timeoutMs: 1000 * 60 * 90 });
+        if (res.exitCode !== 0) throw new Error(formatCommandFailure(`${agentName} ${label} failed`, res));
       };
 
       const ppBefore = await runPpcommit(workDir, this.config.ppcommit);
@@ -1190,19 +1273,20 @@ Hard constraints:
       this.log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
       this._saveState(state);
 
-      // Step 5a: Codex review + ppcommit fix
-      if (!state.steps.codexReviewed) {
+      // Step 5a: reviewer pass + ppcommit fix
+      if (!state.steps.reviewerCompleted && !state.steps.codexReviewed) {
         this.log({ event: "step5_review" });
         const ppOutput = (ppBefore.stdout || ppBefore.stderr || "").trim();
         const ppSection = ppBefore.exitCode === 0
           ? `ppcommit passed (no issues). Focus on code review.`
           : `ppcommit found issues — fix ALL of them:\n---\n${ppOutput}\n---\n\nCoder will re-run ppcommit and fail hard if anything remains.`;
-        await runCodexReview(ppSection);
+        await runReviewerPass(reviewerName, reviewerAgent, ppSection, "review pass");
+        state.steps.reviewerCompleted = true;
         state.steps.codexReviewed = true;
         this._saveState(state);
       }
 
-      // Hard gate: ppcommit must be clean. Retry Codex with explicit ppcommit
+      // Hard gate: ppcommit must be clean. Retry with configured committer
       // output to avoid silent drift between initial/final checks.
       const maxPpcommitRetries = 2;
       let ppAfter = await runPpcommit(workDir, this.config.ppcommit);
@@ -1210,13 +1294,13 @@ Hard constraints:
       for (let attempt = 1; attempt <= maxPpcommitRetries && ppAfter.exitCode !== 0; attempt++) {
         const ppAfterOutput = (ppAfter.stdout || ppAfter.stderr || "").trim();
         this.log({ event: "ppcommit_retry", attempt, exitCode: ppAfter.exitCode });
-        const retrySection = `ppcommit still failing after Codex pass. Fix ALL remaining ppcommit issues:\n---\n${ppAfterOutput}\n---`;
-        await runCodexReview(retrySection);
+        const retrySection = `ppcommit still failing after review pass. Fix ALL remaining ppcommit issues:\n---\n${ppAfterOutput}\n---`;
+        await runReviewerPass(committerName, committerAgent, retrySection, "committer pass");
         ppAfter = await runPpcommit(workDir, this.config.ppcommit);
         this.log({ event: "ppcommit_after", attempt, exitCode: ppAfter.exitCode });
       }
       if (ppAfter.exitCode !== 0) {
-        throw new Error(`ppcommit still reports issues after Codex pass:\n${ppAfter.stdout || ppAfter.stderr}`);
+        throw new Error(`ppcommit still reports issues after ${committerName} pass:\n${ppAfter.stdout || ppAfter.stderr}`);
       }
       state.steps.ppcommitClean = true;
       this._saveState(state);
@@ -1435,9 +1519,8 @@ Hard constraints:
     if (existsSync(statePath)) unlinkSync(statePath);
 
     // Delete workflow artifacts
-    const artifacts = [this.issueFile, this.planFile, this.critiqueFile];
-    for (const name of artifacts) {
-      const p = path.join(this.workspaceDir, name);
+    const artifacts = this._artifactPaths();
+    for (const p of [artifacts.issue, artifacts.plan, artifacts.critique]) {
       if (existsSync(p)) unlinkSync(p);
     }
 
@@ -1484,19 +1567,18 @@ Hard constraints:
     }
 
     // Destroy agent instances — forces fresh sessions per issue
-    this._gemini = null;
-    this._claude = null;
-    this._codex = null;
+    this._workspaceAgents.clear();
+    this._repoAgents.clear();
   }
 
   // --- Autonomous loop ---
 
   /**
-   * Use Gemini to filter issues by goal, analyze dependencies, and produce an
+   * Use the configured issue selector to filter issues by goal, analyze dependencies, and produce an
    * ordered queue. Returns the raw queue array ready for loop-state.
    */
   async _buildAutoQueue(issues, goal, maxIssues) {
-    const gemini = this._getGemini();
+    const { agentName: issueSelectorName, agent: issueSelector } = this._getRoleAgent("issueSelector", { scope: "workspace" });
 
     const issueList = issues.map((iss) =>
       `- [${iss.source}#${iss.id}] "${iss.title}" (difficulty: ${iss.difficulty || "?"})`
@@ -1534,19 +1616,19 @@ Return ONLY valid JSON in this schema:
   ]
 }`;
 
-    const cmd = geminiJsonPipeWithModel(prompt, this.config.models.gemini);
-    const res = await this._executeWithRetry(gemini, cmd, {
+    const cmd = this._buildPromptCommand(issueSelectorName, prompt, { structured: true });
+    const res = await this._executeWithRetry(issueSelector, cmd, {
       timeoutMs: 1000 * 60 * 5,
       hangTimeoutMs: GEMINI_DEFAULT_HANG_TIMEOUT_MS,
       retries: 2,
-      agentName: "gemini",
+      agentName: issueSelectorName,
       retryOnRateLimit: true,
     });
 
     // Best-effort parse — fall back to difficulty sort if Gemini fails
     try {
-      if (res.exitCode !== 0) throw new Error(formatCommandFailure("Gemini queue building failed", res));
-      const payload = extractGeminiPayloadJson(res.stdout);
+      if (res.exitCode !== 0) throw new Error(formatCommandFailure(`${issueSelectorName} queue building failed`, res));
+      const payload = this._parseStructuredAgentPayload(issueSelectorName, res.stdout);
       if (!payload?.queue || !Array.isArray(payload.queue)) throw new Error("Invalid queue payload");
 
       // Build lookups from the original issues
@@ -1606,7 +1688,7 @@ Return ONLY valid JSON in this schema:
 
       this._appendAutoLog({
         event: "queue_built",
-        method: "gemini",
+        method: issueSelectorName,
         total: queue.length,
         excluded: payload.excluded?.length || 0,
       });
@@ -1615,7 +1697,10 @@ Return ONLY valid JSON in this schema:
       }
       return queue;
     } catch {
-      this._appendAutoLog({ event: "queue_fallback", reason: "Gemini queue building failed, using difficulty sort" });
+      this._appendAutoLog({
+        event: "queue_fallback",
+        reason: `${issueSelectorName} queue building failed, using difficulty sort`,
+      });
     }
 
     // Fallback: difficulty sort, no dependency analysis
@@ -1638,7 +1723,8 @@ Return ONLY valid JSON in this schema:
 
   /**
    * Process multiple assigned issues end-to-end without human intervention.
-   * Uses the goal prompt to filter and dependency-sort the issue queue via Gemini.
+   * Uses the goal prompt to filter and dependency-sort the issue queue via the
+   * configured issue selector.
    * Failed dependencies are treated as soft ordering hints; downstream issues
    * are still attempted to avoid full queue starvation.
    * @param {{ goal?: string, projectFilter?: string, maxIssues?: number, testCmd?: string, testConfigPath?: string, allowNoTests?: boolean, destructiveReset?: boolean }} opts
@@ -1703,6 +1789,12 @@ Return ONLY valid JSON in this schema:
     }
 
     const issueRef = (entry) => `${entry.source}#${entry.id}`;
+    const autoStageAgents = {
+      draft: this._roleAgentName("issueSelector"),
+      plan: this._roleAgentName("planner"),
+      implement: this._roleAgentName("programmer"),
+      review: this._roleAgentName("reviewer"),
+    };
     const refsById = new Map();
     for (const item of loopState.issueQueue) {
       const key = String(item.id);
@@ -1835,7 +1927,7 @@ Return ONLY valid JSON in this schema:
 
       let abortAfterThisIssue = false;
       try {
-        await this._withStage(loopState, "draft", "gemini", () =>
+        await this._withStage(loopState, "draft", autoStageAgents.draft, () =>
           this.draftIssue({
             issue: { source: entry.source, id: entry.id, title: entry.title },
             repoPath: entry.repoPath,
@@ -1847,9 +1939,9 @@ Return ONLY valid JSON in this schema:
           }),
         );
 
-        await this._withStage(loopState, "plan", "claude", () => this.createPlan());
-        await this._withStage(loopState, "implement", "claude", () => this.implement());
-        await this._withStage(loopState, "review", "codex", () => this.reviewAndTest());
+        await this._withStage(loopState, "plan", autoStageAgents.plan, () => this.createPlan());
+        await this._withStage(loopState, "implement", autoStageAgents.implement, () => this.implement());
+        await this._withStage(loopState, "review", autoStageAgents.review, () => this.reviewAndTest());
 
         let prResult;
         try {
@@ -2010,6 +2102,7 @@ Return ONLY valid JSON in this schema:
       repoPath: state.repoPath,
       baseBranch: state.baseBranch,
       branch: state.branch,
+      agentRoles: this.agentRoles,
       steps: state.steps,
       lastError: state.lastError,
       prUrl: state.prUrl,

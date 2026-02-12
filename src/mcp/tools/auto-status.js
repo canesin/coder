@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { loadLoopState } from "../../state.js";
+import { resolveWorkspaceForMcp } from "../workspace.js";
 
 const HEARTBEAT_STALE_MS = 30_000;
 
@@ -35,8 +36,8 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
       },
     },
     async ({ workspace }) => {
-      const ws = workspace || defaultWorkspace;
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
         const loopState = loadLoopState(ws);
         const heartbeatTs = loopState.lastHeartbeatAt ? Date.parse(loopState.lastHeartbeatAt) : NaN;
         const heartbeatAgeMs = Number.isFinite(heartbeatTs) ? Math.max(0, Date.now() - heartbeatTs) : null;
@@ -134,10 +135,9 @@ export function registerAutoStatusTools(server, defaultWorkspace) {
       },
     },
     async ({ workspace, afterSeq = 0, limit = 50 }) => {
-      const ws = workspace || defaultWorkspace;
-      const logPath = path.join(ws, ".coder", "logs", "auto.jsonl");
-
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const logPath = path.join(ws, ".coder", "logs", "auto.jsonl");
         if (!existsSync(logPath)) {
           return {
             content: [{ type: "text", text: JSON.stringify({ events: [], nextSeq: 0, totalLines: 0 }) }],

@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 import { jsonrepair } from "jsonrepair";
 import { detectTestCommand, runTestCommand, loadTestConfig, runTestConfig } from "./test-runner.js";
 import { runPpcommitNative } from "./ppcommit.js";
+import { runShellSync } from "./systemd-run.js";
 
 export const DEFAULT_PASS_ENV = [
   "GOOGLE_API_KEY",
@@ -545,14 +546,10 @@ export async function runHostTests(repoDir, { testCmd, testConfigPath, allowNoTe
         );
       }
     }
-    const res = spawnSync("bash", ["-lc", testCmd], {
-      cwd: repoDir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const res = runShellSync(testCmd, { cwd: repoDir });
     return {
-      cmd: ["bash", "-lc", testCmd],
-      exitCode: res.status ?? 0,
+      cmd: res.cmd,
+      exitCode: res.exitCode ?? 0,
       stdout: res.stdout || "",
       stderr: res.stderr || "",
     };

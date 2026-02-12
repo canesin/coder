@@ -72,12 +72,58 @@ By default, `coder` will:
 ## Notes
 
 - `coder` uses a host sandbox provider: commands run on your machine (so MCP/config works), and changes land in a dedicated git worktree under `.coder/worktrees/`.
+- On Linux, `coder` prefers `systemd-run --user` for command execution (cgroup lifecycle + `KillMode=control-group`) and falls back to direct host execution if unavailable. Set `CODER_DISABLE_SYSTEMD_RUN=1` to force fallback, or `CODER_FORCE_SYSTEMD_RUN=1` to force systemd mode.
 - Plan review uses Gemini CLI with search grounding to verify external API documentation.
 - The workflow files live under `.coder/artifacts/` by default (`ISSUE.md`, `PLAN.md`, `PLANREVIEW.md`).
 - Progress + logs are written under `.coder/` (see `.coder/state.json` and `.coder/logs/*.jsonl`).
-- Repo includes examples for local tool config: `.mcp.example.json` and `.claude/settings.example.json`.
+- Repo includes examples for local tool config: `.mcp.example.json`, `.claude/settings.example.json`, and `coder.example.json`.
 - Security model: this project orchestrates LLM agents that run shell commands. You should run it in an isolated environment (VM/container/throwaway devbox) with minimal credentials and no sensitive data. Hardening that environment is out of scope for this project.
+- MCP workspace safety: tool calls are constrained to paths under the server startup directory by default. Set `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary workspace paths.
+- Test health-check safety: URLs must target localhost by default. Set `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` to allow external health-check endpoints.
 - Claude Code permissions: by default, `coder` passes `--dangerously-skip-permissions` to Claude Code. To force permission prompts, use `--claude-require-permissions` or set `CODER_CLAUDE_DANGEROUS=0`.
+- Agent roles are configurable in `coder.json`:
+  - `workflow.agentRoles.issueSelector`
+  - `workflow.agentRoles.planner`
+  - `workflow.agentRoles.planReviewer`
+  - `workflow.agentRoles.programmer`
+  - `workflow.agentRoles.reviewer`
+  - `workflow.agentRoles.committer`
+  Valid values: `"gemini" | "claude" | "codex"`.
+
+Example:
+```json
+{
+  "workflow": {
+    "agentRoles": {
+      "issueSelector": "gemini",
+      "planner": "claude",
+      "planReviewer": "gemini",
+      "programmer": "claude",
+      "reviewer": "codex",
+      "committer": "codex"
+    }
+  }
+}
+```
+
+`ppcommit` LLM settings (OpenAI-compatible API):
+```json
+{
+  "ppcommit": {
+    "enableLlm": true,
+    "llmServiceUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "llmApiKey": "",
+    "llmApiKeyEnv": "GEMINI_API_KEY",
+    "llmModel": "gemini-3-flash-preview"
+  }
+}
+```
+API key resolution order:
+1. `ppcommit.llmApiKey`
+2. env var named by `ppcommit.llmApiKeyEnv`
+3. `OPENAI_API_KEY`
+4. `GEMINI_API_KEY`
+5. `GOOGLE_API_KEY`
 
 ## MCP Autonomous Mode
 

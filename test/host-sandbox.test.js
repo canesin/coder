@@ -30,3 +30,17 @@ test("host sandbox hang timeout ignores stderr chatter when hangResetOnStderr is
   );
 });
 
+test("host sandbox throwOnNonZero includes exit metadata", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () => sandbox.commands.run(`echo "out"; echo "err" 1>&2; exit 3`, { throwOnNonZero: true }),
+    (err) => {
+      assert.equal(err.exitCode, 3);
+      assert.match(err.stdout, /out/);
+      assert.match(err.stderr, /err/);
+      return true;
+    },
+  );
+});

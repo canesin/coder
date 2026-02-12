@@ -138,6 +138,34 @@ test("_normalizeRepoPath keeps valid workspace-relative paths and rejects invali
   assert.equal(orch._normalizeRepoPath("does-not-exist"), ".");
 });
 
+test("workflow agent role overrides are applied", () => {
+  const ws = makeWorkspace();
+  writeFileSync(
+    path.join(ws, "coder.json"),
+    JSON.stringify({
+      workflow: {
+        agentRoles: {
+          issueSelector: "claude",
+          planner: "codex",
+          planReviewer: "claude",
+          programmer: "codex",
+          reviewer: "gemini",
+          committer: "claude",
+        },
+      },
+    }, null, 2) + "\n",
+    "utf8",
+  );
+  const orch = new CoderOrchestrator(ws, { allowNoTests: true });
+
+  assert.equal(orch._roleAgentName("issueSelector"), "claude");
+  assert.equal(orch._roleAgentName("planner"), "codex");
+  assert.equal(orch._roleAgentName("planReviewer"), "claude");
+  assert.equal(orch._roleAgentName("programmer"), "codex");
+  assert.equal(orch._roleAgentName("reviewer"), "gemini");
+  assert.equal(orch._roleAgentName("committer"), "claude");
+});
+
 test("listIssues continues when optional Linear project listing fails", async () => {
   const ws = makeWorkspace();
   const orch = new StubOrchestrator(ws);
@@ -268,4 +296,31 @@ test("runAuto aborts and skips remaining issues on TestInfrastructureError to av
   assert.equal(res.failed, 1);
   assert.equal(res.skipped, 1);
   assert.equal(res.status, "failed");
+});
+
+test("_resetForNextIssue removes .coder/artifacts files and preserves workspace root markdown", () => {
+  const ws = makeWorkspace();
+  const orch = new CoderOrchestrator(ws, { allowNoTests: true });
+
+  const rootIssue = path.join(ws, "ISSUE.md");
+  const rootPlan = path.join(ws, "PLAN.md");
+  const rootCritique = path.join(ws, "PLANREVIEW.md");
+  writeFileSync(rootIssue, "user file\n", "utf8");
+  writeFileSync(rootPlan, "user file\n", "utf8");
+  writeFileSync(rootCritique, "user file\n", "utf8");
+
+  writeFileSync(path.join(ws, ".coder", "state.json"), JSON.stringify({ repoPath: "." }) + "\n", "utf8");
+  writeFileSync(path.join(ws, ".coder", "artifacts", "ISSUE.md"), "artifact\n", "utf8");
+  writeFileSync(path.join(ws, ".coder", "artifacts", "PLAN.md"), "artifact\n", "utf8");
+  writeFileSync(path.join(ws, ".coder", "artifacts", "PLANREVIEW.md"), "artifact\n", "utf8");
+
+  orch._resetForNextIssue(null);
+
+  assert.equal(existsSync(path.join(ws, ".coder", "state.json")), false);
+  assert.equal(existsSync(path.join(ws, ".coder", "artifacts", "ISSUE.md")), false);
+  assert.equal(existsSync(path.join(ws, ".coder", "artifacts", "PLAN.md")), false);
+  assert.equal(existsSync(path.join(ws, ".coder", "artifacts", "PLANREVIEW.md")), false);
+  assert.equal(existsSync(rootIssue), true);
+  assert.equal(existsSync(rootPlan), true);
+  assert.equal(existsSync(rootCritique), true);
 });

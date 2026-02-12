@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import {
+  canUseSystemdRun,
+  buildSystemdRunArgs,
+  makeSystemdUnitName,
+  stopSystemdUnit,
+} from "./systemd-run.js";
 
 export class CommandTimeoutError extends Error {
   constructor(command, timeoutMs) {
@@ -16,11 +22,12 @@ function mergeEnv(base, extra) {
 
 export class HostSandboxProvider {
   /**
-   * @param {{ defaultCwd?: string, baseEnv?: Record<string,string> }} [config]
+   * @param {{ defaultCwd?: string, baseEnv?: Record<string,string>, useSystemdRun?: boolean }} [config]
    */
   constructor(config = {}) {
     this.defaultCwd = config.defaultCwd || process.cwd();
     this.baseEnv = config.baseEnv || {};
+    this.useSystemdRun = config.useSystemdRun ?? canUseSystemdRun();
   }
 
   async create(envs = {}, agentType = "default", workingDirectory) {
@@ -29,6 +36,7 @@ export class HostSandboxProvider {
       sandboxId,
       cwd: workingDirectory || this.defaultCwd,
       env: mergeEnv(mergeEnv(process.env, this.baseEnv), envs),
+      useSystemdRun: this.useSystemdRun,
     });
   }
 
@@ -38,24 +46,27 @@ export class HostSandboxProvider {
       sandboxId,
       cwd: this.defaultCwd,
       env: mergeEnv(process.env, this.baseEnv),
+      useSystemdRun: this.useSystemdRun,
     });
   }
 }
 
 class HostSandboxInstance extends EventEmitter {
   /**
-   * @param {{ sandboxId: string, cwd: string, env: Record<string,string> }} opts
+   * @param {{ sandboxId: string, cwd: string, env: Record<string,string>, useSystemdRun?: boolean }} opts
    */
   constructor(opts) {
     super();
     this.sandboxId = opts.sandboxId;
     this.cwd = opts.cwd;
     this.env = opts.env;
+    this.useSystemdRun = opts.useSystemdRun ?? false;
 
     // Activity tracking (Feature 7)
     this.lastActivityTs = null;
     this.currentCommand = null;
     this.currentChild = null;
+    this.currentUnit = null;
 
     this.commands = {
       run: (command, options = {}) => this._run(command, options),
@@ -87,30 +98,74 @@ class HostSandboxInstance extends EventEmitter {
     this.currentCommand = command;
 
     if (background) {
-      const child = spawn("bash", ["-lc", command], {
-        cwd: this.cwd,
-        env: this.env,
-        stdio: "ignore",
-        detached: true,
+      const launch = this._launch(command, { background, timeoutMs });
+      const child = launch.child;
+      if (!child.pid) {
+        this.currentCommand = null;
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Failed to spawn background process",
+        };
+      }
+
+      if (!launch.useSystemd) child.unref();
+      this.currentUnit = launch.unitName || null;
+
+      return await new Promise((resolve) => {
+        let done = false;
+        const settle = (result) => {
+          if (done) return;
+          done = true;
+          this.currentCommand = null;
+          this.currentUnit = null;
+          resolve(result);
+        };
+
+        child.once("error", (err) => {
+          settle({
+            exitCode: 1,
+            stdout: "",
+            stderr: err.message || "Failed to spawn background process",
+          });
+        });
+
+        // systemd-run exits quickly with start status in background mode.
+        // raw bash background mode has already detached and can be treated as started.
+        if (!launch.useSystemd) {
+          settle({
+            exitCode: 0,
+            stdout: `Background process started: ${command}`,
+            stderr: "",
+          });
+          return;
+        }
+
+        child.once("close", (code) => {
+          const exitCode = code ?? 0;
+          if (exitCode !== 0) {
+            settle({
+              exitCode,
+              stdout: "",
+              stderr: "Failed to start background process via systemd-run",
+            });
+            return;
+          }
+          settle({
+            exitCode: 0,
+            stdout: `Background process started: ${command}`,
+            stderr: "",
+          });
+        });
       });
-      child.unref();
-      this.currentCommand = null;
-      return {
-        exitCode: 0,
-        stdout: `Background process started: ${command}`,
-        stderr: "",
-      };
     }
 
     return await new Promise((resolve, reject) => {
-      const child = spawn("bash", ["-lc", command], {
-        cwd: this.cwd,
-        env: this.env,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
+      const launch = this._launch(command, { background, timeoutMs });
+      const child = launch.child;
 
       this.currentChild = child;
+      this.currentUnit = launch.unitName || null;
       this.lastActivityTs = Date.now();
 
       let stdout = "";
@@ -120,6 +175,10 @@ class HostSandboxInstance extends EventEmitter {
       let killTimer = null;
       let hangTimer = null;
       const terminateChild = () => {
+        if (this.currentUnit) {
+          stopSystemdUnit(this.currentUnit);
+          return;
+        }
         // Kill the full process group to avoid orphaned grandchildren.
         try {
           if (child.pid) process.kill(-child.pid, "SIGTERM");
@@ -134,6 +193,7 @@ class HostSandboxInstance extends EventEmitter {
         if (hangTimer) clearTimeout(hangTimer);
         this.currentChild = null;
         this.currentCommand = null;
+        this.currentUnit = null;
         if (err) reject(err);
         else resolve(result);
       };
@@ -208,6 +268,10 @@ class HostSandboxInstance extends EventEmitter {
   }
 
   async kill() {
+    if (this.currentUnit) {
+      stopSystemdUnit(this.currentUnit);
+      this.currentUnit = null;
+    }
     if (this.currentChild) {
       try {
         if (this.currentChild.pid) process.kill(-this.currentChild.pid, "SIGTERM");
@@ -217,6 +281,32 @@ class HostSandboxInstance extends EventEmitter {
       this.currentChild = null;
       this.currentCommand = null;
     }
+  }
+  _launch(command, { background, timeoutMs }) {
+    if (this.useSystemdRun) {
+      const unitName = makeSystemdUnitName("coder-agent");
+      const args = buildSystemdRunArgs(command, {
+        unitName,
+        cwd: this.cwd,
+        timeoutMs,
+        wait: !background,
+        pipe: !background,
+      });
+      const child = spawn("systemd-run", args, {
+        cwd: this.cwd,
+        env: this.env,
+        stdio: background ? "ignore" : ["ignore", "pipe", "pipe"],
+      });
+      return { child, useSystemd: true, unitName };
+    }
+
+    const child = spawn("bash", ["-lc", command], {
+      cwd: this.cwd,
+      env: this.env,
+      stdio: background ? "ignore" : ["ignore", "pipe", "pipe"],
+      detached: true,
+    });
+    return { child, useSystemd: false, unitName: null };
   }
   async pause() {}
   async getHost(_port) {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CoderOrchestrator } from "../../orchestrator.js";
+import { resolveWorkspaceForMcp } from "../workspace.js";
 
 const LoopIssueResultShape = {
   source: z.enum(["github", "linear"]),
@@ -24,6 +25,15 @@ const AutoResultShape = {
   results: z.array(z.object(LoopIssueResultShape)),
 };
 
+const AgentRolesInput = z.object({
+  issueSelector: z.enum(["gemini", "claude", "codex"]).optional(),
+  planner: z.enum(["gemini", "claude", "codex"]).optional(),
+  planReviewer: z.enum(["gemini", "claude", "codex"]).optional(),
+  programmer: z.enum(["gemini", "claude", "codex"]).optional(),
+  reviewer: z.enum(["gemini", "claude", "codex"]).optional(),
+  committer: z.enum(["gemini", "claude", "codex"]).optional(),
+});
+
 export function registerWorkflowTools(server, defaultWorkspace) {
   // --- Step 1: coder_list_issues ---
   server.tool(
@@ -34,11 +44,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
     {
       workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
       projectFilter: z.string().optional().describe("Optional project/team name to filter issues by"),
+      agentRoles: AgentRolesInput.optional().describe("Optional per-step agent selection overrides"),
     },
-    async ({ workspace, projectFilter }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws);
+    async ({ workspace, projectFilter, agentRoles }) => {
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws, { agentRoles });
         const result = await orch.listIssues({ projectFilter });
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -69,11 +80,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
       baseBranch: z.string().optional().describe("Optional base branch to stack this issue on top of"),
       clarifications: z.string().default("").describe("Free-text clarifications from the user conversation"),
       force: z.boolean().default(false).describe("Bypass artifact collision checks (use when restarting a workflow)"),
+      agentRoles: AgentRolesInput.optional().describe("Optional per-step agent selection overrides"),
     },
-    async ({ workspace, issue, repoPath, baseBranch, clarifications, force }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws);
+    async ({ workspace, issue, repoPath, baseBranch, clarifications, force, agentRoles }) => {
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws, { agentRoles });
         const result = await orch.draftIssue({ issue, repoPath, baseBranch, clarifications, force });
         return {
           content: [{ type: "text", text: result.issueMd }],
@@ -90,16 +102,17 @@ export function registerWorkflowTools(server, defaultWorkspace) {
   // --- Step 3: coder_create_plan ---
   server.tool(
     "coder_create_plan",
-    "Step 3 of the coder workflow. Has Claude write an implementation plan and runs " +
-      "built-in plan review (Gemini) to critique it. Requires coder_draft_issue to have been called first. " +
+    "Step 3 of the coder workflow. Uses the configured planner and plan reviewer to create " +
+      "PLAN.md and PLANREVIEW.md. Requires coder_draft_issue to have been called first. " +
       "Next step: coder_implement.",
     {
       workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+      agentRoles: AgentRolesInput.optional().describe("Optional per-step agent selection overrides"),
     },
-    async ({ workspace }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws);
+    async ({ workspace, agentRoles }) => {
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws, { agentRoles });
         const result = await orch.createPlan();
         return {
           content: [
@@ -118,16 +131,17 @@ export function registerWorkflowTools(server, defaultWorkspace) {
   // --- Step 4: coder_implement ---
   server.tool(
     "coder_implement",
-    "Step 4 of the coder workflow. Has Claude implement the feature based on " +
+    "Step 4 of the coder workflow. Uses the configured programmer agent to implement based on " +
       "PLAN.md and PLANREVIEW.md. Requires coder_create_plan to have been called " +
       "first. Long-running. Next step: coder_review_and_test.",
     {
       workspace: z.string().optional().describe("Workspace directory (default: cwd)"),
+      agentRoles: AgentRolesInput.optional().describe("Optional per-step agent selection overrides"),
     },
-    async ({ workspace }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws);
+    async ({ workspace, agentRoles }) => {
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws, { agentRoles });
         const result = await orch.implement();
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -144,7 +158,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
   // --- Step 5: coder_review_and_test ---
   server.tool(
     "coder_review_and_test",
-    "Step 5 of the coder workflow. Has Codex review changes, runs ppcommit for commit " +
+    "Step 5 of the coder workflow. Uses the configured reviewer/committer, runs ppcommit for commit " +
       "hygiene, and executes tests. Requires coder_implement first. Long-running. " +
       "Next step: coder_create_pr.",
     {
@@ -153,11 +167,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
       testCmd: z.string().default("").describe("Explicit test command to run (e.g. 'npm test')"),
       testConfigPath: z.string().default("").describe("Path to test config JSON (default: .coder/test.json)"),
       strictMcpStartup: z.boolean().default(false).describe("Fail if any agent has failed MCP servers at startup"),
+      agentRoles: AgentRolesInput.optional().describe("Optional per-step agent selection overrides"),
     },
-    async ({ workspace, allowNoTests, testCmd, testConfigPath, strictMcpStartup }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup });
+    async ({ workspace, allowNoTests, testCmd, testConfigPath, strictMcpStartup, agentRoles }) => {
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup, agentRoles });
         const result = await orch.reviewAndTest();
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -185,9 +200,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
       description: z.string().default("").describe("PR body (default: first lines of ISSUE.md)"),
     },
     async ({ workspace, type, semanticName, base, title, description }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws);
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws);
         const result = await orch.createPR({
           type,
           semanticName: semanticName || undefined,
@@ -227,6 +242,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         testConfigPath: z.string().default("").describe("Path to test config JSON (default: .coder/test.json)"),
         destructiveReset: z.boolean().default(false).describe("If true, aggressively discard repo changes between issues (uses git restore/clean)"),
         strictMcpStartup: z.boolean().default(false).describe("Fail if any agent has failed MCP servers at startup"),
+        agentRoles: AgentRolesInput.optional().describe("Optional per-step agent selection overrides"),
       },
       outputSchema: AutoResultShape,
       annotations: {
@@ -236,10 +252,10 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         openWorldHint: true,
       },
     },
-    async ({ workspace, goal, projectFilter, maxIssues, allowNoTests, testCmd, testConfigPath, destructiveReset, strictMcpStartup }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup });
+    async ({ workspace, goal, projectFilter, maxIssues, allowNoTests, testCmd, testConfigPath, destructiveReset, strictMcpStartup, agentRoles }) => {
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup, agentRoles });
         const result = await orch.runAuto({
           goal,
           projectFilter: projectFilter || undefined,

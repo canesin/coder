@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CoderOrchestrator } from "../../orchestrator.js";
+import { resolveWorkspaceForMcp } from "../workspace.js";
 
 const SelectedIssueShape = {
   source: z.enum(["github", "linear"]),
@@ -34,6 +35,14 @@ const StatusResultShape = {
   repoPath: z.string().nullable(),
   baseBranch: z.string().nullable(),
   branch: z.string().nullable(),
+  agentRoles: z.object({
+    issueSelector: z.string(),
+    planner: z.string(),
+    planReviewer: z.string(),
+    programmer: z.string(),
+    reviewer: z.string(),
+    committer: z.string(),
+  }),
   steps: z.record(z.boolean()),
   lastError: z.string().nullable(),
   prUrl: z.string().nullable(),
@@ -72,9 +81,9 @@ export function registerStatusTools(server, defaultWorkspace) {
       },
     },
     async ({ workspace }) => {
-      const ws = workspace || defaultWorkspace;
-      const orch = new CoderOrchestrator(ws);
       try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws);
         const status = orch.getStatus();
         const normalizedStatus = StatusResultSchema.parse(status);
         return {

@@ -20,8 +20,11 @@ export const PpcommitConfigSchema = z.object({
   blockCompatHacks: z.boolean().default(true),
   blockOverEngineering: z.boolean().default(true),
   treatWarningsAsErrors: z.boolean().default(false),
-  enableGemini: z.boolean().default(true),
-  geminiModel: z.string().default("gemini-3-flash-preview"),
+  enableLlm: z.boolean().default(true),
+  llmServiceUrl: z.string().default("https://generativelanguage.googleapis.com/v1beta/openai"),
+  llmApiKey: z.string().default(""),
+  llmApiKeyEnv: z.string().default("GEMINI_API_KEY"),
+  llmModel: z.string().default("gemini-3-flash-preview"),
 });
 
 export const TestSectionSchema = z.object({
@@ -40,6 +43,17 @@ export const TestSectionSchema = z.object({
   allowNoTests: z.boolean().default(false),
 });
 
+export const AgentNameSchema = z.enum(["gemini", "claude", "codex"]);
+
+export const WorkflowAgentRolesSchema = z.object({
+  issueSelector: AgentNameSchema.default("gemini"),
+  planner: AgentNameSchema.default("claude"),
+  planReviewer: AgentNameSchema.default("gemini"),
+  programmer: AgentNameSchema.default("claude"),
+  reviewer: AgentNameSchema.default("codex"),
+  committer: AgentNameSchema.default("codex"),
+});
+
 export const CoderConfigSchema = z.object({
   models: z.object({
     gemini: z.string().default("gemini-2.5-flash"),
@@ -53,6 +67,9 @@ export const CoderConfigSchema = z.object({
   }).default({}),
   mcp: z.object({
     strictStartup: z.boolean().default(false),
+  }).default({}),
+  workflow: z.object({
+    agentRoles: WorkflowAgentRolesSchema.default({}),
   }).default({}),
   verbose: z.boolean().default(false),
 });

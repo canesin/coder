@@ -29,7 +29,7 @@ export function registerResources(server, defaultWorkspace) {
     "coder://issue",
     { description: "ISSUE.md contents — the drafted issue specification" },
     async () => {
-      const issuePath = path.join(defaultWorkspace, "ISSUE.md");
+      const issuePath = path.join(defaultWorkspace, ".coder", "artifacts", "ISSUE.md");
       if (!existsSync(issuePath)) {
         return {
           contents: [{ uri: "coder://issue", mimeType: "text/markdown", text: "ISSUE.md does not exist yet." }],
@@ -50,7 +50,7 @@ export function registerResources(server, defaultWorkspace) {
     "coder://plan",
     { description: "PLAN.md contents — the implementation plan" },
     async () => {
-      const planPath = path.join(defaultWorkspace, "PLAN.md");
+      const planPath = path.join(defaultWorkspace, ".coder", "artifacts", "PLAN.md");
       if (!existsSync(planPath)) {
         return {
           contents: [{ uri: "coder://plan", mimeType: "text/markdown", text: "PLAN.md does not exist yet." }],
@@ -71,7 +71,7 @@ export function registerResources(server, defaultWorkspace) {
     "coder://critique",
     { description: "PLANREVIEW.md contents — the plan review critique" },
     async () => {
-      const critiquePath = path.join(defaultWorkspace, "PLANREVIEW.md");
+      const critiquePath = path.join(defaultWorkspace, ".coder", "artifacts", "PLANREVIEW.md");
       if (!existsSync(critiquePath)) {
         return {
           contents: [{

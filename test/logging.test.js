@@ -28,3 +28,14 @@ test("makeJsonlLogger writes redacted payloads", async () => {
   assert.match(content, /\[REDACTED\]/);
   assert.doesNotMatch(content, /topsecret|alsosecret/);
 });
+
+test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => {
+  const event = sanitizeLogEvent({
+    nested: { authorization: "Bearer supersecretvalue" },
+    array: ["https://example.test?a=1&access_token=abc123&token=def456"],
+  });
+
+  assert.match(event.nested.authorization, /REDACTED/);
+  assert.match(event.array[0], /access_token=\[REDACTED\]/);
+  assert.match(event.array[0], /token=\[REDACTED\]/);
+});

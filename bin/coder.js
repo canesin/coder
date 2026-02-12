@@ -10,7 +10,7 @@ import Table from "cli-table3";
 
 import { AgentRunner } from "../src/agent-runner.js";
 import { HostSandboxProvider } from "../src/host-sandbox.js";
-import { closeAllLoggers, ensureLogsDir, makeJsonlLogger } from "../src/logging.js";
+import { closeAllLoggers, ensureLogsDir, makeJsonlLogger, sanitizeLogEvent } from "../src/logging.js";
 import { runPpcommitNative, runPpcommitBranch, runPpcommitAll } from "../src/ppcommit.js";
 import {
   buildSecrets,
@@ -187,8 +187,8 @@ async function run() {
     vk.on("update", (d) => agentLog({ stream: "update", data: d }));
     vk.on("error", (d) => agentLog({ stream: "error", data: d }));
     if (args.verbose) {
-      vk.on("stdout", (d) => process.stdout.write(`[${name}] ${d}`));
-      vk.on("stderr", (d) => process.stderr.write(`[${name}] ${d}`));
+      vk.on("stdout", (d) => process.stdout.write(`[${name}] ${sanitizeLogEvent(String(d))}`));
+      vk.on("stderr", (d) => process.stderr.write(`[${name}] ${sanitizeLogEvent(String(d))}`));
     }
   };
 

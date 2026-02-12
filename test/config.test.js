@@ -113,6 +113,39 @@ test("resolveConfig: deep overrides merge correctly", () => {
   assert.equal(config.test.timeoutMs, 600000); // default preserved
 });
 
+test("resolveConfig: workflow agent roles can be overridden", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir, {
+    workflow: {
+      agentRoles: {
+        planner: "codex",
+        programmer: "codex",
+        reviewer: "claude",
+      },
+    },
+  });
+  assert.equal(config.workflow.agentRoles.issueSelector, "gemini");
+  assert.equal(config.workflow.agentRoles.planner, "codex");
+  assert.equal(config.workflow.agentRoles.programmer, "codex");
+  assert.equal(config.workflow.agentRoles.reviewer, "claude");
+});
+
+test("resolveConfig: ppcommit llm settings can be overridden", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir, {
+    ppcommit: {
+      enableLlm: false,
+      llmServiceUrl: "https://example.com/v1",
+      llmApiKeyEnv: "MY_LLM_API_KEY",
+      llmModel: "my-model",
+    },
+  });
+  assert.equal(config.ppcommit.enableLlm, false);
+  assert.equal(config.ppcommit.llmServiceUrl, "https://example.com/v1");
+  assert.equal(config.ppcommit.llmApiKeyEnv, "MY_LLM_API_KEY");
+  assert.equal(config.ppcommit.llmModel, "my-model");
+});
+
 test("userConfigPath: respects XDG_CONFIG_HOME", () => {
   const origXdg = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = "/custom/config";

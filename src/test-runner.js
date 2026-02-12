@@ -4,6 +4,7 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { TestConfigSchema } from "./schemas.js";
 import { loadConfig } from "./config.js";
+import { runShellSync } from "./systemd-run.js";
 
 export function detectTestCommand(repoDir) {
   const has = (rel) => existsSync(path.join(repoDir, rel));
@@ -33,6 +34,30 @@ export function runTestCommand(repoDir, argv) {
     stdout: res.stdout || "",
     stderr: res.stderr || "",
   };
+}
+
+function validateHealthCheckUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`Invalid health check URL: ${rawUrl}`);
+  }
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`Unsupported health check protocol: ${parsed.protocol}`);
+  }
+
+  if (process.env.CODER_ALLOW_EXTERNAL_HEALTHCHECK === "1") return;
+
+  const host = parsed.hostname.toLowerCase();
+  const localhostHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+  if (!localhostHosts.has(host)) {
+    throw new Error(
+      `Health check URL must target localhost by default: ${rawUrl}. ` +
+        "Set CODER_ALLOW_EXTERNAL_HEALTHCHECK=1 to allow external endpoints.",
+    );
+  }
 }
 
 /**
@@ -97,12 +122,13 @@ export function loadTestConfig(repoDir, configPath) {
  * @param {number} intervalMs
  */
 export async function waitForHealthCheck(url, retries, intervalMs) {
+  validateHealthCheckUrl(url);
   for (let i = 0; i < retries; i++) {
     try {
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), 10_000);
       try {
-        const res = await fetch(url, { signal: controller.signal, redirect: "follow" });
+        const res = await fetch(url, { signal: controller.signal, redirect: "error" });
         if (res.ok) return;
       } finally {
         clearTimeout(t);
@@ -127,17 +153,15 @@ export async function runTestConfig(repoDir, config) {
   try {
     // Setup phase
     for (const cmd of config.setup) {
-      const res = spawnSync("bash", ["-lc", cmd], {
+      const res = runShellSync(cmd, {
         cwd: repoDir,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: config.timeoutMs,
+        timeoutMs: config.timeoutMs,
       });
-      details.setup.push({ cmd, exitCode: res.status ?? 0 });
-      if ((res.status ?? 0) !== 0) {
+      details.setup.push({ cmd, exitCode: res.exitCode ?? 0 });
+      if ((res.exitCode ?? 0) !== 0) {
         return {
           cmd,
-          exitCode: res.status ?? 1,
+          exitCode: res.exitCode ?? 1,
           stdout: res.stdout || "",
           stderr: res.stderr || `Setup command failed: ${cmd}`,
           details,
@@ -164,16 +188,14 @@ export async function runTestConfig(repoDir, config) {
     }
 
     // Test phase
-    const testRes = spawnSync("bash", ["-lc", config.test], {
+    const testRes = runShellSync(config.test, {
       cwd: repoDir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: config.timeoutMs,
+      timeoutMs: config.timeoutMs,
     });
 
     return {
       cmd: config.test,
-      exitCode: testRes.status ?? 0,
+      exitCode: testRes.exitCode ?? 0,
       stdout: testRes.stdout || "",
       stderr: testRes.stderr || "",
       details,
@@ -181,13 +203,11 @@ export async function runTestConfig(repoDir, config) {
   } finally {
     // Teardown always runs
     for (const cmd of config.teardown) {
-      const res = spawnSync("bash", ["-lc", cmd], {
+      const res = runShellSync(cmd, {
         cwd: repoDir,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 120000,
+        timeoutMs: 120000,
       });
-      details.teardown.push({ cmd, exitCode: res.status ?? 0 });
+      details.teardown.push({ cmd, exitCode: res.exitCode ?? 0 });
     }
   }
 }

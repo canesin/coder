@@ -128,3 +128,17 @@ test("coder_auto_cancel can cancel stale persisted run without active in-memory 
   assert.equal(loopState.status, "cancelled");
   assert.equal(loopState.runId, runId);
 });
+
+test("coder_auto_start rejects workspace outside server root by default", async () => {
+  const ws = makeWorkspace();
+  const outside = mkdtempSync(path.join(os.tmpdir(), "coder-auto-lifecycle-outside-"));
+  const server = makeServer();
+
+  registerAutoLifecycleTools(server, ws);
+  const start = server.handlers.get("coder_auto_start");
+  assert.ok(start);
+
+  const res = await start({ workspace: outside });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /within server root/i);
+});

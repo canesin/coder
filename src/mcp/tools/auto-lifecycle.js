@@ -2,9 +2,19 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CoderOrchestrator } from "../../orchestrator.js";
 import { loadLoopState, saveLoopState } from "../../state.js";
+import { resolveWorkspaceForMcp } from "../workspace.js";
 
 /** @type {Map<string, { orchestrator: CoderOrchestrator, workspace: string, promise: Promise, startedAt: string }>} */
 const activeRuns = new Map();
+
+const AgentRolesInput = z.object({
+  issueSelector: z.enum(["gemini", "claude", "codex"]).optional(),
+  planner: z.enum(["gemini", "claude", "codex"]).optional(),
+  planReviewer: z.enum(["gemini", "claude", "codex"]).optional(),
+  programmer: z.enum(["gemini", "claude", "codex"]).optional(),
+  reviewer: z.enum(["gemini", "claude", "codex"]).optional(),
+  committer: z.enum(["gemini", "claude", "codex"]).optional(),
+});
 
 export function registerAutoLifecycleTools(server, defaultWorkspace) {
   const markRunTerminalOnDisk = (workspaceDir, runId, status) => {
@@ -39,6 +49,7 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         testConfigPath: z.string().default("").describe("Path to test config JSON"),
         destructiveReset: z.boolean().default(false).describe("Aggressively discard repo changes between issues"),
         strictMcpStartup: z.boolean().default(false).describe("Fail if any agent has failed MCP servers"),
+        agentRoles: AgentRolesInput.optional().describe("Optional per-step agent selection overrides"),
       },
       annotations: {
         readOnlyHint: false,
@@ -47,82 +58,90 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
         openWorldHint: true,
       },
     },
-    async ({ workspace, goal, projectFilter, maxIssues, allowNoTests, testCmd, testConfigPath, destructiveReset, strictMcpStartup }) => {
-      const ws = workspace || defaultWorkspace;
+    async ({ workspace, goal, projectFilter, maxIssues, allowNoTests, testCmd, testConfigPath, destructiveReset, strictMcpStartup, agentRoles }) => {
+      try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const initialAgent = agentRoles?.issueSelector || "gemini";
 
-      // Prevent concurrent runs on the same workspace.
-      // Release stale locks where the disk state shows a terminal status.
-      for (const [id, run] of activeRuns) {
-        if (run.workspace === ws) {
-          const diskState = loadLoopState(ws);
-          if (["completed", "failed", "cancelled"].includes(diskState.status)) {
-            activeRuns.delete(id);
-            continue;
+        // Prevent concurrent runs on the same workspace.
+        // Release stale locks where the disk state shows a terminal status.
+        for (const [id, run] of activeRuns) {
+          if (run.workspace === ws) {
+            const diskState = loadLoopState(ws);
+            if (["completed", "failed", "cancelled"].includes(diskState.status)) {
+              activeRuns.delete(id);
+              continue;
+            }
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: `Workspace already has active run: ${id}` }) }],
+              isError: true,
+            };
           }
-          return {
-            content: [{ type: "text", text: JSON.stringify({ error: `Workspace already has active run: ${id}` }) }],
-            isError: true,
-          };
         }
-      }
 
-      const runId = randomUUID().slice(0, 8);
+        const runId = randomUUID().slice(0, 8);
 
-      // Write initial state to disk immediately so coder_auto_status sees it
-      saveLoopState(ws, {
-        version: 1,
-        runId,
-        goal,
-        status: "running",
-        projectFilter: projectFilter || null,
-        maxIssues: maxIssues || null,
-        issueQueue: [],
-        currentIndex: 0,
-        currentStage: "listing_issues",
-        currentStageStartedAt: new Date().toISOString(),
-        activeAgent: "gemini",
-        lastHeartbeatAt: new Date().toISOString(),
-        runnerPid: process.pid,
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-      });
+        // Write initial state to disk immediately so coder_auto_status sees it
+        saveLoopState(ws, {
+          version: 1,
+          runId,
+          goal,
+          status: "running",
+          projectFilter: projectFilter || null,
+          maxIssues: maxIssues || null,
+          issueQueue: [],
+          currentIndex: 0,
+          currentStage: "listing_issues",
+          currentStageStartedAt: new Date().toISOString(),
+          activeAgent: initialAgent,
+          lastHeartbeatAt: new Date().toISOString(),
+          runnerPid: process.pid,
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+        });
 
-      const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup });
+        const orch = new CoderOrchestrator(ws, { allowNoTests, testCmd, testConfigPath, strictMcpStartup, agentRoles });
 
-      const promise = orch.runAuto({
-        goal,
-        projectFilter: projectFilter || undefined,
-        maxIssues: maxIssues || undefined,
-        testCmd,
-        testConfigPath,
-        allowNoTests,
-        destructiveReset,
-        runId,
-      }).catch((err) => {
-        // Keep background failures from surfacing as unhandled rejections.
-        markRunTerminalOnDisk(ws, runId, "failed");
-        console.error(`[coder_auto_start] Run ${runId} failed:`, err);
+        const promise = orch.runAuto({
+          goal,
+          projectFilter: projectFilter || undefined,
+          maxIssues: maxIssues || undefined,
+          testCmd,
+          testConfigPath,
+          allowNoTests,
+          destructiveReset,
+          runId,
+        }).catch((err) => {
+          // Keep background failures from surfacing as unhandled rejections.
+          markRunTerminalOnDisk(ws, runId, "failed");
+          console.error(`[coder_auto_start] Run ${runId} failed:`, err);
+          return {
+            status: "failed",
+            completed: 0,
+            failed: 0,
+            skipped: 0,
+            results: [],
+          };
+        }).finally(() => {
+          activeRuns.delete(runId);
+        });
+
+        activeRuns.set(runId, {
+          orchestrator: orch,
+          workspace: ws,
+          promise,
+          startedAt: new Date().toISOString(),
+        });
+
         return {
-          status: "failed",
-          completed: 0,
-          failed: 0,
-          skipped: 0,
-          results: [],
+          content: [{ type: "text", text: JSON.stringify({ runId, status: "started" }) }],
         };
-      }).finally(() => {
-        activeRuns.delete(runId);
-      });
-
-      activeRuns.set(runId, {
-        orchestrator: orch,
-        workspace: ws,
-        promise,
-        startedAt: new Date().toISOString(),
-      });
-
-      return {
-        content: [{ type: "text", text: JSON.stringify({ runId, status: "started" }) }],
-      };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: err.message }) }],
+          isError: true,
+        };
+      }
     },
   );
 
@@ -143,26 +162,33 @@ export function registerAutoLifecycleTools(server, defaultWorkspace) {
       },
     },
     async ({ runId, workspace }) => {
-      const run = activeRuns.get(runId);
-      if (!run) {
-        // Recovery path: allow cancellation via persisted state when the
-        // in-memory orchestrator is gone (e.g. stale/zombie run after crash).
-        const ws = workspace || defaultWorkspace;
-        const cancelledOnDisk = markRunTerminalOnDisk(ws, runId, "cancelled");
-        if (cancelledOnDisk) {
+      try {
+        const run = activeRuns.get(runId);
+        if (!run) {
+          // Recovery path: allow cancellation via persisted state when the
+          // in-memory orchestrator is gone (e.g. stale/zombie run after crash).
+          const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+          const cancelledOnDisk = markRunTerminalOnDisk(ws, runId, "cancelled");
+          if (cancelledOnDisk) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ runId, status: "cancelled_offline" }) }],
+            };
+          }
           return {
-            content: [{ type: "text", text: JSON.stringify({ runId, status: "cancelled_offline" }) }],
+            content: [{ type: "text", text: JSON.stringify({ error: `No active run found: ${runId}` }) }],
+            isError: true,
           };
         }
+        run.orchestrator.requestCancel();
         return {
-          content: [{ type: "text", text: JSON.stringify({ error: `No active run found: ${runId}` }) }],
+          content: [{ type: "text", text: JSON.stringify({ runId, status: "cancel_requested" }) }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: err.message }) }],
           isError: true,
         };
       }
-      run.orchestrator.requestCancel();
-      return {
-        content: [{ type: "text", text: JSON.stringify({ runId, status: "cancel_requested" }) }],
-      };
     },
   );
 

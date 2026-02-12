@@ -16,7 +16,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@google/genai": "^1.40.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "cli-table3": "^0.6.5",
     "deepmerge": "^4.3.1",
