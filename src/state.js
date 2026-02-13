@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { IssuesPayloadSchema as BaseIssuesPayloadSchema } from "./schemas.js";
 
 const SelectedIssueSchema = z.object({
   source: z.enum(["github", "linear"]),
@@ -28,21 +29,7 @@ const StepsSchema = z
   })
   .default({});
 
-const IssuesPayloadSchema = z
-  .object({
-    issues: z.array(
-      z.object({
-        source: z.enum(["github", "linear"]),
-        id: z.string().min(1),
-        title: z.string().min(1),
-        repo_path: z.string().default(""),
-        difficulty: z.number().int().min(1).max(5),
-        reason: z.string().default(""),
-      }),
-    ),
-    recommended_index: z.number().int(),
-  })
-  .optional();
+const IssuesPayloadSchema = BaseIssuesPayloadSchema.optional();
 
 const LinearProjectSchema = z.object({
   id: z.string(),
@@ -52,7 +39,6 @@ const LinearProjectSchema = z.object({
 
 const StateSchema = z
   .object({
-    version: z.number().int().default(1),
     selected: SelectedIssueSchema.nullable().default(null),
     selectedProject: LinearProjectSchema.nullable().default(null),
     linearProjects: z.array(LinearProjectSchema).nullable().default(null),
@@ -70,11 +56,12 @@ const StateSchema = z
     prUrl: z.string().nullable().default(null),
     prBranch: z.string().nullable().default(null),
     prBase: z.string().nullable().default(null),
+    scratchpadPath: z.string().nullable().default(null),
+    lastWipPushAt: z.string().nullable().default(null),
   })
   .passthrough();
 
 const DEFAULT_STATE = {
-  version: 1,
   selected: null,
   selectedProject: null,
   linearProjects: null,
@@ -91,6 +78,8 @@ const DEFAULT_STATE = {
   prUrl: null,
   prBranch: null,
   prBase: null,
+  scratchpadPath: null,
+  lastWipPushAt: null,
 };
 
 export function statePathFor(workspaceDir) {
@@ -131,7 +120,6 @@ const LoopIssueResultSchema = z.object({
 });
 
 const LoopStateSchema = z.object({
-  version: z.number().int().default(1),
   runId: z.string().nullable().default(null),
   goal: z.string().default(""),
   status: z

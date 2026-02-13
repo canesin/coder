@@ -7,6 +7,17 @@
       "programmer": "claude",
       "reviewer": "codex",
       "committer": "codex"
+    },
+    "wip": {
+      "push": true,
+      "autoCommit": true,
+      "includeUntracked": false,
+      "remote": "origin",
+      "failOnError": false
+    },
+    "scratchpad": {
+      "sqliteSync": true,
+      "sqlitePath": ".coder/state.db"
     }
   },
   "ppcommit": {

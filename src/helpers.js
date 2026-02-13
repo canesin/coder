@@ -566,7 +566,7 @@ export async function runHostTests(
   repoDir,
   { testCmd, testConfigPath, allowNoTests } = {},
 ) {
-  // Priority 1: test config file (.coder/test.json or custom path)
+  // Priority 1: explicit config path, then coder.json test section
   if (testConfigPath) {
     const abs = path.resolve(repoDir, testConfigPath);
     if (!existsSync(abs)) {
@@ -574,12 +574,10 @@ export async function runHostTests(
     }
     const config = loadTestConfig(repoDir, testConfigPath);
     return await runTestConfig(repoDir, config);
-  } else {
-    const defaultPath = path.join(repoDir, ".coder", "test.json");
-    if (existsSync(defaultPath)) {
-      const config = loadTestConfig(repoDir);
-      return await runTestConfig(repoDir, config);
-    }
+  }
+  const configured = loadTestConfig(repoDir);
+  if (configured) {
+    return await runTestConfig(repoDir, configured);
   }
 
   // Priority 2: explicit test command

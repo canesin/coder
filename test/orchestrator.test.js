@@ -210,6 +210,28 @@ class StubAutoInfraOrchestrator extends CoderOrchestrator {
   async createPR() {}
 }
 
+class StubIdeaOrchestrator extends CoderOrchestrator {
+  constructor(workspaceDir) {
+    super(workspaceDir, { allowNoTests: true });
+    this._responses = [];
+    this._commands = [];
+  }
+  queueResponse(res) {
+    this._responses.push(res);
+  }
+  _getRoleAgent(role) {
+    if (role === "planReviewer") return { agentName: "claude", agent: {} };
+    return { agentName: "gemini", agent: {} };
+  }
+  async _executeWithRetry(_agent, cmd) {
+    this._commands.push(String(cmd || ""));
+    const next = this._responses.shift();
+    if (!next) throw new Error("No queued response");
+    if (next instanceof Error) throw next;
+    return next;
+  }
+}
+
 test("_normalizeRepoPath keeps valid workspace-relative paths and rejects invalid ones", () => {
   const ws = makeWorkspace();
   mkdirSync(path.join(ws, "subrepo"), { recursive: true });
@@ -378,6 +400,19 @@ test("_ensureGitignore writes .geminiignore unignore rules for workflow artifact
   assert.match(content, /!\.coder\/artifacts\/ISSUE\.md/);
   assert.match(content, /!\.coder\/artifacts\/PLAN\.md/);
   assert.match(content, /!\.coder\/artifacts\/PLANREVIEW\.md/);
+  assert.match(content, /!\.coder\/scratchpad\/$/m);
+  assert.match(content, /!\.coder\/scratchpad\/\*\*/);
+});
+
+test("getStatus includes WIP and scratchpad durability metadata", () => {
+  const ws = makeWorkspace();
+  const orch = new CoderOrchestrator(ws);
+  const status = orch.getStatus();
+
+  assert.equal(status.wip.enabled, true);
+  assert.equal(status.wip.remote, "origin");
+  assert.equal(status.wip.lastPushedAt, null);
+  assert.equal(status.scratchpad.sqlite.path, ".coder/state.db");
 });
 
 test("createPlan allows untracked exploration artifacts but cleans up newly-created ones", async () => {
@@ -426,6 +461,189 @@ test("runAuto aborts and skips remaining issues on TestInfrastructureError to av
   assert.equal(res.failed, 1);
   assert.equal(res.skipped, 1);
   assert.equal(res.status, "failed");
+});
+
+test("generateIssuesFromPointers writes iteration artifacts to .coder/scratchpad", async () => {
+  const ws = makeWorkspace();
+  const orch = new StubIdeaOrchestrator(ws);
+
+  // Step 1: chunk analysis
+  orch.queueResponse({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      summary: "Health endpoint behavior and test coverage are needed.",
+      signals: {
+        bugs: [],
+        ideas: ["health endpoint contract"],
+        constraints: ["production readiness"],
+        domains: ["observability"],
+        tools: ["tests"],
+      },
+      actionable_pointers: ["Define health endpoint schema and tests."],
+    }),
+  });
+
+  // Step 2: aggregate analysis
+  orch.queueResponse({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      problem_spaces: [
+        {
+          name: "health endpoint",
+          description: "No clear contract or validation for health checks.",
+          signals: ["coverage gap", "production reliability risk"],
+        },
+      ],
+      constraints: ["Keep compatibility", "Add concrete verification"],
+      suspected_work_types: ["idea"],
+      priority_signals: ["production-readiness"],
+      unknowns: ["Expected health payload format"],
+    }),
+  });
+
+  // Step 3: web references
+  orch.queueResponse({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      topics: [
+        {
+          topic: "health endpoint",
+          references: [
+            {
+              source: "github",
+              title: "upptime",
+              url: "https://github.com/upptime/upptime",
+              why: "Reference for health/status conventions",
+              library: "upptime",
+            },
+            {
+              source: "show_hn",
+              title: "Show HN: Status Page Tooling",
+              url: "https://news.ycombinator.com/item?id=123456",
+              why: "Examples of practical status endpoint expectations",
+              library: "n/a",
+            },
+          ],
+        },
+      ],
+      missing_research: [],
+    }),
+  });
+
+  // Step 4: validation plan
+  orch.queueResponse({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      tracks: [
+        {
+          id: "V1",
+          topic: "health endpoint contract",
+          mode: "poc",
+          tool_preference: ["playwright"],
+          procedure: ["Probe endpoint and assert response shape"],
+          success_signal: "Stable schema + expected status code",
+          fallback: "analysis-only if runtime unavailable",
+        },
+      ],
+      notes: "Prefer lightweight validation before issue finalization",
+    }),
+  });
+
+  // Step 5: validation execution
+  orch.queueResponse({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      results: [
+        {
+          track_id: "V1",
+          mode: "poc",
+          status: "inconclusive",
+          tool_used: "playwright",
+          method: "Attempted endpoint probe",
+          evidence: ["Probe attempted; no running service in test fixture"],
+          limitations: ["No runtime service available in unit-test workspace"],
+        },
+      ],
+      summary: "Validation attempted; environment-limited",
+    }),
+  });
+
+  // Step 6: issue backlog draft
+  orch.queueResponse({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      issues: [
+        {
+          id: "IDEA-01",
+          title: "Add health endpoint coverage",
+          objective: "Define and verify health endpoint behavior.",
+          problem: "No reproducible healthcheck contract exists.",
+          changes: ["Document endpoint contract", "Add tests"],
+          verification: "npm test -- health",
+          out_of_scope: ["UI redesign"],
+          depends_on: [],
+          priority: "P1",
+          tags: ["observability", "api"],
+          estimated_effort: "1d",
+          acceptance_criteria: ["Endpoint response schema is documented"],
+          research_questions: ["Should healthcheck include dependency status?"],
+          risks: ["Breaking existing integrations"],
+          notes: "Start with backward-compatible schema",
+          references: [
+            {
+              source: "github",
+              title: "upptime",
+              url: "https://github.com/upptime/upptime",
+              why: "Reference health/status conventions",
+            },
+          ],
+          validation: {
+            mode: "poc",
+            status: "inconclusive",
+            method: "Endpoint probe with Playwright-style HTTP checks",
+            evidence: ["No live service in test workspace"],
+            limitations: ["Runtime not available"],
+          },
+        },
+      ],
+      assumptions: [],
+      open_questions: [],
+    }),
+  });
+
+  const result = await orch.generateIssuesFromPointers({
+    pointers: "Need production-ready health endpoint behavior and tests.",
+    repoPath: ".",
+    iterations: 1,
+    maxIssues: 3,
+  });
+
+  assert.equal(result.issues.length, 1);
+  assert.equal(
+    existsSync(path.join(ws, result.issues[0].filePath)),
+    true,
+    "expected generated issue markdown in scratchpad run dir",
+  );
+  assert.equal(existsSync(path.join(ws, result.scratchpadPath)), true);
+  assert.equal(existsSync(path.join(ws, result.manifestPath)), true);
+  assert.equal(existsSync(path.join(ws, result.pipelinePath)), true);
+  assert.equal(result.webResearch, true);
+  assert.equal(result.validateIdeas, true);
+  assert.equal(result.validationMode, "auto");
+  assert.equal(result.issues[0].referenceCount, 1);
+  assert.equal(result.issues[0].validationStatus, "inconclusive");
+  assert.equal(
+    orch._commands.some((cmd) => cmd.includes("Show HN")),
+    true,
+    "expected draft prompt to require Show HN research",
+  );
+  assert.equal(
+    orch._commands.some((cmd) => cmd.includes("playwright")) &&
+      orch._commands.some((cmd) => cmd.includes("cratedex")) &&
+      orch._commands.some((cmd) => cmd.includes("qt-mcp")),
+    true,
+    "expected draft prompt to include MCP-based validation guidance",
+  );
 });
 
 test("_resetForNextIssue removes .coder/artifacts files and preserves workspace root markdown", () => {

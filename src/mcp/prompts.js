@@ -33,6 +33,17 @@ Once the user selects an issue, gather any clarifications from conversation
 \`coder_draft_issue\` with the selected issue details and clarifications.
 Show the user the ISSUE.md summary and ask if they want to proceed.
 
+### Idea-to-Issue Backlog Mode (Pointers)
+If the user gives free-form pointers (instead of a pre-existing ticket), call
+\`coder_generate_issues_from_pointers\` first.
+- Pass all pointers + constraints as \`pointers\`
+- Use \`clarifications\` for extra iteration guidance
+- Keep \`webResearch: true\` to require GitHub + Show HN reference mining
+- Keep \`validateIdeas: true\` and set \`validationMode\` (\`auto\`, \`bug_repro\`, or \`poc\`) to require direction validation
+- This runs independent pipeline steps (analysis -> references -> validation -> synthesis/review)
+- It generates researched issue drafts under \`.coder/scratchpad/\` plus \`manifest.json\` and \`pipeline.json\`
+- Present the generated issue list to the user and ask which one to execute through the normal flow
+
 ### Step 3: Create Plan + Review
 Call \`coder_create_plan\`. This has Claude write PLAN.md, then runs built-in
 plan review (Gemini) to critique it. Show the user key points and any reviewer concerns.
@@ -48,7 +59,7 @@ commit hygiene, and tests are run. Report results.
 
 ### Step 6: Create PR (Optional)
 Call \`coder_create_pr\` to create a pull request from the feature branch.
-You can specify type (feat/bug/refactor), a semantic branch name, custom title,
+You can specify type (feat/bug/fix/chore/etc), a semantic branch name, custom title,
 and description. If not provided, defaults are auto-generated from the issue.
 Report the PR URL when complete.
 
@@ -59,9 +70,9 @@ Report the PR URL when complete.
 - For code exploration (reading files, searching code), use your own built-in
   tools — the coder tools are only for workflow orchestration.
 
-## Autonomous Mode (\`coder_auto\`)
+## Develop Mode (\`coder_workflow\` with \`workflow: "develop"\`)
 
-For batch processing multiple issues without human intervention, use \`coder_auto\`.
+For batch processing multiple implementation issues without human intervention, use \`coder_workflow\` with \`workflow: "develop"\`.
 Pass a \`goal\` describing what to work on — the tool uses Gemini to filter relevant
 issues, analyze inter-dependencies, and produce a topological execution order
 (dependencies first, then easy-to-hard among independents).
@@ -79,35 +90,45 @@ If an issue fails, dependent ordering is relaxed and downstream issues are still
 - Issues with no testable verification criteria
 
 ### Monitoring progress
-- Call \`coder_auto_status\` for a compact snapshot: run ID, queue counts, current stage,
+- Call \`coder_workflow\` with \`action: "status"\` for a compact snapshot: run ID, queue counts, current stage,
   heartbeat, agent activity, and MCP health. Lightweight — no orchestrator created.
-- Call \`coder_auto_events\` to read structured events from auto.jsonl with cursor-based
+- Call \`coder_workflow\` with \`action: "events"\` to read structured events from develop.jsonl with cursor-based
   pagination (use \`afterSeq\` to poll for new events since last check).
 - Read \`coder://loop-state\` resource for the full loop-state.json
 - Call \`coder_status\` for current per-issue workflow state
 
 ### Reset safety
-- \`coder_auto\` defaults to safe reset behavior (no destructive cleanup)
+- \`coder_workflow\` (\`workflow: "develop"\`) defaults to safe reset behavior (no destructive cleanup)
 - Pass \`destructiveReset: true\` only when you want stale/untracked repo
   changes discarded between issues
 
 ### Stacked dependencies
-- If issue B depends on issue A, auto-mode stacks B on top of A's branch
+- If issue B depends on issue A, develop mode stacks B on top of A's branch
 - B's PR is opened with A's branch as the PR base
-- If multiple dependency branches exist, auto-mode picks the first completed
+- If multiple dependency branches exist, develop mode picks the first completed
   dependency branch as base and logs the selection
 
-### Resume behavior
-### Async lifecycle (\`coder_auto_start\` / \`coder_auto_cancel\` / \`coder_auto_pause\` / \`coder_auto_resume\`)
-- \`coder_auto_start\` launches an autonomous run in the background and returns a \`runId\` immediately
-- Poll progress with \`coder_auto_status\` — check \`runStatus\`, \`currentStage\`, \`lastHeartbeatAt\`
-- \`coder_auto_cancel\` requests cooperative cancellation (takes effect between stages)
-- \`coder_auto_pause\` pauses between stages; \`coder_auto_resume\` continues
+### Async lifecycle (\`coder_workflow\`)
+- \`coder_workflow\` with \`action: "start"\` launches a run in the background and returns a \`runId\`
+- Poll progress with \`coder_workflow\` + \`action: "status"\` — check \`runStatus\`, \`currentStage\`, \`lastHeartbeatAt\`
+- \`coder_workflow\` status also includes \`workflowMachine\` (XState snapshot) for explicit lifecycle state inspection
+- \`coder_workflow\` + \`action: "cancel"\` requests cooperative cancellation (takes effect between stages)
+- \`coder_workflow\` + \`action: "pause" | "resume"\` controls stage boundaries
 - Only one run per workspace at a time
 
+## Research Mode (\`coder_workflow\` with \`workflow: "research"\`)
+
+Use \`workflow: "research"\` when the user provides idea pointers and wants researched issue drafts.
+- Required for \`action: "start"\`: \`pointers\`
+- Typical extras: \`repoPath\`, \`clarifications\`, \`iterations\`, \`maxIssues\`,
+  \`webResearch\`, \`validateIdeas\`, \`validationMode\`
+- Events are written to \`research.jsonl\`
+- Artifacts are written under \`.coder/scratchpad/\`
+- \`pause\`/\`resume\`/\`cancel\` are cooperative and take effect between research pipeline steps
+
 ### Resume behavior
-If the process crashes mid-loop, calling \`coder_auto\` again with the same
-workspace resumes from the last incomplete issue (checkpointed after each issue).`,
+If the process crashes mid-loop, calling \`coder_workflow\` with \`action: "start"\` again with the same
+workspace resumes from the last incomplete issue (develop mode checkpointed after each issue).`,
           },
         },
       ],

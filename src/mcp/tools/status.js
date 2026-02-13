@@ -33,7 +33,6 @@ const McpHealthShape = z
   .nullable();
 
 const StatusResultShape = {
-  version: z.number().int(),
   selected: z.object(SelectedIssueShape).nullable(),
   selectedProject: z
     .object({
@@ -58,10 +57,26 @@ const StatusResultShape = {
   prUrl: z.string().nullable(),
   prBranch: z.string().nullable(),
   prBase: z.string().nullable(),
+  wip: z.object({
+    enabled: z.boolean(),
+    remote: z.string(),
+    autoCommit: z.boolean(),
+    includeUntracked: z.boolean(),
+    lastPushedAt: z.string().nullable(),
+  }),
   artifacts: z.object({
     issueExists: z.boolean(),
     planExists: z.boolean(),
     critiqueExists: z.boolean(),
+  }),
+  scratchpad: z.object({
+    dir: z.string(),
+    current: z.string().nullable(),
+    currentExists: z.boolean(),
+    sqlite: z.object({
+      enabled: z.boolean(),
+      path: z.string(),
+    }),
   }),
   agentActivity: AgentActivityShape,
   currentStage: z.string().nullable(),

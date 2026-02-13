@@ -1,6 +1,42 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { loopStatePathFor, statePathFor } from "../state.js";
+
+function findLatestScratchpadFile(scratchpadDir) {
+  if (!existsSync(scratchpadDir)) return null;
+
+  /** @type {{ path: string, mtimeMs: number } | null} */
+  let latest = null;
+  const stack = [scratchpadDir];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries = [];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(abs);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) {
+        continue;
+      }
+      let mtimeMs = 0;
+      try {
+        mtimeMs = statSync(abs).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (!latest || mtimeMs > latest.mtimeMs) latest = { path: abs, mtimeMs };
+    }
+  }
+
+  return latest?.path || null;
+}
 
 export function registerResources(server, defaultWorkspace) {
   server.resource(
@@ -138,7 +174,7 @@ export function registerResources(server, defaultWorkspace) {
     "coder://loop-state",
     {
       description:
-        "Current .coder/loop-state.json — autonomous loop progress including issue queue and per-issue results",
+        "Current .coder/loop-state.json — develop workflow progress including issue queue and per-issue results",
     },
     async () => {
       const loopPath = loopStatePathFor(defaultWorkspace);
@@ -159,6 +195,64 @@ export function registerResources(server, defaultWorkspace) {
             uri: "coder://loop-state",
             mimeType: "application/json",
             text: readFileSync(loopPath, "utf8"),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource(
+    "scratchpad",
+    "coder://scratchpad",
+    {
+      description:
+        "Current scratchpad notes from .coder/scratchpad (latest run or selected issue)",
+    },
+    async () => {
+      const statePath = statePathFor(defaultWorkspace);
+      const scratchpadDir = path.join(defaultWorkspace, ".coder", "scratchpad");
+      let scratchpadPath = null;
+
+      if (existsSync(statePath)) {
+        try {
+          const state = JSON.parse(readFileSync(statePath, "utf8"));
+          if (
+            typeof state?.scratchpadPath === "string" &&
+            state.scratchpadPath
+          ) {
+            const candidate = path.resolve(
+              defaultWorkspace,
+              state.scratchpadPath,
+            );
+            if (existsSync(candidate)) scratchpadPath = candidate;
+          }
+        } catch {
+          // best-effort
+        }
+      }
+
+      if (!scratchpadPath) {
+        scratchpadPath = findLatestScratchpadFile(scratchpadDir);
+      }
+
+      if (!scratchpadPath) {
+        return {
+          contents: [
+            {
+              uri: "coder://scratchpad",
+              mimeType: "text/markdown",
+              text: "No scratchpad file exists yet under .coder/scratchpad.",
+            },
+          ],
+        };
+      }
+
+      return {
+        contents: [
+          {
+            uri: "coder://scratchpad",
+            mimeType: "text/markdown",
+            text: readFileSync(scratchpadPath, "utf8"),
           },
         ],
       };

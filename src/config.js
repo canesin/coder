@@ -56,6 +56,19 @@ export const WorkflowAgentRolesSchema = z.object({
   committer: AgentNameSchema.default("codex"),
 });
 
+export const WorkflowWipSchema = z.object({
+  push: z.boolean().default(true),
+  autoCommit: z.boolean().default(true),
+  includeUntracked: z.boolean().default(false),
+  remote: z.string().default("origin"),
+  failOnError: z.boolean().default(false),
+});
+
+export const WorkflowScratchpadSchema = z.object({
+  sqliteSync: z.boolean().default(true),
+  sqlitePath: z.string().default(".coder/state.db"),
+});
+
 /** Optional per-step agent overrides (all fields optional, for MCP tool inputs). */
 export const AgentRolesInputSchema = z.object({
   issueSelector: AgentNameSchema.optional(),
@@ -69,9 +82,18 @@ export const AgentRolesInputSchema = z.object({
 export const CoderConfigSchema = z.object({
   models: z
     .object({
-      gemini: z.string().default("gemini-2.5-flash"),
-      geminiPreview: z.string().default("gemini-3-flash-preview"),
-      claude: z.string().default("claude-opus-4-6"),
+      gemini: z
+        .string()
+        .regex(/^[a-zA-Z0-9._/-]+$/, "Invalid model name")
+        .default("gemini-2.5-flash"),
+      geminiPreview: z
+        .string()
+        .regex(/^[a-zA-Z0-9._/-]+$/, "Invalid model name")
+        .default("gemini-3-flash-preview"),
+      claude: z
+        .string()
+        .regex(/^[a-zA-Z0-9._/-]+$/, "Invalid model name")
+        .default("claude-opus-4-6"),
     })
     .default({}),
   ppcommit: PpcommitConfigSchema.default({}),
@@ -89,6 +111,8 @@ export const CoderConfigSchema = z.object({
   workflow: z
     .object({
       agentRoles: WorkflowAgentRolesSchema.default({}),
+      wip: WorkflowWipSchema.default({}),
+      scratchpad: WorkflowScratchpadSchema.default({}),
     })
     .default({}),
   verbose: z.boolean().default(false),
@@ -135,7 +159,10 @@ function readJson(filePath) {
   if (!existsSync(filePath)) return {};
   try {
     return JSON.parse(readFileSync(filePath, "utf8"));
-  } catch {
+  } catch (err) {
+    process.stderr.write(
+      `[coder] Warning: failed to parse ${filePath}: ${err.message}\n`,
+    );
     return {};
   }
 }
@@ -150,6 +177,6 @@ export function loadConfig(workspaceDir) {
 export function resolveConfig(workspaceDir, overrides) {
   const base = loadConfig(workspaceDir);
   if (!overrides) return base;
-  const raw = deepMerge(JSON.parse(JSON.stringify(base)), overrides);
+  const raw = deepMerge(structuredClone(base), overrides);
   return CoderConfigSchema.parse(raw);
 }

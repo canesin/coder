@@ -62,14 +62,13 @@ function validateHealthCheckUrl(rawUrl) {
 }
 
 /**
- * Load and validate a test config from coder.json test section,
- * falling back to .coder/test.json (legacy) with a deprecation warning.
+ * Load and validate a test config from coder.json test section, or an explicit config path.
  * @param {string} repoDir
  * @param {string} [configPath]
  * @returns {object|null} Parsed TestConfig or null if not found/invalid
  */
 export function loadTestConfig(repoDir, configPath) {
-  // If explicit configPath given, use legacy .coder/test.json path directly
+  // If explicit configPath given, parse that file directly.
   if (configPath) {
     const p = path.resolve(repoDir, configPath);
     if (!existsSync(p)) return null;
@@ -98,26 +97,7 @@ export function loadTestConfig(repoDir, configPath) {
       timeoutMs: config.test.timeoutMs,
     };
   }
-
-  // Fall back to legacy .coder/test.json
-  const legacyPath = path.join(repoDir, ".coder", "test.json");
-  if (!existsSync(legacyPath)) return null;
-
-  process.stderr.write(
-    'WARNING: .coder/test.json is deprecated. Move test config to coder.json "test" section.\n',
-  );
-  try {
-    const raw = JSON.parse(readFileSync(legacyPath, "utf8"));
-    return TestConfigSchema.parse(raw);
-  } catch (err) {
-    const details =
-      err && typeof err === "object" && "issues" in err
-        ? err.issues
-            .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-            .join("; ")
-        : err?.message || String(err);
-    throw new Error(`Invalid test config at ${legacyPath}: ${details}`);
-  }
+  return null;
 }
 
 /**

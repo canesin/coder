@@ -42,6 +42,7 @@ import {
   sanitizeLogEvent,
 } from "./logging.js";
 import { IssuesPayloadSchema, ProjectsPayloadSchema } from "./schemas.js";
+import { sqlEscape } from "./sqlite.js";
 import {
   loadLoopState,
   loadState,
@@ -49,7 +50,11 @@ import {
   saveState,
   statePathFor,
 } from "./state.js";
-import { sanitizeBranchForRef } from "./worktrees.js";
+import {
+  buildIssueBranchName,
+  buildSemanticBranchName,
+  normalizeBranchType,
+} from "./worktrees.js";
 
 const GEMINI_DEFAULT_HANG_TIMEOUT_MS = 1000 * 60;
 const GEMINI_PROJECT_LIST_HANG_TIMEOUT_MS = 1000 * 120;
@@ -59,6 +64,15 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
   "Please re-authenticate using: /mcp auth",
 ];
 const SUPPORTED_AGENTS = new Set(["gemini", "claude", "codex"]);
+
+function _normalizeDepRefWith(refsById, dep, fallbackSource) {
+  const raw = String(dep || "").trim();
+  if (!raw) return null;
+  if (raw.includes("#")) return raw;
+  const matches = refsById.get(raw) || [];
+  if (matches.length === 1) return matches[0];
+  return `${fallbackSource}#${raw}`;
+}
 
 export class CoderOrchestrator {
   /**
@@ -110,6 +124,8 @@ export class CoderOrchestrator {
     this.testConfigPath = opts.testConfigPath || "";
     this.allowNoTests = this.config.test.allowNoTests;
     this.agentRoles = this.config.workflow.agentRoles;
+    this.wipConfig = this.config.workflow.wip;
+    this.scratchpadSyncConfig = this.config.workflow.scratchpad;
 
     this.issueFile = "ISSUE.md";
     this.planFile = "PLAN.md";
@@ -121,6 +137,12 @@ export class CoderOrchestrator {
     mkdirSync(this.artifactsDir, { recursive: true });
     mkdirSync(this.scratchpadDir, { recursive: true });
     ensureLogsDir(this.workspaceDir);
+
+    this.scratchpadDbPath = path.resolve(
+      this.workspaceDir,
+      this.scratchpadSyncConfig.sqlitePath,
+    );
+    this._scratchpadSqliteEnabled = this._initScratchpadSqlite();
 
     this._ensureGitignore();
 
@@ -360,16 +382,6 @@ export class CoderOrchestrator {
       : extractJson(stdout);
   }
 
-  _getGemini() {
-    return this._getWorkspaceAgent("gemini");
-  }
-  _getClaude() {
-    return this._getRepoAgent("claude");
-  }
-  _getCodex() {
-    return this._getRepoAgent("codex");
-  }
-
   // --- Gitignore ---
 
   _ensureGitignore() {
@@ -467,6 +479,137 @@ export class CoderOrchestrator {
       "",
     ].join("\n");
     appendFileSync(filePath, block, "utf8");
+    this._syncScratchpadToSqlite(filePath);
+  }
+
+  _resolveWorkspaceRelativePath(absPath) {
+    const rel = path.relative(this.workspaceDir, absPath);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+    return rel;
+  }
+
+  _sqlEscape(value) {
+    return sqlEscape(value);
+  }
+
+  _runSqlite(sql) {
+    const res = spawnSync("sqlite3", [this.scratchpadDbPath], {
+      encoding: "utf8",
+      input: `${sql}\n`,
+    });
+    if (res.status !== 0) {
+      throw new Error(
+        `sqlite3 failed: ${(res.stderr || res.stdout || "").trim() || "unknown error"}`,
+      );
+    }
+    return res.stdout || "";
+  }
+
+  _initScratchpadSqlite() {
+    if (!this.scratchpadSyncConfig?.sqliteSync) return false;
+    const check = spawnSync("sqlite3", ["--version"], { encoding: "utf8" });
+    if (check.status !== 0) {
+      this.log({
+        event: "scratchpad_sqlite_disabled",
+        reason: "sqlite3_not_available",
+      });
+      return false;
+    }
+    try {
+      mkdirSync(path.dirname(this.scratchpadDbPath), { recursive: true });
+      this._runSqlite(`
+CREATE TABLE IF NOT EXISTS scratchpad_files (
+  file_path TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);`);
+      return true;
+    } catch (err) {
+      this.log({
+        event: "scratchpad_sqlite_disabled",
+        reason: "sqlite_init_failed",
+        error: err.message,
+      });
+      return false;
+    }
+  }
+
+  _syncScratchpadToSqlite(filePath) {
+    if (!this._scratchpadSqliteEnabled) return;
+    if (!existsSync(filePath)) return;
+    const relPath = this._resolveWorkspaceRelativePath(filePath);
+    if (!relPath) return;
+    try {
+      const content = readFileSync(filePath, "utf8");
+      const now = new Date().toISOString();
+      this._runSqlite(`
+INSERT INTO scratchpad_files (file_path, content, updated_at)
+VALUES ('${this._sqlEscape(relPath)}', '${this._sqlEscape(content)}', '${this._sqlEscape(now)}')
+ON CONFLICT(file_path) DO UPDATE SET
+  content = excluded.content,
+  updated_at = excluded.updated_at;`);
+    } catch (err) {
+      this.log({
+        event: "scratchpad_sqlite_sync_failed",
+        filePath: relPath,
+        error: err.message,
+      });
+    }
+  }
+
+  _restoreScratchpadFromSqlite(filePath) {
+    if (!this._scratchpadSqliteEnabled) return false;
+    if (existsSync(filePath)) return false;
+    const relPath = this._resolveWorkspaceRelativePath(filePath);
+    if (!relPath) return false;
+    try {
+      const out = this._runSqlite(
+        `SELECT content FROM scratchpad_files WHERE file_path='${this._sqlEscape(relPath)}' LIMIT 1;`,
+      );
+      if (!out) return false;
+      mkdirSync(path.dirname(filePath), { recursive: true });
+      writeFileSync(filePath, out, "utf8");
+      this.log({ event: "scratchpad_sqlite_restored", filePath: relPath });
+      return true;
+    } catch (err) {
+      this.log({
+        event: "scratchpad_sqlite_restore_failed",
+        filePath: relPath,
+        error: err.message,
+      });
+      return false;
+    }
+  }
+
+  _chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
+    const normalized = String(text || "")
+      .replace(/\r\n/g, "\n")
+      .trim();
+    if (!normalized) return [];
+
+    /** @type {string[]} */
+    const chunks = [];
+    let cursor = 0;
+    while (cursor < normalized.length && chunks.length < maxChunks) {
+      let end = Math.min(cursor + maxChars, normalized.length);
+      if (end < normalized.length) {
+        const newlineBoundary = normalized.lastIndexOf("\n", end);
+        if (newlineBoundary > cursor + Math.floor(maxChars * 0.5)) {
+          end = newlineBoundary;
+        }
+      }
+      const chunk = normalized.slice(cursor, end).trim();
+      if (chunk) chunks.push(chunk);
+      cursor = end;
+    }
+
+    if (cursor < normalized.length && chunks.length > 0) {
+      const omitted = normalized.length - cursor;
+      chunks[chunks.length - 1] +=
+        `\n\n[TRUNCATED: ${omitted} chars omitted due to chunk limit]`;
+    }
+
+    return chunks;
   }
 
   _repoRoot(state) {
@@ -772,6 +915,95 @@ export class CoderOrchestrator {
     }
   }
 
+  _maybeCheckpointWip(state, { stage }) {
+    if (!this.wipConfig?.push) return;
+    if (!state?.branch || !state?.repoPath) return;
+
+    const repoRoot = this._repoRoot(state);
+    const remote = this.wipConfig.remote || "origin";
+    const autoCommit = this.wipConfig.autoCommit !== false;
+    const includeUntracked = this.wipConfig.includeUntracked === true;
+    const failOnError = this.wipConfig.failOnError === true;
+
+    const runGit = (args) =>
+      spawnSync("git", args, {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+
+    const fail = (err) => {
+      this.log({
+        event: "wip_checkpoint_failed",
+        stage,
+        branch: state.branch,
+        error: err.message,
+      });
+      if (failOnError) throw err;
+    };
+
+    try {
+      const remoteCheck = runGit(["remote", "get-url", remote]);
+      if (remoteCheck.status !== 0) {
+        this.log({
+          event: "wip_checkpoint_skipped",
+          stage,
+          branch: state.branch,
+          reason: `missing_remote:${remote}`,
+        });
+        return;
+      }
+
+      let committed = false;
+      if (autoCommit) {
+        const status = runGit(["status", "--porcelain"]);
+        if (status.status !== 0) {
+          throw new Error(
+            `git status failed: ${status.stderr || status.stdout}`,
+          );
+        }
+        const hasChanges = (status.stdout || "").trim().length > 0;
+        if (hasChanges) {
+          const add = includeUntracked
+            ? runGit(["add", "-A"])
+            : runGit(["add", "-u"]);
+          if (add.status !== 0) {
+            throw new Error(`git add failed: ${add.stderr || add.stdout}`);
+          }
+          const safeStage = this._sanitizeFilenameSegment(stage, {
+            fallback: "checkpoint",
+          }).replace(/-/g, "_");
+          const msg = `chore(wip): checkpoint ${safeStage} [skip ci]`;
+          const commit = runGit(["commit", "--no-verify", "-m", msg]);
+          const commitOut = `${commit.stdout || ""}\n${commit.stderr || ""}`;
+          if (
+            commit.status !== 0 &&
+            !/nothing to commit|no changes added/i.test(commitOut)
+          ) {
+            throw new Error(`git commit failed: ${commitOut.trim()}`);
+          }
+          committed = commit.status === 0;
+        }
+      }
+
+      const push = runGit(["push", "-u", remote, `HEAD:${state.branch}`]);
+      if (push.status !== 0) {
+        throw new Error(`git push failed: ${push.stderr || push.stdout}`);
+      }
+
+      state.lastWipPushAt = new Date().toISOString();
+      this._saveState(state);
+      this.log({
+        event: "wip_checkpoint_pushed",
+        stage,
+        branch: state.branch,
+        remote,
+        committed,
+      });
+    } catch (err) {
+      fail(err);
+    }
+  }
+
   // --- Step 1: List Issues ---
 
   /**
@@ -963,7 +1195,7 @@ Return ONLY valid JSON in this schema:
       }
       state.repoPath = normalizedRepoPath;
       state.baseBranch = baseBranch || null;
-      state.branch = sanitizeBranchForRef(`coder/${issue.source}-${issue.id}`);
+      state.branch = buildIssueBranchName(issue);
       this._saveState(state);
 
       const repoRoot = this._repoRoot(state);
@@ -978,6 +1210,7 @@ Return ONLY valid JSON in this schema:
         throw new Error(`Not a git repository: ${repoRoot}`);
 
       const scratchpadPath = this._issueScratchpadPath(issue);
+      this._restoreScratchpadFromSqlite(scratchpadPath);
       if (!existsSync(scratchpadPath)) {
         const header = [
           `# Scratchpad for ${issue.source}#${issue.id}`,
@@ -990,6 +1223,7 @@ Return ONLY valid JSON in this schema:
           "",
         ].join("\n");
         writeFileSync(scratchpadPath, header, "utf8");
+        this._syncScratchpadToSqlite(scratchpadPath);
       }
       this._appendScratchpad(scratchpadPath, "Input", [
         `- clarifications: ${(clarifications || "(none provided)").trim()}`,
@@ -1107,12 +1341,801 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
         `- issue_artifact: ${issuePath}`,
         "- status: complete",
       ]);
+      this._maybeCheckpointWip(state, { stage: "draft_issue" });
 
       return { issueMd };
     } catch (err) {
       this._recordError(err);
       throw err;
     }
+  }
+
+  /**
+   * Build a researched issue backlog from free-form pointers, storing all
+   * intermediate iteration artifacts in .coder/scratchpad.
+   * @param {{ pointers: string, repoPath?: string, clarifications?: string, maxIssues?: number, iterations?: number, webResearch?: boolean, validateIdeas?: boolean, validationMode?: "auto"|"bug_repro"|"poc" }} params
+   * @returns {Promise<{ runId: string, runDir: string, scratchpadPath: string, manifestPath: string, pipelinePath: string, repoPath: string, iterations: number, webResearch: boolean, validateIdeas: boolean, validationMode: "auto"|"bug_repro"|"poc", issues: Array<{ id: string, title: string, priority: string, dependsOn: string[], referenceCount: number, validationStatus: string, filePath: string }> }>}
+   */
+  async generateIssuesFromPointers({
+    pointers,
+    repoPath = ".",
+    clarifications = "",
+    maxIssues = 6,
+    iterations = 2,
+    webResearch = true,
+    validateIdeas = true,
+    validationMode = "auto",
+  }) {
+    try {
+      const ideaPointers = String(pointers || "").trim();
+      if (!ideaPointers) throw new Error("pointers is required.");
+      if (!Number.isInteger(maxIssues) || maxIssues < 1 || maxIssues > 20) {
+        throw new Error("maxIssues must be an integer between 1 and 20.");
+      }
+      if (!Number.isInteger(iterations) || iterations < 1 || iterations > 5) {
+        throw new Error("iterations must be an integer between 1 and 5.");
+      }
+      if (!["auto", "bug_repro", "poc"].includes(validationMode)) {
+        throw new Error("validationMode must be one of: auto, bug_repro, poc.");
+      }
+
+      const normalizedRepoPath = this._normalizeRepoPath(repoPath, {
+        fallback: ".",
+      });
+      const repoRoot = path.resolve(this.workspaceDir, normalizedRepoPath);
+      if (!existsSync(repoRoot))
+        throw new Error(`Repo root does not exist: ${repoRoot}`);
+      const isGit = spawnSync("git", ["rev-parse", "--git-dir"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if (isGit.status !== 0)
+        throw new Error(`Not a git repository: ${repoRoot}`);
+
+      const runId = `idea-${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+      const runDir = path.join(this.scratchpadDir, runId);
+      const issuesDir = path.join(runDir, "issues");
+      const stepsDir = path.join(runDir, "steps");
+      const pointersDir = path.join(runDir, "pointers");
+      mkdirSync(issuesDir, { recursive: true });
+      mkdirSync(stepsDir, { recursive: true });
+      mkdirSync(pointersDir, { recursive: true });
+      const scratchpadPath = path.join(runDir, "SCRATCHPAD.md");
+      const pipelinePath = path.join(runDir, "pipeline.json");
+      writeFileSync(
+        scratchpadPath,
+        [
+          `# Idea-to-Issue Research Run: ${runId}`,
+          "",
+          `- repo_root: ${repoRoot}`,
+          `- repo_path: ${normalizedRepoPath}`,
+          `- max_issues: ${maxIssues}`,
+          `- iterations: ${iterations}`,
+          `- web_research: ${webResearch}`,
+          `- validate_ideas: ${validateIdeas}`,
+          `- validation_mode: ${validationMode}`,
+          "",
+          "## Pointers",
+          "```text",
+          ideaPointers,
+          "```",
+          "",
+          "## Clarifications",
+          "```text",
+          String(clarifications || "(none provided)"),
+          "```",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      this._syncScratchpadToSqlite(scratchpadPath);
+
+      const pointerChunks = this._chunkPointers(ideaPointers);
+      if (pointerChunks.length === 0) {
+        throw new Error("Unable to derive pointer chunks from input.");
+      }
+      for (let i = 0; i < pointerChunks.length; i++) {
+        const chunkPath = path.join(
+          pointersDir,
+          `chunk-${String(i + 1).padStart(2, "0")}.txt`,
+        );
+        writeFileSync(chunkPath, `${pointerChunks[i]}\n`, "utf8");
+      }
+
+      const pipeline = {
+        version: 1,
+        runId,
+        current: "init",
+        history: [],
+        steps: {},
+      };
+      const persistPipeline = () =>
+        writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2) + "\n");
+      const waitForControl = async (stageName) => {
+        if (this._cancelRequested) throw new Error("Run cancelled");
+        if (this._pauseRequested) {
+          this._appendScratchpad(scratchpadPath, `Step: ${stageName}`, [
+            "- status: paused",
+          ]);
+          const pauseStart = Date.now();
+          while (this._pauseRequested && !this._cancelRequested) {
+            if (Date.now() - pauseStart > MAX_PAUSE_MS) {
+              this._cancelRequested = true;
+              break;
+            }
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+          if (this._cancelRequested) throw new Error("Run cancelled");
+          this._appendScratchpad(scratchpadPath, `Step: ${stageName}`, [
+            "- status: resumed",
+          ]);
+        }
+      };
+      const beginStep = (name, meta = {}) => {
+        pipeline.current = name;
+        pipeline.history.push({
+          at: new Date().toISOString(),
+          event: "step_start",
+          step: name,
+          ...meta,
+        });
+        pipeline.steps[name] = {
+          status: "running",
+          startedAt: new Date().toISOString(),
+          ...meta,
+        };
+        persistPipeline();
+        this._appendScratchpad(scratchpadPath, `Step: ${name}`, [
+          `- status: running`,
+        ]);
+      };
+      const endStep = (name, status, meta = {}) => {
+        pipeline.history.push({
+          at: new Date().toISOString(),
+          event: "step_end",
+          step: name,
+          status,
+          ...meta,
+        });
+        pipeline.steps[name] = {
+          ...(pipeline.steps[name] || {}),
+          status,
+          endedAt: new Date().toISOString(),
+          ...meta,
+        };
+        persistPipeline();
+        this._appendScratchpad(scratchpadPath, `Step: ${name}`, [
+          `- status: ${status}`,
+          ...Object.entries(meta).map(([k, v]) => `- ${k}: ${String(v)}`),
+        ]);
+      };
+      persistPipeline();
+
+      const runStructuredStep = async ({
+        stepName,
+        artifactName,
+        role,
+        prompt,
+        timeoutMs = 1000 * 60 * 10,
+        retries = 2,
+        hangTimeoutMs = GEMINI_DEFAULT_HANG_TIMEOUT_MS,
+      }) => {
+        await waitForControl(stepName);
+        beginStep(stepName, { role });
+        const { agentName, agent } = this._getRoleAgent(role, {
+          scope: "workspace",
+        });
+        const cmd = this._buildPromptCommand(agentName, prompt, {
+          structured: true,
+        });
+        const res = await this._executeWithRetry(agent, cmd, {
+          timeoutMs,
+          hangTimeoutMs,
+          retries,
+          agentName,
+          retryOnRateLimit: true,
+        });
+        if (res.exitCode !== 0) {
+          endStep(stepName, "failed", { agent: agentName });
+          throw new Error(
+            formatCommandFailure(`${agentName} ${stepName} failed`, res),
+          );
+        }
+        const payload = this._parseStructuredAgentPayload(
+          agentName,
+          res.stdout,
+        );
+        const outputPath = path.join(
+          stepsDir,
+          `${this._sanitizeFilenameSegment(artifactName || stepName, {
+            fallback: "step",
+          })}.json`,
+        );
+        writeFileSync(outputPath, JSON.stringify(payload, null, 2) + "\n");
+        const relOutputPath = path.relative(this.workspaceDir, outputPath);
+        endStep(stepName, "completed", {
+          agent: agentName,
+          artifact: relOutputPath,
+        });
+        return { payload, agentName, outputPath, relOutputPath, cmd };
+      };
+
+      let issueSelectorName = this._roleAgentName("issueSelector");
+      let planReviewerName = this._roleAgentName("planReviewer");
+      let priorFeedback = [];
+      const chunkSummaries = [];
+      for (let i = 0; i < pointerChunks.length; i++) {
+        const chunkPrompt = `Summarize pointer chunk ${i + 1}/${pointerChunks.length} for issue decomposition.
+
+Repo root: ${repoRoot}
+Chunk:
+${pointerChunks[i]}
+
+Return ONLY valid JSON in this schema:
+{
+  "summary": "string",
+  "signals": {
+    "bugs": ["string"],
+    "ideas": ["string"],
+    "constraints": ["string"],
+    "domains": ["string"],
+    "tools": ["string"]
+  },
+  "actionable_pointers": ["string"]
+}`;
+        const chunkRes = await runStructuredStep({
+          stepName: `analyze_chunk_${String(i + 1).padStart(2, "0")}`,
+          artifactName: `analyze-chunk-${String(i + 1).padStart(2, "0")}`,
+          role: "issueSelector",
+          prompt: chunkPrompt,
+          timeoutMs: 1000 * 60 * 6,
+          retries: 1,
+        });
+        issueSelectorName = chunkRes.agentName;
+        chunkSummaries.push(chunkRes.payload);
+      }
+
+      const analysisPrompt = `Aggregate pointer chunk summaries into a normalized analysis brief.
+
+Repo root: ${repoRoot}
+Chunk summaries:
+${JSON.stringify(chunkSummaries, null, 2)}
+
+Return ONLY valid JSON in this schema:
+{
+  "problem_spaces": [
+    { "name": "string", "description": "string", "signals": ["string"] }
+  ],
+  "constraints": ["string"],
+  "suspected_work_types": ["bug" | "idea" | "mixed"],
+  "priority_signals": ["string"],
+  "unknowns": ["string"]
+}`;
+      const analysisRes = await runStructuredStep({
+        stepName: "aggregate_pointer_analysis",
+        artifactName: "analysis-brief",
+        role: "issueSelector",
+        prompt: analysisPrompt,
+        timeoutMs: 1000 * 60 * 8,
+      });
+      issueSelectorName = analysisRes.agentName;
+      const analysisBrief = analysisRes.payload || {};
+
+      let webReferenceMap = { topics: [], missing_research: [] };
+      if (webResearch) {
+        const referencePrompt = `Find external implementation references for these problem spaces.
+
+Requirements:
+- Search GitHub repositories and Show HN threads.
+- Prioritize primary sources (repo README/docs) and practical usage examples.
+- Include why each reference is relevant to this codebase.
+
+Analysis brief:
+${JSON.stringify(analysisBrief, null, 2)}
+
+Return ONLY valid JSON in this schema:
+{
+  "topics": [
+    {
+      "topic": "string",
+      "references": [
+        {
+          "source": "github|show_hn|docs|other",
+          "title": "string",
+          "url": "string",
+          "why": "string",
+          "library": "string"
+        }
+      ]
+    }
+  ],
+  "missing_research": ["string"]
+}`;
+        const referencesRes = await runStructuredStep({
+          stepName: "collect_web_references",
+          artifactName: "web-references",
+          role: "issueSelector",
+          prompt: referencePrompt,
+          timeoutMs: 1000 * 60 * 8,
+        });
+        issueSelectorName = referencesRes.agentName;
+        webReferenceMap = referencesRes.payload || webReferenceMap;
+      } else {
+        await waitForControl("collect_web_references");
+        beginStep("collect_web_references", { role: "issueSelector" });
+        endStep("collect_web_references", "skipped", {
+          reason: "webResearch disabled",
+        });
+      }
+
+      let validationPlan = { tracks: [] };
+      let validationResults = {
+        results: [],
+        summary: "Validation not executed.",
+      };
+      if (validateIdeas) {
+        const validationPlanPrompt = `Create a validation plan for these pointers and references.
+
+Requested validation mode: ${validationMode}
+If mode is "auto", choose bug_repro when issue is bug-oriented, otherwise choose poc.
+
+Analysis brief:
+${JSON.stringify(analysisBrief, null, 2)}
+
+References:
+${JSON.stringify(webReferenceMap, null, 2)}
+
+Return ONLY valid JSON in this schema:
+{
+  "tracks": [
+    {
+      "id": "V1",
+      "topic": "string",
+      "mode": "bug_repro|poc",
+      "tool_preference": ["playwright" | "cratedex" | "qt-mcp" | "none"],
+      "procedure": ["string"],
+      "success_signal": "string",
+      "fallback": "string"
+    }
+  ],
+  "notes": "string"
+}`;
+        const validationPlanRes = await runStructuredStep({
+          stepName: "plan_validation_tracks",
+          artifactName: "validation-plan",
+          role: "issueSelector",
+          prompt: validationPlanPrompt,
+          timeoutMs: 1000 * 60 * 8,
+        });
+        issueSelectorName = validationPlanRes.agentName;
+        validationPlan = validationPlanRes.payload || validationPlan;
+
+        const tracks = Array.isArray(validationPlan?.tracks)
+          ? validationPlan.tracks
+          : [];
+        if (tracks.length > 0) {
+          const validationExecPrompt = `Execute minimal validation probes for these tracks now.
+
+Use available MCP servers when relevant:
+- playwright for web/UI/browser flows
+- cratedex for Rust workspace checks/docs
+- qt-mcp for Qt desktop flows
+
+If a probe cannot run in this environment, mark status as inconclusive and explain limitations.
+
+Validation tracks:
+${JSON.stringify(validationPlan, null, 2)}
+
+Return ONLY valid JSON in this schema:
+{
+  "results": [
+    {
+      "track_id": "V1",
+      "mode": "bug_repro|poc|analysis",
+      "status": "passed|failed|inconclusive|not_run",
+      "tool_used": "playwright|cratedex|qt-mcp|none",
+      "method": "string",
+      "evidence": ["string"],
+      "limitations": ["string"]
+    }
+  ],
+  "summary": "string"
+}`;
+          const validationExecRes = await runStructuredStep({
+            stepName: "execute_validation_tracks",
+            artifactName: "validation-results",
+            role: "programmer",
+            prompt: validationExecPrompt,
+            timeoutMs: 1000 * 60 * 12,
+            retries: 1,
+          });
+          validationResults = validationExecRes.payload || validationResults;
+        } else {
+          await waitForControl("execute_validation_tracks");
+          beginStep("execute_validation_tracks", { role: "programmer" });
+          endStep("execute_validation_tracks", "skipped", {
+            reason: "no validation tracks generated",
+          });
+        }
+      } else {
+        await waitForControl("plan_validation_tracks");
+        beginStep("plan_validation_tracks", { role: "issueSelector" });
+        endStep("plan_validation_tracks", "skipped", {
+          reason: "validateIdeas disabled",
+        });
+        await waitForControl("execute_validation_tracks");
+        beginStep("execute_validation_tracks", { role: "programmer" });
+        endStep("execute_validation_tracks", "skipped", {
+          reason: "validateIdeas disabled",
+        });
+      }
+
+      let finalDraft = null;
+      let finalReview = null;
+      for (let i = 1; i <= iterations; i++) {
+        await waitForControl(
+          `draft_issue_backlog_${String(i).padStart(2, "0")}`,
+        );
+        const feedbackSection =
+          priorFeedback.length > 0
+            ? priorFeedback.map((f) => `- ${f}`).join("\n")
+            : "(none)";
+        const draftPrompt = `Synthesize a research-ready issue backlog from validated inputs.
+
+Repo root: ${repoRoot}
+Pointer analysis:
+${JSON.stringify(analysisBrief, null, 2)}
+
+Web references:
+${JSON.stringify(webReferenceMap, null, 2)}
+
+Validation results:
+${JSON.stringify(validationResults, null, 2)}
+
+Clarifications:
+${clarifications || "(none provided)"}
+
+Feedback to incorporate:
+${feedbackSection}
+
+Rules:
+- Keep issues small, independently verifiable, and dependency-light.
+- Include references and validation metadata per issue.
+- Do not use issues/ as scratch storage; this workflow uses .coder/scratchpad.
+
+Return ONLY valid JSON in this schema:
+{
+  "issues": [
+    {
+      "id": "IDEA-01",
+      "title": "string",
+      "objective": "string",
+      "problem": "string",
+      "changes": ["string"],
+      "verification": "string",
+      "out_of_scope": ["string"],
+      "depends_on": ["IDEA-00"],
+      "priority": "P0|P1|P2|P3",
+      "tags": ["string"],
+      "estimated_effort": "string",
+      "acceptance_criteria": ["string"],
+      "research_questions": ["string"],
+      "risks": ["string"],
+      "notes": "string",
+      "references": [
+        {
+          "source": "github|show_hn|docs|other",
+          "title": "string",
+          "url": "string",
+          "why": "string"
+        }
+      ],
+      "validation": {
+        "mode": "bug_repro|poc|analysis",
+        "status": "passed|failed|inconclusive|not_run",
+        "method": "string",
+        "evidence": ["string"],
+        "limitations": ["string"]
+      }
+    }
+  ],
+  "assumptions": ["string"],
+  "open_questions": ["string"]
+}`;
+        const draftRes = await runStructuredStep({
+          stepName: `draft_issue_backlog_${String(i).padStart(2, "0")}`,
+          artifactName: `draft-${String(i).padStart(2, "0")}`,
+          role: "issueSelector",
+          prompt: draftPrompt,
+          timeoutMs: 1000 * 60 * 10,
+        });
+        issueSelectorName = draftRes.agentName;
+        const draftPayload = draftRes.payload;
+        if (
+          !draftPayload ||
+          !Array.isArray(draftPayload.issues) ||
+          draftPayload.issues.length === 0
+        ) {
+          throw new Error(
+            `${issueSelectorName} returned no issues for pointers-based drafting.`,
+          );
+        }
+        finalDraft = draftPayload;
+        this._appendScratchpad(scratchpadPath, `Iteration ${i} Draft`, [
+          `- agent: ${issueSelectorName}`,
+          `- candidate_issues: ${draftPayload.issues.length}`,
+          `- draft_json: ${path.relative(this.workspaceDir, draftRes.outputPath)}`,
+        ]);
+
+        if (i >= iterations) break;
+
+        const reviewPrompt = `Critique this proposed issue backlog for sequencing, overlap, scope creep, weak references, and missing validation.
+
+Backlog JSON:
+${JSON.stringify(draftPayload, null, 2)}
+
+Return ONLY valid JSON in this schema:
+{
+  "must_fix": ["string"],
+  "should_fix": ["string"],
+  "keep": ["string"],
+  "reference_gaps": ["string"],
+  "validation_gaps": ["string"],
+  "notes": "string"
+}`;
+        const reviewRes = await runStructuredStep({
+          stepName: `review_issue_backlog_${String(i).padStart(2, "0")}`,
+          artifactName: `review-${String(i).padStart(2, "0")}`,
+          role: "planReviewer",
+          prompt: reviewPrompt,
+          timeoutMs: 1000 * 60 * 8,
+          retries: 1,
+        });
+        planReviewerName = reviewRes.agentName;
+        finalReview = reviewRes.payload;
+
+        const mustFix = Array.isArray(finalReview?.must_fix)
+          ? finalReview.must_fix
+          : [];
+        const shouldFix = Array.isArray(finalReview?.should_fix)
+          ? finalReview.should_fix
+          : [];
+        const referenceGaps = Array.isArray(finalReview?.reference_gaps)
+          ? finalReview.reference_gaps
+          : [];
+        const validationGaps = Array.isArray(finalReview?.validation_gaps)
+          ? finalReview.validation_gaps
+          : [];
+        priorFeedback = [
+          ...mustFix,
+          ...shouldFix,
+          ...referenceGaps,
+          ...validationGaps,
+        ]
+          .map((x) => String(x || "").trim())
+          .filter(Boolean)
+          .slice(0, 30);
+
+        this._appendScratchpad(scratchpadPath, `Iteration ${i} Critique`, [
+          `- agent: ${planReviewerName}`,
+          `- must_fix: ${mustFix.length}`,
+          `- should_fix: ${shouldFix.length}`,
+          `- reference_gaps: ${referenceGaps.length}`,
+          `- validation_gaps: ${validationGaps.length}`,
+          `- review_json: ${path.relative(this.workspaceDir, reviewRes.outputPath)}`,
+        ]);
+      }
+
+      const selectedIssues = finalDraft.issues.slice(0, maxIssues);
+      const generatedIssues = [];
+      for (let i = 0; i < selectedIssues.length; i++) {
+        const item = selectedIssues[i];
+        const fallbackId = `IDEA-${String(i + 1).padStart(2, "0")}`;
+        const issueId = String(item?.id || fallbackId).trim() || fallbackId;
+        const title = String(item?.title || `Issue ${i + 1}`).trim();
+        const slug = this._sanitizeFilenameSegment(title, {
+          fallback: `issue-${i + 1}`,
+        });
+        const fileName = `${String(i + 1).padStart(2, "0")}-${slug}.md`;
+        const issuePath = path.join(issuesDir, fileName);
+        const issueMd = this._renderIdeaIssueMarkdown({
+          issue: item,
+          issueId,
+          title,
+          repoPath: normalizedRepoPath,
+          pointers: ideaPointers,
+          scratchpadPath,
+        });
+        writeFileSync(issuePath, issueMd, "utf8");
+        const references = Array.isArray(item?.references)
+          ? item.references
+          : [];
+        const validationStatus = String(item?.validation?.status || "not_run");
+        generatedIssues.push({
+          id: issueId,
+          title,
+          priority: String(item?.priority || "P2"),
+          dependsOn: Array.isArray(item?.depends_on)
+            ? item.depends_on
+                .map((dep) => String(dep || "").trim())
+                .filter(Boolean)
+            : [],
+          referenceCount: references.length,
+          validationStatus,
+          filePath: path.relative(this.workspaceDir, issuePath),
+        });
+      }
+
+      const manifest = {
+        runId,
+        repoPath: normalizedRepoPath,
+        repoRoot,
+        pointers: ideaPointers,
+        clarifications: clarifications || "",
+        iterations,
+        maxIssues,
+        webResearch,
+        validateIdeas,
+        validationMode,
+        issueSelector: issueSelectorName,
+        planReviewer: planReviewerName,
+        pipelinePath: path.relative(this.workspaceDir, pipelinePath),
+        priorFeedback,
+        finalReview,
+        analysisBrief,
+        webReferenceMap,
+        validationPlan,
+        validationResults,
+        issues: generatedIssues,
+      };
+      const manifestPath = path.join(runDir, "manifest.json");
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+      this._appendScratchpad(scratchpadPath, "Generated Issues", [
+        ...generatedIssues.map((entry) => `- ${entry.id}: ${entry.filePath}`),
+        `- manifest: ${path.relative(this.workspaceDir, manifestPath)}`,
+      ]);
+
+      return {
+        runId,
+        runDir: path.relative(this.workspaceDir, runDir),
+        scratchpadPath: path.relative(this.workspaceDir, scratchpadPath),
+        manifestPath: path.relative(this.workspaceDir, manifestPath),
+        pipelinePath: path.relative(this.workspaceDir, pipelinePath),
+        repoPath: normalizedRepoPath,
+        iterations,
+        webResearch,
+        validateIdeas,
+        validationMode,
+        issues: generatedIssues,
+      };
+    } catch (err) {
+      this._recordError(err);
+      throw err;
+    }
+  }
+
+  _renderIdeaIssueMarkdown({
+    issue,
+    issueId,
+    title,
+    repoPath,
+    pointers,
+    scratchpadPath,
+  }) {
+    const asLines = (value) =>
+      Array.isArray(value)
+        ? value.map((line) => String(line || "").trim()).filter(Boolean)
+        : [];
+    const asText = (value, fallback = "") =>
+      String(value || "").trim() || fallback;
+
+    const tags = asLines(issue?.tags);
+    const dependsOn = asLines(issue?.depends_on);
+    const changes = asLines(issue?.changes);
+    const acceptance = asLines(issue?.acceptance_criteria);
+    const researchQuestions = asLines(issue?.research_questions);
+    const outOfScope = asLines(issue?.out_of_scope);
+    const risks = asLines(issue?.risks);
+    const references = Array.isArray(issue?.references)
+      ? issue.references
+          .map((ref) => ({
+            source: asText(ref?.source, "other"),
+            title: asText(ref?.title, "reference"),
+            url: asText(ref?.url, ""),
+            why: asText(ref?.why, ""),
+          }))
+          .filter((ref) => ref.url || ref.title)
+      : [];
+    const validation =
+      issue && typeof issue.validation === "object" && issue.validation
+        ? issue.validation
+        : null;
+    const validationEvidence = asLines(validation?.evidence);
+    const validationLimitations = asLines(validation?.limitations);
+
+    const bullet = (items, fallback) =>
+      items.length > 0
+        ? items.map((item) => `- ${item}`).join("\n")
+        : `- ${fallback}`;
+
+    return `# ${issueId} - ${title}
+
+Status: backlog
+Priority: ${asText(issue?.priority, "P2")}
+Tags: ${tags.join(", ") || "research"}
+Depends-On: ${dependsOn.join(", ") || "_none_"}
+
+## Issue Graph
+
+| Key | Value |
+|-----|-------|
+| depends_on | ${dependsOn.join(", ") || "_none_"} |
+| blocks | _tbd_ |
+| tags | \`${tags.join("`, `") || "research"}\` |
+| estimated_effort | ${asText(issue?.estimated_effort, "unknown")} |
+
+## Goal
+${asText(issue?.objective, "Define and validate the minimal change required by this issue.")}
+
+## Problem
+${asText(issue?.problem, "Current behavior and constraints must be validated against the local codebase.")}
+
+## Scope
+${bullet(changes, "Define concrete file-level changes after research validation.")}
+
+## Deliverables
+- Updated implementation and/or docs matching the scope above.
+- Evidence notes captured in \`${path.relative(this.workspaceDir, scratchpadPath)}\`.
+- Verification command output or test result.
+
+## Research Questions
+${bullet(researchQuestions, "List unanswered technical questions discovered during execution.")}
+
+## Acceptance Criteria
+${bullet(acceptance, "Include at least one measurable success criterion and one concrete verification command.")}
+
+## Verification
+\`\`\`bash
+${asText(issue?.verification, 'echo "define verification command" && exit 1')}
+\`\`\`
+
+## Non-Goals
+${bullet(outOfScope, "Any refactor or feature not strictly required for this issue.")}
+
+## Risks and Gaps
+${bullet(risks, "Unknown constraints discovered during implementation.")}
+
+## External References
+${references.length > 0 ? references.map((ref) => `- [${ref.title}](${ref.url || "#"}) (${ref.source})${ref.why ? ` - ${ref.why}` : ""}`).join("\n") : "- (none provided)"}
+
+## Direction Validation
+- mode: ${asText(validation?.mode, "analysis")}
+- status: ${asText(validation?.status, "not_run")}
+- method: ${asText(validation?.method, "not specified")}
+- evidence:
+${bullet(validationEvidence, "No validation evidence captured.")}
+- limitations:
+${bullet(validationLimitations, "No limitations documented.")}
+
+## Metadata
+- repo_path: ${repoPath}
+- notes: ${asText(issue?.notes, "(none)")}
+- scratchpad: ${path.relative(this.workspaceDir, scratchpadPath)}
+
+## Source Pointers
+\`\`\`text
+${pointers}
+\`\`\`
+
+## Scratchpad
+- Date:
+- Decision notes:
+- Blockers:
+- Next action:
+`;
   }
 
   // --- Step 3: Create Plan ---
@@ -1373,6 +2396,7 @@ Constraints:
         ? readFileSync(paths.critique, "utf8")
         : "";
 
+      this._maybeCheckpointWip(state, { stage: "create_plan" });
       return { planMd, critiqueMd };
     } catch (err) {
       this._recordError(err);
@@ -1515,6 +2539,7 @@ FORBIDDEN patterns:
         (diffStat.stdout || "").trim() ||
         "Implementation completed (no diff stat available).";
 
+      this._maybeCheckpointWip(state, { stage: "implement" });
       return { summary };
     } catch (err) {
       this._recordError(err);
@@ -1687,8 +2712,9 @@ Hard constraints:
         allowNoTests: this.allowNoTests,
       });
       if (testRes.exitCode !== 0) {
+        const reviewerName = this._roleAgentName("reviewer");
         throw new Error(
-          `Tests failed after Codex pass:\n${testRes.stdout}\n${testRes.stderr}`,
+          `Tests failed after ${reviewerName} pass:\n${testRes.stdout}\n${testRes.stderr}`,
         );
       }
       state.steps.testsPassed = true;
@@ -1704,6 +2730,7 @@ Hard constraints:
         note: "Review + ppcommit + tests completed. Ready to create PR.",
       });
 
+      this._maybeCheckpointWip(state, { stage: "review_and_test" });
       return {
         ppcommitStatus: "clean",
         testResults: {
@@ -1761,6 +2788,7 @@ Hard constraints:
 
       this._ensureBranch(state);
       const repoRoot = this._repoRoot(state);
+      const normalizedType = normalizeBranchType(type, { fallback: "feat" });
 
       // Re-validate that the tree hasn't drifted since review_and_test ran.
       const currentFp = computeGitWorktreeFingerprint(repoRoot);
@@ -1796,7 +2824,7 @@ Hard constraints:
         }
 
         const issueTitle = state.selected?.title || "coder workflow changes";
-        const commitMsg = `${type}: ${issueTitle}`;
+        const commitMsg = `${normalizedType}: ${issueTitle}`;
         const commit = spawnSync("git", ["commit", "-m", commitMsg], {
           cwd: repoRoot,
           encoding: "utf8",
@@ -1809,7 +2837,11 @@ Hard constraints:
 
       // Determine remote branch
       const remoteBranch = semanticName
-        ? `${type}/${sanitizeBranchForRef(semanticName)}`
+        ? buildSemanticBranchName({
+            type: normalizedType,
+            semanticName,
+            issue: state.selected || null,
+          })
         : state.branch;
       const baseBranch = base || state.baseBranch || null;
 
@@ -1862,7 +2894,7 @@ Hard constraints:
       // Default title
       const prTitle =
         title ||
-        `${type}: ${state.selected?.title || semanticName || state.branch}`;
+        `${normalizedType}: ${state.selected?.title || semanticName || state.branch}`;
 
       // Create PR (gh pr create outputs the PR URL directly to stdout)
       const prArgs = [
@@ -1915,14 +2947,14 @@ Hard constraints:
   // --- Autonomous loop helpers ---
 
   /**
-   * Append a structured entry to .coder/logs/auto.jsonl.
+   * Append a structured entry to .coder/logs/develop.jsonl.
    */
   _appendAutoLog(entry) {
     const logPath = path.join(
       this.workspaceDir,
       ".coder",
       "logs",
-      "auto.jsonl",
+      "develop.jsonl",
     );
     ensureLogsDir(this.workspaceDir);
     const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
@@ -1995,7 +3027,7 @@ Hard constraints:
               mode: "safe",
               message:
                 "Repo has uncommitted changes. Skipping destructive cleanup. " +
-                "Use coder_auto with destructiveReset=true to force cleanup.",
+                'Use coder_workflow (workflow="develop") with destructiveReset=true to force cleanup.',
             });
           }
         }
@@ -2096,14 +3128,8 @@ Return ONLY valid JSON in this schema:
         refsById.set(key, refs);
       }
 
-      const normalizeDepRef = (dep, fallbackSource) => {
-        const raw = String(dep || "").trim();
-        if (!raw) return null;
-        if (raw.includes("#")) return raw;
-        const matches = refsById.get(raw) || [];
-        if (matches.length === 1) return matches[0];
-        return `${fallbackSource}#${raw}`;
-      };
+      const normalizeDepRef = (dep, fallbackSource) =>
+        _normalizeDepRefWith(refsById, dep, fallbackSource);
 
       const queue = payload.queue.map((item) => {
         const issueRef = `${item.source}#${item.id}`;
@@ -2665,8 +3691,19 @@ Return ONLY valid JSON in this schema:
       }
     }
 
+    const currentScratchpadRel = state.scratchpadPath
+      ? state.scratchpadPath
+      : state.selected
+        ? path.relative(
+            this.workspaceDir,
+            this._issueScratchpadPath(state.selected),
+          )
+        : null;
+    const currentScratchpadAbs = currentScratchpadRel
+      ? path.resolve(this.workspaceDir, currentScratchpadRel)
+      : null;
+
     return {
-      version: state.version,
       selected: state.selected,
       selectedProject: state.selectedProject,
       repoPath: state.repoPath,
@@ -2678,10 +3715,28 @@ Return ONLY valid JSON in this schema:
       prUrl: state.prUrl,
       prBranch: state.prBranch,
       prBase: state.prBase,
+      wip: {
+        enabled: this.wipConfig?.push === true,
+        remote: this.wipConfig?.remote || "origin",
+        autoCommit: this.wipConfig?.autoCommit !== false,
+        includeUntracked: this.wipConfig?.includeUntracked === true,
+        lastPushedAt: state.lastWipPushAt || null,
+      },
       artifacts: {
         issueExists: existsSync(paths.issue),
         planExists: existsSync(paths.plan),
         critiqueExists: existsSync(paths.critique),
+      },
+      scratchpad: {
+        dir: path.relative(this.workspaceDir, this.scratchpadDir),
+        current: currentScratchpadRel,
+        currentExists: currentScratchpadAbs
+          ? existsSync(currentScratchpadAbs)
+          : false,
+        sqlite: {
+          enabled: this._scratchpadSqliteEnabled,
+          path: path.relative(this.workspaceDir, this.scratchpadDbPath),
+        },
       },
       agentActivity,
       currentStage: loopState.currentStage,

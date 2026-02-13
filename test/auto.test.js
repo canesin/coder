@@ -110,7 +110,6 @@ class FakeAutoOrchestrator extends CoderOrchestrator {
 test("runAuto resume: skips already completed items and advances checkpoint", async () => {
   const ws = makeWorkspace();
   seedLoopState(ws, {
-    version: 1,
     goal: "resume",
     status: "running",
     projectFilter: null,
@@ -145,7 +144,6 @@ test("runAuto resume: skips already completed items and advances checkpoint", as
 test("runAuto dependency handling: skips issue when all dependencies failed", async () => {
   const ws = makeWorkspace();
   seedLoopState(ws, {
-    version: 1,
     goal: "deps",
     status: "running",
     projectFilter: null,
@@ -185,7 +183,6 @@ test("runAuto dependency handling: skips issue when all dependencies failed", as
 test("runAuto stacked mode: dependent issue is drafted on dependency branch", async () => {
   const ws = makeWorkspace();
   seedLoopState(ws, {
-    version: 1,
     goal: "stacked",
     status: "running",
     projectFilter: null,
@@ -224,7 +221,6 @@ test("runAuto stacked mode: dependent issue is drafted on dependency branch", as
 test("runAuto dependency handling: proceeds unstacked when dependency has no branch", async () => {
   const ws = makeWorkspace();
   seedLoopState(ws, {
-    version: 1,
     goal: "deps-no-branch",
     status: "running",
     projectFilter: null,
@@ -288,7 +284,6 @@ test("runAuto validates maxIssues >= 1", async () => {
 test("runAuto cancel request marks run as cancelled (not completed)", async () => {
   const ws = makeWorkspace();
   seedLoopState(ws, {
-    version: 1,
     goal: "cancel",
     status: "running",
     projectFilter: null,
