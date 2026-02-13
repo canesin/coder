@@ -147,58 +147,6 @@ Example:
 }
 ```
 
-## Litestream Bootstrap
-
-Use Litestream to continuously replicate `.coder/state.db` (scratchpad/state durability) to remote object storage.
-
-1. Install the durability service with `coder` (system scope):
-
-```bash
-coder durability install \
-  --scope system \
-  --workspace /absolute/path/to/workspace \
-  --host 127.0.0.1 \
-  --port 8787 \
-  --path /mcp \
-  --replica-url "s3://your-private-bucket/coder/state"
-```
-
-2. Manage the service:
-
-```bash
-coder durability status --scope system --workspace /absolute/path/to/workspace
-coder durability logs --scope system --workspace /absolute/path/to/workspace --follow
-coder durability restart --scope system --workspace /absolute/path/to/workspace
-```
-
-For user-level services, swap `--scope system` with `--scope user`.
-
-3. Manual bootstrap (if you prefer editing files directly):
-
-```bash
-cp litestream.example.yml litestream.yml
-export LITESTREAM_REPLICA_URL="s3://your-private-bucket/coder/state"
-npm run coder:mcp:durable
-```
-
-Useful commands:
-
-```bash
-# one-time restore only
-npm run litestream:restore
-
-# replication loop only (run in separate terminal if needed)
-npm run litestream:replicate
-```
-
-Notes:
-- `coder:mcp:durable` runs `coder-mcp` under `litestream replicate -exec ...` after restore.
-- `coder durability install` creates/updates:
-  - `litestream.yml`
-  - `.coder/litestream.env`
-  - a deterministic systemd unit for that workspace.
-- For encrypted cloud backups, use provider-side encryption at rest (for example, private bucket + KMS-managed keys).
-
 ## Workflow Control Plane
 
 Use `coder_workflow` as the unified workflow tool:
@@ -268,7 +216,7 @@ flowchart TD
   DUR --> S1[State snapshots]
   DUR --> S2[Event logs]
   DUR --> S3[Artifacts and scratchpad]
-  DUR --> S4[SQLite and Litestream replication]
+  DUR --> S4[SQLite state persistence]
 
   CP --> OBS[Observability]
   OBS --> O1[Status]
@@ -295,7 +243,7 @@ Core concepts:
   - Run IDs are short-lived identifiers used for status/events/control actions.
 - Durable state model:
   - Operational state is persisted under `.coder/` (`state.json`, `loop-state.json`, `research-state.json`, `workflow-state.json`).
-  - Scratchpad and state can be mirrored to SQLite (`.coder/state.db`) and replicated with Litestream.
+  - Scratchpad and state can be mirrored to SQLite (`.coder/state.db`).
 - Artifact model:
   - Workflow artifacts live in `.coder/artifacts/` (`ISSUE.md`, `PLAN.md`, `PLANREVIEW.md`).
   - Research iteration artifacts live in `.coder/scratchpad/` (manifests, pipeline checkpoints, generated issue drafts).

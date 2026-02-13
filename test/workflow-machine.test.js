@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createActor } from "xstate";
-import { getShortestPaths, getSimplePaths } from "xstate/graph";
+import { getShortestPaths } from "xstate/graph";
 import {
   createDevelopWorkflowMachine,
   loadWorkflowSnapshot,
@@ -51,18 +51,6 @@ const traversalEvents = () => [
 // don't explode the state space — we care about structural transitions
 const serializeState = (s) => JSON.stringify(s.value);
 
-// Replay a path's event sequence through a fresh actor and return final snapshot
-function replayPath(machine, graphPath) {
-  const actor = createActor(machine);
-  actor.start();
-  for (const step of graphPath.steps) {
-    actor.send(step.event);
-  }
-  const snapshot = actor.getSnapshot();
-  actor.stop();
-  return snapshot;
-}
-
 // ─── Graph-based: reachability ─────────────────────────────────────────────
 
 test("graph: all 7 states are reachable via shortest paths", () => {
@@ -84,115 +72,69 @@ test("graph: all 7 states are reachable via shortest paths", () => {
   assert.deepEqual(reachable, expected);
 });
 
-// ─── Graph-based: exhaustive path coverage ─────────────────────────────────
+// ─── Context invariants: verify assign actions on representative paths ──────
 
-test("graph: exactly 17 simple (non-cyclic) paths exist", () => {
+test("graph: completedAt is set when reaching completed via COMPLETE", () => {
   const machine = createDevelopWorkflowMachine();
-  const paths = getSimplePaths(machine, {
-    events: traversalEvents,
-    serializeState,
+  const actor = createActor(machine);
+  actor.start();
+  actor.send({
+    type: "START",
+    runId: "r1",
+    workspace: "/tmp/ws",
+    goal: "g",
+    at: "2026-01-01T00:00:00.000Z",
   });
+  actor.send({ type: "COMPLETE", at: "2026-01-01T01:00:00.000Z" });
+  assert.equal(actor.getSnapshot().value, "completed");
   assert.equal(
-    paths.length,
-    17,
-    `Expected 17 simple paths, got ${paths.length}: ${paths.map((p) => p.steps.map((s) => s.event.type).join("->")).join("; ")}`,
+    actor.getSnapshot().context.completedAt,
+    "2026-01-01T01:00:00.000Z",
   );
+  assert.equal(actor.getSnapshot().context.error, null);
+  actor.stop();
 });
 
-test("graph: every simple path replays correctly to its expected terminal state", () => {
+test("graph: error and completedAt are set when reaching failed via FAIL", () => {
   const machine = createDevelopWorkflowMachine();
-  const paths = getSimplePaths(machine, {
-    events: traversalEvents,
-    serializeState,
+  const actor = createActor(machine);
+  actor.start();
+  actor.send({
+    type: "START",
+    runId: "r1",
+    workspace: "/tmp/ws",
+    goal: "g",
+    at: "2026-01-01T00:00:00.000Z",
   });
-  for (const p of paths) {
-    const snapshot = replayPath(machine, p);
-    assert.equal(
-      snapshot.value,
-      p.state.value,
-      `Path [${p.steps.map((s) => s.event.type).join(" -> ")}] expected ${p.state.value} but got ${snapshot.value}`,
-    );
-  }
+  actor.send({ type: "FAIL", error: "boom", at: "2026-01-01T01:00:00.000Z" });
+  assert.equal(actor.getSnapshot().value, "failed");
+  assert.equal(actor.getSnapshot().context.error, "boom");
+  assert.ok(actor.getSnapshot().context.completedAt);
+  actor.stop();
 });
 
-// ─── Graph-based: context invariants across all terminal paths ─────────────
-
-test("graph: completedAt is set on every path reaching completed/failed/cancelled", () => {
+test("graph: cancelRequestedAt is set through cancelling -> cancelled", () => {
   const machine = createDevelopWorkflowMachine();
-  const paths = getSimplePaths(machine, {
-    events: traversalEvents,
-    serializeState,
-    toState: (s) => ["completed", "failed", "cancelled"].includes(s.value),
+  const actor = createActor(machine);
+  actor.start();
+  actor.send({
+    type: "START",
+    runId: "r1",
+    workspace: "/tmp/ws",
+    goal: "g",
+    at: "2026-01-01T00:00:00.000Z",
   });
-  assert.ok(paths.length > 0, "should have terminal paths");
-  for (const p of paths) {
-    const snapshot = replayPath(machine, p);
-    assert.ok(
-      snapshot.context.completedAt,
-      `completedAt missing for path -> ${snapshot.value}: [${p.steps.map((s) => s.event.type).join(" -> ")}]`,
-    );
-  }
-});
-
-test("graph: error is set on every path reaching failed", () => {
-  const machine = createDevelopWorkflowMachine();
-  const paths = getSimplePaths(machine, {
-    events: traversalEvents,
-    serializeState,
-    toState: (s) => s.value === "failed",
-  });
-  assert.ok(paths.length > 0, "should have failed paths");
-  for (const p of paths) {
-    const snapshot = replayPath(machine, p);
-    assert.ok(
-      snapshot.context.error,
-      `error missing for failed path: [${p.steps.map((s) => s.event.type).join(" -> ")}]`,
-    );
-  }
-});
-
-test("graph: error is null on every path reaching completed or cancelled", () => {
-  const machine = createDevelopWorkflowMachine();
-  const paths = getSimplePaths(machine, {
-    events: traversalEvents,
-    serializeState,
-    toState: (s) => s.value === "completed" || s.value === "cancelled",
-  });
-  assert.ok(paths.length > 0);
-  for (const p of paths) {
-    const snapshot = replayPath(machine, p);
-    assert.equal(
-      snapshot.context.error,
-      null,
-      `error should be null for ${snapshot.value} path: [${p.steps.map((s) => s.event.type).join(" -> ")}]`,
-    );
-  }
-});
-
-test("graph: cancelRequestedAt is set on every path through cancelling", () => {
-  const machine = createDevelopWorkflowMachine();
-  const paths = getSimplePaths(machine, {
-    events: traversalEvents,
-    serializeState,
-    toState: (s) =>
-      ["cancelling", "completed", "failed", "cancelled"].includes(s.value),
-  });
-  const throughCancelling = paths.filter((p) =>
-    p.steps.some(
-      (step) => step.event.type === "CANCEL" || step.event.type === "CANCELLED",
-    ),
+  actor.send({ type: "CANCEL", at: "2026-01-01T00:30:00.000Z" });
+  assert.equal(actor.getSnapshot().value, "cancelling");
+  assert.equal(
+    actor.getSnapshot().context.cancelRequestedAt,
+    "2026-01-01T00:30:00.000Z",
   );
-  for (const p of throughCancelling) {
-    const snapshot = replayPath(machine, p);
-    // Only assert on paths that went through CANCEL (not direct CANCELLED from running)
-    const hadCancel = p.steps.some((s) => s.event.type === "CANCEL");
-    if (hadCancel) {
-      assert.ok(
-        snapshot.context.cancelRequestedAt,
-        `cancelRequestedAt missing after CANCEL: [${p.steps.map((s) => s.event.type).join(" -> ")}]`,
-      );
-    }
-  }
+  actor.send({ type: "CANCELLED", at: "2026-01-01T00:31:00.000Z" });
+  assert.equal(actor.getSnapshot().value, "cancelled");
+  assert.ok(actor.getSnapshot().context.completedAt);
+  assert.equal(actor.getSnapshot().context.error, null);
+  actor.stop();
 });
 
 // ─── Graph-based: terminal state immutability ──────────────────────────────

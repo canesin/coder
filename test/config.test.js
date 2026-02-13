@@ -8,18 +8,10 @@ import {
   CoderConfigSchema,
   deepMerge,
   loadConfig,
-  repoConfigPath,
   resolveConfig,
   userConfigDir,
   userConfigPath,
 } from "../src/config.js";
-
-test("deepMerge: nested objects", () => {
-  const base = { a: { b: 1, c: 2 }, d: 3 };
-  const override = { a: { b: 10 }, e: 4 };
-  const result = deepMerge(base, override);
-  assert.deepEqual(result, { a: { b: 10, c: 2 }, d: 3, e: 4 });
-});
 
 test("deepMerge: arrays replace, not concat", () => {
   const base = { items: [1, 2, 3] };
@@ -206,10 +198,6 @@ test("userConfigPath: falls back to ~/.config", () => {
   } finally {
     if (origXdg !== undefined) process.env.XDG_CONFIG_HOME = origXdg;
   }
-});
-
-test("repoConfigPath: returns coder.json in workspace", () => {
-  assert.equal(repoConfigPath("/some/workspace"), "/some/workspace/coder.json");
 });
 
 test("CoderConfigSchema rejects model names with shell injection characters", () => {

@@ -31,7 +31,6 @@
     "LICENSE",
     "CONTRIBUTING.md",
     "SECURITY.md",
-    "litestream.example.yml",
     ".mcp.example.json",
     ".claude/settings.example.json",
     "coder.example.json"
@@ -39,9 +38,6 @@
   "scripts": {
     "coder": "node ./bin/coder.js",
     "mcp": "node ./bin/coder-mcp.js",
-    "litestream:restore": "litestream restore -if-replica-exists -if-db-not-exists -config litestream.yml .coder/state.db",
-    "litestream:replicate": "litestream replicate -config litestream.yml",
-    "coder:mcp:durable": "npm run litestream:restore && litestream replicate -config litestream.yml -exec \"coder-mcp --transport http --host 127.0.0.1 --port 8787 --path /mcp\"",
     "lint": "biome check ./bin ./src ./test package.json",
     "lint:fix": "biome check --write ./bin ./src ./test package.json",
     "format": "biome format --write ./bin ./src ./test package.json",
