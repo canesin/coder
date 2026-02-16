@@ -690,6 +690,7 @@ ON CONFLICT(file_path) DO UPDATE SET
     try {
       const state = this._loadState();
       state.lastError = `[${new Date().toISOString()}] ${err.message || String(err)}`;
+      if (err.name === "CommandTimeoutError") state.claudeSessionId = null;
       this._saveState(state);
     } catch {
       // best-effort — don't mask the original error

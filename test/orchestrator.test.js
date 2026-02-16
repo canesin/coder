@@ -697,3 +697,38 @@ test("_resetForNextIssue removes .coder/artifacts files and preserves workspace 
   assert.equal(existsSync(rootPlan), true);
   assert.equal(existsSync(rootCritique), true);
 });
+
+test("_recordError clears claudeSessionId on CommandTimeoutError", () => {
+  const ws = makeWorkspace();
+  const orch = new CoderOrchestrator(ws, { allowNoTests: true });
+
+  writeFileSync(
+    path.join(ws, ".coder", "state.json"),
+    JSON.stringify({ claudeSessionId: "old-session-abc" }) + "\n",
+    "utf8",
+  );
+
+  const err = new Error("Command timeout after 60000ms: claude ...");
+  err.name = "CommandTimeoutError";
+  orch._recordError(err);
+
+  const state = loadState(ws);
+  assert.equal(state.claudeSessionId, null);
+  assert.match(state.lastError, /CommandTimeoutError|Command timeout/);
+});
+
+test("_recordError preserves claudeSessionId on non-timeout errors", () => {
+  const ws = makeWorkspace();
+  const orch = new CoderOrchestrator(ws, { allowNoTests: true });
+
+  writeFileSync(
+    path.join(ws, ".coder", "state.json"),
+    JSON.stringify({ claudeSessionId: "keep-this-session" }) + "\n",
+    "utf8",
+  );
+
+  orch._recordError(new Error("some other failure"));
+
+  const state = loadState(ws);
+  assert.equal(state.claudeSessionId, "keep-this-session");
+});
