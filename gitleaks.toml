@@ -1,0 +1,9 @@
+title = "coder gitleaks config"
+
+[allowlist]
+description = "Allowlist common non-source paths"
+paths = [
+  '''^node_modules/''',
+  '''^\.coder/''',
+]
+

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "coder": {
+      "command": "node",
+      "args": ["./bin/coder-mcp.js"],
+      "env": {}
+    }
+  }
+}

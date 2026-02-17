@@ -1,0 +1,30 @@
+{
+  "workflow": {
+    "agentRoles": {
+      "issueSelector": "gemini",
+      "planner": "claude",
+      "planReviewer": "gemini",
+      "programmer": "claude",
+      "reviewer": "codex",
+      "committer": "codex"
+    },
+    "wip": {
+      "push": true,
+      "autoCommit": true,
+      "includeUntracked": false,
+      "remote": "origin",
+      "failOnError": false
+    },
+    "scratchpad": {
+      "sqliteSync": true,
+      "sqlitePath": ".coder/state.db"
+    }
+  },
+  "ppcommit": {
+    "enableLlm": true,
+    "llmServiceUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "llmApiKey": "",
+    "llmApiKeyEnv": "GEMINI_API_KEY",
+    "llmModel": "gemini-3-flash-preview"
+  }
+}
