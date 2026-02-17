@@ -19,8 +19,16 @@ Agent role assignments are configurable — any role can use any of the three ba
 ## Install
 
 ```bash
+npm install -g @canesin/coder-mcp
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/canesin/coder.git
+cd coder
 npm install
-npm link   # makes `coder` and `coder-mcp` available globally
+npm link
 ```
 
 ## Quick start
@@ -28,6 +36,18 @@ npm link   # makes `coder` and `coder-mcp` available globally
 ### As MCP server (primary interface)
 
 Add to your MCP client config (`.mcp.json`, Claude Code settings, Cursor, etc.):
+
+```json
+{
+  "mcpServers": {
+    "coder": {
+      "command": "coder-mcp"
+    }
+  }
+}
+```
+
+Or with explicit path (from source):
 
 ```json
 {

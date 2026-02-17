@@ -1,5 +1,5 @@
 {
-  "name": "coder",
+  "name": "@canesin/coder-mcp",
   "version": "0.3.0",
   "description": "Multi-agent coding workflow orchestrator (gemini-cli + claude-code + codex-cli)",
   "license": "MIT",
@@ -11,6 +11,9 @@
     "url": "https://github.com/canesin/coder/issues"
   },
   "homepage": "https://github.com/canesin/coder#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "mcp",
     "cli",
