@@ -10,6 +10,7 @@ const modelNameRegex = /^[a-zA-Z0-9._/-]+$/;
 export const ModelEntrySchema = z.object({
   model: z.string().regex(modelNameRegex, "Invalid model name"),
   apiEndpoint: z.string().default(""),
+  openaiEndpoint: z.string().default(""),
   apiKeyEnv: z.string().default(""),
 });
 
@@ -136,16 +137,20 @@ export const CoderConfigSchema = z.object({
       gemini: ModelEntrySchema.default({
         model: "gemini-3-flash-preview",
         apiEndpoint: "https://generativelanguage.googleapis.com/v1beta",
+        openaiEndpoint:
+          "https://generativelanguage.googleapis.com/v1beta/openai",
         apiKeyEnv: "GEMINI_API_KEY",
       }),
       claude: ModelEntrySchema.default({
         model: "claude-sonnet-4-6",
         apiEndpoint: "https://api.anthropic.com",
+        openaiEndpoint: "",
         apiKeyEnv: "ANTHROPIC_API_KEY",
       }),
       codex: ModelEntrySchema.default({
         model: "gpt-5.3-codex",
         apiEndpoint: "https://api.openai.com",
+        openaiEndpoint: "https://api.openai.com/v1",
         apiKeyEnv: "OPENAI_API_KEY",
       }),
     })
@@ -232,11 +237,10 @@ export function resolvePpcommitLlm(config) {
   const ref = config.ppcommit.llmModelRef || "gemini";
   const modelEntry = config.models[ref] || config.models.gemini;
   const serviceUrlOverride = (config.ppcommit.llmServiceUrl || "").trim();
-  const derivedServiceUrl = `${modelEntry.apiEndpoint}/openai`;
   return {
     enableLlm: config.ppcommit.enableLlm,
     llmModel: modelEntry.model,
-    llmServiceUrl: serviceUrlOverride || derivedServiceUrl,
+    llmServiceUrl: serviceUrlOverride || modelEntry.openaiEndpoint,
     llmApiKeyEnv: modelEntry.apiKeyEnv,
     llmApiKey: config.ppcommit.llmApiKey || "",
   };

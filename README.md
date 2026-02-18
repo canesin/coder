@@ -179,32 +179,61 @@ All state lives under `.coder/` (gitignored):
 
 Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP tool inputs.
 
+### `models` — Single source of truth for model IDs, endpoints, and API keys
+
+Each entry specifies the model identifier, endpoints, and environment variable for the API key. `apiEndpoint` is the provider's native REST endpoint (used by `ApiAgent`). `openaiEndpoint` is the OpenAI-compatible chat completions base URL (used by ppcommit LLM checks).
+
+```jsonc
+"models": {
+  "gemini": {
+    "model": "gemini-3-flash-preview",
+    "apiEndpoint": "https://generativelanguage.googleapis.com/v1beta",
+    "openaiEndpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "apiKeyEnv": "GEMINI_API_KEY"
+  },
+  "claude": {
+    "model": "claude-sonnet-4-6",
+    "apiEndpoint": "https://api.anthropic.com",
+    "openaiEndpoint": "",
+    "apiKeyEnv": "ANTHROPIC_API_KEY"
+  },
+  "codex": {
+    "model": "gpt-5.3-codex",
+    "apiEndpoint": "https://api.openai.com",
+    "openaiEndpoint": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY"
+  }
+}
+```
+
+### `workflow.agentRoles` — CLI agent assignments
+
+Maps each workflow step to a CLI agent: **`gemini`**, **`claude`**, or **`codex`**. These are the only accepted values — they refer to the host CLI tools (Gemini CLI, Claude Code, OpenAI Codex), not to entries in `models`.
+
+```jsonc
+"workflow": {
+  "agentRoles": {
+    "issueSelector": "gemini",  // picks issues from backlog
+    "planner": "claude",        // writes PLAN.md
+    "planReviewer": "gemini",   // critiques PLAN.md → PLANREVIEW.md
+    "programmer": "claude",     // implements the plan
+    "reviewer": "codex",        // code review + coalesce analysis
+    "committer": "codex"        // commit, push, PR creation
+  },
+  "wip": { "push": true, "autoCommit": true }
+}
+```
+
+The actual model each CLI uses is controlled by that CLI's own configuration, not by `models` above.
+
+### Other sections
+
 ```jsonc
 {
-  // Model selection
-  "models": {
-    "gemini": "gemini-2.5-flash",
-    "geminiPreview": "gemini-3-flash-preview",
-    "claude": "claude-opus-4-6"
-  },
-
-  // Agent role assignments (gemini | claude | codex)
-  "workflow": {
-    "agentRoles": {
-      "issueSelector": "gemini",
-      "planner": "claude",
-      "planReviewer": "gemini",
-      "programmer": "claude",
-      "reviewer": "codex",
-      "committer": "codex"
-    },
-    "wip": { "push": true, "autoCommit": true }
-  },
-
   // Commit hygiene (tree-sitter AST-based)
   "ppcommit": {
     "enableLlm": true,
-    "llmModel": "gemini-3-flash-preview"
+    "llmModelRef": "gemini"  // references models.gemini for model/endpoint/key
   },
 
   // Test execution
