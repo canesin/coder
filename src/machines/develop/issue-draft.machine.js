@@ -44,6 +44,24 @@ export default defineMachine({
     const state = loadState(ctx.workspaceDir);
     state.steps ||= {};
 
+    // Idempotency: skip if this issue's draft is already on disk
+    if (state.steps.wroteIssue && state.selected?.id === input.issue.id) {
+      const earlyPaths = artifactPaths(ctx.artifactsDir);
+      if (existsSync(earlyPaths.issue)) {
+        const onDisk = sanitizeIssueMarkdown(
+          readFileSync(earlyPaths.issue, "utf8"),
+        );
+        if (onDisk.length > 40 && onDisk.trim().startsWith("#")) {
+          ctx.log({
+            event: "issue_draft_skipped",
+            issue: input.issue,
+            reason: "already_drafted",
+          });
+          return { status: "ok", data: { issueMd: onDisk + "\n" } };
+        }
+      }
+    }
+
     // Stale workflow check
     if (state.selected && !input.force) {
       const active = state.selected;
