@@ -72,24 +72,38 @@ export class AgentPool {
   /**
    * Get or create an MCP agent for a given server config.
    * @param {string} role
-   * @param {{ serverCommand?: string, serverArgs?: string[], env?: Record<string, string>, serverName?: string }} [opts]
+   * @param {{ transport?: "stdio" | "http", serverCommand?: string, serverArgs?: string[], serverUrl?: string, authHeader?: string, env?: Record<string, string>, serverName?: string }} [opts]
    */
   _getMcpAgent(role, opts = {}) {
+    const transport = opts.transport || "stdio";
     const serverCommand = opts.serverCommand || "";
+    const serverUrl = opts.serverUrl || "";
     const serverName = opts.serverName || role;
-    if (!serverCommand) {
+
+    if (transport === "stdio" && !serverCommand) {
       throw new Error(
-        `MCP agent for role "${role}" requires a serverCommand. ` +
+        `MCP agent for role "${role}" requires a serverCommand for stdio transport. ` +
           `Configure design.stitch.serverCommand in coder.json.`,
       );
     }
-    const key = `mcp:${serverName}:${serverCommand}`;
+    if (transport === "http" && !serverUrl) {
+      throw new Error(
+        `MCP agent for role "${role}" requires a serverUrl for HTTP transport. ` +
+          `Configure design.stitch.serverUrl in coder.json.`,
+      );
+    }
+
+    const keyId = transport === "http" ? serverUrl : serverCommand;
+    const key = `mcp:${serverName}:${keyId}`;
     if (!this._agents.has(key)) {
       this._agents.set(
         key,
         new McpAgent({
+          transport,
           serverCommand,
           serverArgs: opts.serverArgs || [],
+          serverUrl,
+          authHeader: opts.authHeader || "",
           env: opts.env || {},
           serverName,
         }),

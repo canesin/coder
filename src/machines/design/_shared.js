@@ -14,9 +14,16 @@ export function resolveStitchAgent(ctx) {
       "Stitch is not enabled. Set design.stitch.enabled=true in coder.json.",
     );
   }
-  if (!stitchConfig.serverCommand) {
+
+  const transport = stitchConfig.transport || "stdio";
+  if (transport === "stdio" && !stitchConfig.serverCommand) {
     throw new Error(
       "Stitch server command not configured. Set design.stitch.serverCommand in coder.json.",
+    );
+  }
+  if (transport === "http" && !stitchConfig.serverUrl) {
+    throw new Error(
+      "Stitch server URL not configured. Set design.stitch.serverUrl in coder.json.",
     );
   }
 
@@ -26,7 +33,10 @@ export function resolveStitchAgent(ctx) {
 
   const { agentName, agent } = ctx.agentPool.getAgent("stitch", {
     mode: "mcp",
+    transport,
     serverCommand: stitchConfig.serverCommand,
+    serverUrl: stitchConfig.serverUrl,
+    authHeader: stitchConfig.authHeader || "X-Goog-Api-Key",
     serverName: "stitch",
     env,
   });

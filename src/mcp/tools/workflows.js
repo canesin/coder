@@ -95,7 +95,8 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
   const runnerAlive = isPidAlive(runnerPid ?? null);
   const heartbeatStale =
     heartbeatAgeMs !== null && heartbeatAgeMs > HEARTBEAT_STALE_MS;
-  const shouldCheckStale = status === "running" || status === "paused";
+  const shouldCheckStale =
+    status === "running" || status === "paused" || status === "cancelling";
   const pidStale = shouldCheckStale && runnerAlive === false;
   const isStale = shouldCheckStale && (heartbeatStale || pidStale);
   const staleReason = isStale
@@ -115,7 +116,8 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
 function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   const diskState = loadLoopState(workspaceDir);
   if (diskState.runId !== runId) return false;
-  if (!["running", "paused"].includes(diskState.status)) return false;
+  if (!["running", "paused", "cancelling"].includes(diskState.status))
+    return false;
   diskState.status = status;
   diskState.currentStage = null;
   diskState.currentStageStartedAt = null;
@@ -388,6 +390,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           .boolean()
           .default(false)
           .describe("Start-only: aggressively reset between issues"),
+        ppcommitPreset: z
+          .enum(["strict", "relaxed", "minimal"])
+          .default("strict")
+          .describe(
+            "Develop start-only: ppcommit strictness preset (strict|relaxed|minimal)",
+          ),
         strictMcpStartup: z
           .boolean()
           .default(false)
@@ -519,6 +527,14 @@ export function registerWorkflowTools(server, defaultWorkspace) {
               workflowActors.delete(id);
               continue;
             }
+            // Check if the run is stale before blocking
+            const staleCheck = detectStaleness(diskState);
+            if (staleCheck.isStale) {
+              markRunTerminalOnDisk(ws, id, workflow, "cancelled");
+              activeRuns.delete(id);
+              workflowActors.delete(id);
+              continue;
+            }
             return {
               content: [
                 {
@@ -617,7 +633,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                     testCmd: params.testCmd,
                     testConfigPath: params.testConfigPath,
                     allowNoTests: params.allowNoTests,
-                    localIssuesDir: params.localIssuesDir,
+                    localIssuesDir:
+                      params.localIssuesDir || config.workflow.localIssuesDir,
+                    ppcommitPreset: params.ppcommitPreset,
                   },
                   workflowCtx,
                 );

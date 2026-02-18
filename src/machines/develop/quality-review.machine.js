@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolvePpcommitLlm } from "../../config.js";
 import {
   computeGitWorktreeFingerprint,
   detectDefaultBranch,
@@ -24,6 +25,7 @@ export default defineMachine({
     testCmd: z.string().default(""),
     testConfigPath: z.string().default(""),
     allowNoTests: z.boolean().default(false),
+    ppcommitPreset: z.enum(["strict", "relaxed", "minimal"]).default("strict"),
   }),
 
   async execute(input, ctx) {
@@ -109,10 +111,17 @@ Hard constraints:
     };
 
     // Initial ppcommit check (scoped to files changed since base branch)
+    // Dynamic preset from input overrides the static config preset
+    const ppcommitLlm = resolvePpcommitLlm(ctx.config);
+    const ppcommitConfig = {
+      ...ctx.config.ppcommit,
+      ...ppcommitLlm,
+      ...(input.ppcommitPreset ? { preset: input.ppcommitPreset } : {}),
+    };
     const ppBefore = await runPpcommitScoped(
       repoRoot,
       baseBranch,
-      ctx.config.ppcommit,
+      ppcommitConfig,
     );
     state.steps.ppcommitInitiallyClean = ppBefore.exitCode === 0;
     ctx.log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
@@ -138,11 +147,7 @@ Hard constraints:
 
     // Hard gate: ppcommit retry loop
     const maxPpcommitRetries = 2;
-    let ppAfter = await runPpcommitScoped(
-      repoRoot,
-      baseBranch,
-      ctx.config.ppcommit,
-    );
+    let ppAfter = await runPpcommitScoped(repoRoot, baseBranch, ppcommitConfig);
     ctx.log({
       event: "ppcommit_after",
       attempt: 0,
@@ -162,11 +167,7 @@ Hard constraints:
         retrySection,
         "committer pass",
       );
-      ppAfter = await runPpcommitScoped(
-        repoRoot,
-        baseBranch,
-        ctx.config.ppcommit,
-      );
+      ppAfter = await runPpcommitScoped(repoRoot, baseBranch, ppcommitConfig);
       ctx.log({ event: "ppcommit_after", attempt, exitCode: ppAfter.exitCode });
     }
     if (ppAfter.exitCode !== 0) {

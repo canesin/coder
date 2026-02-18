@@ -1,8 +1,20 @@
 {
   "models": {
-    "gemini": "gemini-2.5-flash",
-    "geminiPreview": "gemini-3-flash-preview",
-    "claude": "claude-opus-4-6"
+    "gemini": {
+      "model": "gemini-3-flash-preview",
+      "apiEndpoint": "https://generativelanguage.googleapis.com/v1beta",
+      "apiKeyEnv": "GEMINI_API_KEY"
+    },
+    "claude": {
+      "model": "claude-sonnet-4-6",
+      "apiEndpoint": "https://api.anthropic.com",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    },
+    "codex": {
+      "model": "gpt-5.3-codex",
+      "apiEndpoint": "https://api.openai.com",
+      "apiKeyEnv": "OPENAI_API_KEY"
+    }
   },
   "workflow": {
     "agentRoles": {
@@ -23,13 +35,13 @@
     "scratchpad": {
       "sqliteSync": true,
       "sqlitePath": ".coder/state.db"
-    }
+    },
+    "localIssuesDir": ""
   },
   "ppcommit": {
+    "preset": "strict",
     "enableLlm": true,
-    "llmServiceUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "llmApiKeyEnv": "GEMINI_API_KEY",
-    "llmModel": "gemini-3-flash-preview"
+    "llmModelRef": "gemini"
   },
   "test": {
     "command": "",
@@ -38,18 +50,16 @@
   "design": {
     "stitch": {
       "enabled": false,
+      "transport": "stdio",
       "serverCommand": "",
-      "apiKeyEnv": "GOOGLE_STITCH_API_KEY"
+      "serverUrl": "",
+      "apiKeyEnv": "GOOGLE_STITCH_API_KEY",
+      "authHeader": "X-Goog-Api-Key"
     },
     "specDir": "spec/UI"
   },
   "github": {
     "epicAsMilestone": true,
     "defaultLabels": []
-  },
-  "agents": {
-    "preferApi": false,
-    "geminiApiEndpoint": "https://generativelanguage.googleapis.com/v1beta",
-    "anthropicApiEndpoint": "https://api.anthropic.com"
   }
 }

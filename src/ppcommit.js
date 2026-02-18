@@ -21,7 +21,12 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { jsonrepair } from "jsonrepair";
-import { loadConfig, PpcommitConfigSchema } from "./config.js";
+import {
+  loadConfig,
+  PPCOMMIT_PRESETS,
+  PpcommitConfigSchema,
+  resolvePpcommitLlm,
+} from "./config.js";
 
 const require = createRequire(import.meta.url);
 
@@ -275,11 +280,22 @@ function runGitleaksDetect(repoDir, fileFilter) {
 const MAGIC_NUMBER_THRESHOLD = 10;
 const MAGIC_NUMBER_ALLOWLIST = new Set([100, 1000, 60, 24, 365, 360, 180, 90]);
 
+function applyPreset(ppcommitObj) {
+  const preset = ppcommitObj.preset || "strict";
+  const presetDefaults = PPCOMMIT_PRESETS[preset] || {};
+  // Preset defaults apply first, then explicit user overrides win.
+  // Only override keys that the user hasn't explicitly set in their config.
+  return { ...presetDefaults, ...ppcommitObj };
+}
+
 function resolvePpcommitConfig(repoDir, ppcommitConfig) {
-  if (ppcommitConfig) return PpcommitConfigSchema.parse(ppcommitConfig);
+  if (ppcommitConfig)
+    return PpcommitConfigSchema.parse(applyPreset(ppcommitConfig));
   const disableLlm =
     process.env.PPCOMMIT_DISABLE_LLM === "1" || process.env.NODE_ENV === "test";
-  const config = loadConfig(repoDir).ppcommit;
+  const fullConfig = loadConfig(repoDir);
+  const llmFields = resolvePpcommitLlm(fullConfig);
+  const config = { ...applyPreset(fullConfig.ppcommit), ...llmFields };
   if (disableLlm) return { ...config, enableLlm: false };
   return config;
 }

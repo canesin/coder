@@ -64,6 +64,7 @@ export function registerDevelopMachines() {
  *   testCmd?: string,
  *   testConfigPath?: string,
  *   allowNoTests?: boolean,
+ *   ppcommitPreset?: string,
  *   prType?: string,
  *   prSemanticName?: string,
  *   prTitle?: string,
@@ -112,6 +113,7 @@ export async function runDevelopPipeline(opts, ctx) {
           testCmd: opts.testCmd || "",
           testConfigPath: opts.testConfigPath || "",
           allowNoTests: opts.allowNoTests ?? false,
+          ppcommitPreset: opts.ppcommitPreset || "strict",
         }),
       },
       {
@@ -239,6 +241,7 @@ export async function runDevelopLoop(opts, ctx) {
     testConfigPath,
     allowNoTests = false,
     localIssuesDir = "",
+    ppcommitPreset = "",
   } = opts;
 
   // Step 1: List issues (local or remote)
@@ -367,6 +370,7 @@ export async function runDevelopLoop(opts, ctx) {
           testCmd,
           testConfigPath,
           allowNoTests,
+          ppcommitPreset,
           force: true,
         },
         ctx,
@@ -424,8 +428,12 @@ export async function runDevelopLoop(opts, ctx) {
     saveLoopState(ctx.workspaceDir, loopState);
 
     // Reset between issues
-    await resetForNextIssue(ctx.workspaceDir, repoPath, { destructiveReset });
-    return loopState.issueQueue[i].status;
+    const issueStatus = loopState.issueQueue[i].status;
+    await resetForNextIssue(ctx.workspaceDir, repoPath, {
+      destructiveReset,
+      issueStatus,
+    });
+    return issueStatus;
   }
 
   // Main pass
@@ -605,7 +613,7 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
 async function resetForNextIssue(
   workspaceDir,
   repoPath,
-  { destructiveReset = false } = {},
+  { destructiveReset = false, issueStatus = "completed" } = {},
 ) {
   // Delete per-issue state
   const statePath = statePathFor(workspaceDir);
@@ -621,6 +629,26 @@ async function resetForNextIssue(
   // Git cleanup
   const repoRoot = resolveRepoRoot(workspaceDir, repoPath);
   if (existsSync(repoRoot)) {
+    // For failed/skipped issues, preserve partial work on the issue branch
+    // before switching back to the default branch.
+    const needsPreserve = issueStatus === "failed" || issueStatus === "skipped";
+
+    if (needsPreserve) {
+      const status = spawnSync("git", ["status", "--porcelain"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if ((status.stdout || "").trim()) {
+        // Commit partial work to the current (issue) branch so it's not lost
+        spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
+        spawnSync(
+          "git",
+          ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
+          { cwd: repoRoot, encoding: "utf8" },
+        );
+      }
+    }
+
     const defaultBranch = detectDefaultBranch(repoRoot);
     spawnSync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
