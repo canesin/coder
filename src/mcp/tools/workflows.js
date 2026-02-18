@@ -516,7 +516,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "start") {
-          // Check for active runs
+          // Check for active runs (in-memory — current process)
           for (const [id, run] of activeRuns) {
             if (run.workspace !== ws) continue;
             const diskState = loadLoopState(ws);
@@ -546,6 +546,37 @@ export function registerWorkflowTools(server, defaultWorkspace) {
               ],
               isError: true,
             };
+          }
+
+          // Also check disk state — guards against restarts where activeRuns was cleared
+          {
+            const diskLoopState = loadLoopState(ws);
+            if (
+              diskLoopState.status === "running" ||
+              diskLoopState.status === "paused"
+            ) {
+              const { isStale } = detectStaleness(diskLoopState);
+              if (!isStale) {
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({
+                        error: `Workspace already has active run on disk: ${diskLoopState.runId}`,
+                      }),
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+              // Stale run (dead process) — clean it up so the new run can start
+              markRunTerminalOnDisk(
+                ws,
+                diskLoopState.runId,
+                workflow,
+                "failed",
+              );
+            }
           }
 
           const nextRunId = randomUUID().slice(0, 8);
