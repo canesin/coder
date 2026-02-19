@@ -123,8 +123,9 @@ export class CliAgent extends AgentAdapter {
 
     if (this.name === "claude") {
       let flags = "claude -p";
-      if (this.config.models.claude) {
-        flags += ` --model ${this.config.models.claude}`;
+      const claudeModel = this.config.models.claude?.model;
+      if (claudeModel) {
+        flags += ` --model ${claudeModel}`;
       }
       if (this.config.claude.skipPermissions) {
         flags += " --dangerously-skip-permissions";
