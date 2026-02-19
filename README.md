@@ -159,8 +159,23 @@ Three backends, assigned to roles via config:
 | `pause` | Pause at next checkpoint |
 | `resume` | Resume paused run |
 | `cancel` | Cooperative cancellation |
+| `reset` | Stop active run(s), clear workflow state/artifacts, delete stale issue branches |
 
 XState v5 models the lifecycle: `idle → running → paused → completed/failed/cancelled`.
+
+### Local Issue Backlogs (`localIssuesDir`)
+
+When running develop workflow against local generated issues, `manifest.json` provides the canonical issue list (IDs + file mapping), and issue markdown can override execution metadata:
+
+- `Status: done|completed|closed|resolved` in an issue `.md` file causes that issue to be skipped.
+- `Depends-On: ISSUE-001, ISSUE-002` in markdown overrides manifest dependency edges for that issue.
+- `manifest.json` still controls which issue files are considered part of the active backlog.
+
+If a run gets stuck with stale state/branches, use:
+
+```json
+coder_workflow { "action": "reset", "workflow": "develop" }
+```
 
 ### State
 
@@ -271,6 +286,7 @@ Optional LLM-assisted checks via Gemini API for deeper analysis.
 
 - Workspace boundaries enforced — agents operate within the target repo
 - Non-destructive reset between issues (opt-in `destructiveReset`)
+- Explicit workflow recovery via `coder_workflow(action="reset")`
 - Health-check URLs restricted to localhost
 - One active run per workspace
 - Session TTL with automatic cleanup (HTTP mode)

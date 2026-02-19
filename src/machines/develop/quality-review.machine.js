@@ -148,6 +148,9 @@ Hard constraints:
     // Hard gate: ppcommit retry loop
     const maxPpcommitRetries = 2;
     let ppAfter = await runPpcommitScoped(repoRoot, baseBranch, ppcommitConfig);
+    const ppSignature = (res) =>
+      `${res.exitCode}::${(res.stdout || res.stderr || "").trim()}`;
+    let previousPpSignature = ppSignature(ppAfter);
     ctx.log({
       event: "ppcommit_after",
       attempt: 0,
@@ -169,10 +172,22 @@ Hard constraints:
       );
       ppAfter = await runPpcommitScoped(repoRoot, baseBranch, ppcommitConfig);
       ctx.log({ event: "ppcommit_after", attempt, exitCode: ppAfter.exitCode });
+      const sig = ppSignature(ppAfter);
+      if (sig === previousPpSignature && ppAfter.exitCode !== 0) {
+        ctx.log({
+          event: "ppcommit_retry_stalled",
+          attempt,
+          exitCode: ppAfter.exitCode,
+        });
+        break;
+      }
+      previousPpSignature = sig;
     }
     if (ppAfter.exitCode !== 0) {
       throw new Error(
-        `ppcommit still reports issues after ${committerName} pass:\n${ppAfter.stdout || ppAfter.stderr}`,
+        `ppcommit still reports persistent issues after ${committerName} pass:\n` +
+          `${ppAfter.stdout || ppAfter.stderr}\n` +
+          "If these violations are pre-existing baseline/tooling artifacts, resolve repository hygiene or adjust ppcommit scope/preset before retrying.",
       );
     }
     state.steps.ppcommitClean = true;

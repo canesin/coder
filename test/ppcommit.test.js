@@ -111,6 +111,18 @@ test("ppcommit: does not allow workflow artifacts under .coder/", async () => {
   assert.match(r.stdout, /\.coder\/notes\.md:1/);
 });
 
+test("ppcommit: skips gitignored untracked workflow artifacts", async () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, ".gitignore"), ".coder/\n", "utf8");
+  run("git", ["add", ".gitignore"], repo);
+  run("git", ["commit", "-m", "ignore coder artifacts"], repo);
+
+  mkdirSync(path.join(repo, ".coder"), { recursive: true });
+  writeFileSync(path.join(repo, ".coder", "notes.md"), "# Notes\n", "utf8");
+  const r = await runPpcommitNative(repo);
+  assert.equal(r.exitCode, 0);
+});
+
 test("ppcommit: does not allow coder workflow markdown artifacts (ISSUE/PLAN) in repo diffs", async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "ISSUE.md"), "# Issue\n", "utf8");

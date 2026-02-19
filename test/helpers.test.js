@@ -165,6 +165,19 @@ test("gitCleanOrThrow throws when repo has modified files", () => {
   }, /a\.txt/);
 });
 
+test("gitCleanOrThrow ignores untracked paths covered by .gitignore", () => {
+  const { repoDir } = setupGitRepo({
+    ".gitignore": "prompts/\n",
+    "README.md": "hello\n",
+  });
+  mkdirSync(path.join(repoDir, "prompts"), { recursive: true });
+  writeFileSync(path.join(repoDir, "prompts", "notes.txt"), "x\n", "utf8");
+
+  assert.doesNotThrow(() => {
+    gitCleanOrThrow(repoDir);
+  });
+});
+
 test("sanitizeIssueMarkdown strips MCP auth noise and preserves markdown body", () => {
   const raw = `MCP server 'linear' rejected stored OAuth token. Please re-authenticate using: /mcp auth linear
 # Metadata

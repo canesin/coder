@@ -1,24 +1,39 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { createActor } from "xstate";
 import { z } from "zod";
 import { AgentPool } from "../../agents/pool.js";
 import { AgentRolesInputSchema, resolveConfig } from "../../config.js";
-import { buildSecrets, DEFAULT_PASS_ENV } from "../../helpers.js";
+import {
+  buildSecrets,
+  DEFAULT_PASS_ENV,
+  detectDefaultBranch,
+} from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
 import {
   createWorkflowLifecycleMachine,
   loadLoopState,
   loadWorkflowSnapshot,
+  loopStatePathFor,
   saveLoopState,
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
+  statePathFor,
+  workflowStatePathFor,
 } from "../../state/workflow-state.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
+import { buildIssueBranchName } from "../../worktrees.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
 const HEARTBEAT_STALE_MS = 30_000;
@@ -163,10 +178,90 @@ function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   return true;
 }
 
+function resetWorkflowWorkspace(workspaceDir) {
+  const cancelledRuns = [];
+  for (const [runId, run] of activeRuns) {
+    if (run.workspace !== workspaceDir) continue;
+    run.cancelToken.cancelled = true;
+    cancelledRuns.push(runId);
+    activeRuns.delete(runId);
+    const actorEntry = workflowActors.get(runId);
+    if (actorEntry?.workspace === workspaceDir) {
+      actorEntry.actor.stop();
+      workflowActors.delete(runId);
+    }
+  }
+
+  const loopState = loadLoopState(workspaceDir);
+  const branchesDeleted = [];
+  const branchesKept = [];
+  const repoRoot = path.resolve(workspaceDir, ".");
+  if (existsSync(path.join(repoRoot, ".git"))) {
+    const defaultBranch = detectDefaultBranch(repoRoot);
+    const seen = new Set();
+    for (const issue of loopState.issueQueue || []) {
+      const branch = issue.branch || buildIssueBranchName(issue);
+      if (!branch || branch === defaultBranch || seen.has(branch)) continue;
+      seen.add(branch);
+      const exists =
+        spawnSync("git", ["rev-parse", "--verify", branch], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        }).status === 0;
+      if (!exists) continue;
+
+      const del = spawnSync("git", ["branch", "-D", branch], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      if (del.status === 0) branchesDeleted.push(branch);
+      else branchesKept.push(branch);
+    }
+
+    spawnSync("git", ["checkout", defaultBranch], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+  }
+
+  const removedPaths = [];
+  const rmIfExists = (target, opts = { force: true }) => {
+    if (!existsSync(target)) return;
+    rmSync(target, opts);
+    removedPaths.push(target);
+  };
+
+  rmIfExists(statePathFor(workspaceDir), { force: true });
+  rmIfExists(loopStatePathFor(workspaceDir), { force: true });
+  rmIfExists(workflowStatePathFor(workspaceDir), { force: true });
+
+  const coderDir = path.join(workspaceDir, ".coder");
+  const artifactsDir = path.join(coderDir, "artifacts");
+  rmIfExists(artifactsDir, { recursive: true, force: true });
+
+  if (existsSync(coderDir)) {
+    for (const name of readdirSync(coderDir)) {
+      if (!name.startsWith("checkpoint-") || !name.endsWith(".json")) continue;
+      rmIfExists(path.join(coderDir, name), { force: true });
+    }
+  }
+
+  return {
+    cancelledRuns,
+    branchesDeleted,
+    branchesKept,
+    removedPaths,
+  };
+}
+
 function readWorkflowStatus(workspaceDir) {
   const loopState = loadLoopState(workspaceDir);
   const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
+  const stageStartedAt = loopState.currentStageStartedAt || null;
+  const timeInCurrentStageMs = stageStartedAt
+    ? Math.max(0, Date.now() - Date.parse(stageStartedAt))
+    : null;
 
   const counts = {
     total: 0,
@@ -184,6 +279,37 @@ function readWorkflowStatus(workspaceDir) {
     else if (entry.status === "in_progress") counts.inProgress++;
     else counts.pending++;
   }
+  const issuesRemaining = Math.max(
+    0,
+    counts.total - counts.completed - counts.failed - counts.skipped,
+  );
+
+  const currentIssueEntry =
+    loopState.currentIndex >= 0 &&
+    loopState.currentIndex < loopState.issueQueue.length
+      ? loopState.issueQueue[loopState.currentIndex]
+      : null;
+  const currentIssue = currentIssueEntry
+    ? {
+        index: loopState.currentIndex + 1,
+        total: counts.total,
+        source: currentIssueEntry.source,
+        id: currentIssueEntry.id,
+        title: currentIssueEntry.title,
+        status: currentIssueEntry.status,
+      }
+    : null;
+
+  const lastErrorEntry = [...loopState.issueQueue]
+    .reverse()
+    .find((e) => e.error && String(e.error).trim());
+  const lastError = lastErrorEntry
+    ? {
+        issueId: lastErrorEntry.id,
+        issueTitle: lastErrorEntry.title,
+        error: lastErrorEntry.error,
+      }
+    : null;
 
   const issueQueue = loopState.issueQueue.map((e) => ({
     source: e.source,
@@ -222,10 +348,15 @@ function readWorkflowStatus(workspaceDir) {
     staleReason,
     goal: loopState.goal,
     counts,
+    issuesRemaining,
+    currentIssue,
     currentStage: loopState.currentStage || null,
+    currentStageStartedAt: stageStartedAt,
+    timeInCurrentStageMs,
     activeAgent: loopState.activeAgent || null,
     lastHeartbeatAt: loopState.lastHeartbeatAt || null,
     heartbeatAgeMs,
+    lastError,
     runnerPid,
     runnerAlive,
     issueQueue,
@@ -340,7 +471,15 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         "named workflows (workflow=develop|research|design).",
       inputSchema: {
         action: z
-          .enum(["start", "status", "events", "cancel", "pause", "resume"])
+          .enum([
+            "start",
+            "status",
+            "events",
+            "cancel",
+            "pause",
+            "resume",
+            "reset",
+          ])
           .describe("Workflow control action"),
         workflow: z
           .enum(["develop", "research", "design"])
@@ -510,6 +649,23 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                   null,
                   2,
                 ),
+              },
+            ],
+          };
+        }
+
+        if (action === "reset") {
+          const reset = resetWorkflowWorkspace(ws);
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  action,
+                  workflow,
+                  status: "reset_completed",
+                  ...reset,
+                }),
               },
             ],
           };

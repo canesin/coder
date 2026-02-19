@@ -377,6 +377,35 @@ function shouldSkipPath(filePath) {
   return parts.some((p) => SKIP_DIRS.has(p));
 }
 
+function isTrackedPath(repoDir, filePath) {
+  const tracked = spawnSync(
+    "git",
+    ["ls-files", "--error-unmatch", "--", filePath],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
+  return tracked.status === 0;
+}
+
+function isGitIgnoredPath(repoDir, filePath) {
+  const ignored = spawnSync(
+    "git",
+    ["check-ignore", "--quiet", "--", filePath],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
+  return ignored.status === 0;
+}
+
+function shouldSkipGitignoredUntracked(repoDir, filePath) {
+  if (isTrackedPath(repoDir, filePath)) return false;
+  return isGitIgnoredPath(repoDir, filePath);
+}
+
 function readUtf8File(repoDir, filePath) {
   const repoRoot = path.resolve(repoDir);
   const fullPath = path.resolve(repoRoot, filePath);
@@ -1236,6 +1265,7 @@ async function _runChecks(repoDir, ordered, newFiles, config) {
   const llmFiles = [];
 
   for (const filePath of ordered) {
+    if (shouldSkipGitignoredUntracked(repoDir, filePath)) continue;
     checkWorkflowArtifacts(filePath, config, issues);
     if (shouldSkipPath(filePath)) continue;
 

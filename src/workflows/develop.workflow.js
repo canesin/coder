@@ -71,6 +71,7 @@ export function registerDevelopMachines() {
  *   prDescription?: string,
  *   prBase?: string,
  *   force?: boolean,
+ *   onStageChange?: (stage: string) => void,
  * }} opts
  * @param {import("../machines/_base.js").WorkflowContext} ctx
  */
@@ -80,6 +81,7 @@ export async function runDevelopPipeline(opts, ctx) {
     workflowContext: ctx,
     onStageChange: (stage) => {
       ctx.log({ event: "develop_stage", stage });
+      if (opts.onStageChange) opts.onStageChange(stage);
     },
   });
 
@@ -189,18 +191,29 @@ function buildIssueQueue(issues) {
  * Resolve the base branch for an issue from its completed dependencies.
  *
  * @param {Array<{ id: string, dependsOn?: string[] }>} issue
- * @param {Map<string, { status: string, branch?: string }>} outcomeMap
- * @returns {{ baseBranch: string | null, allDepsFailed: boolean, depOutcomes: object }}
+ * @param {Map<string, { status: string, branch?: string, failureType?: "code" | "infrastructure" }>} outcomeMap
+ * @returns {{
+ *   baseBranch: string | null,
+ *   allDepsCodeFailed: boolean,
+ *   hasInfrastructureBlockedDeps: boolean,
+ *   depOutcomes: object
+ * }}
  */
 function resolveDependencyBranch(issue, outcomeMap) {
   const deps = issue.dependsOn || issue.depends_on || [];
   if (deps.length === 0) {
-    return { baseBranch: null, allDepsFailed: false, depOutcomes: {} };
+    return {
+      baseBranch: null,
+      allDepsCodeFailed: false,
+      hasInfrastructureBlockedDeps: false,
+      depOutcomes: {},
+    };
   }
 
   const outcomes = {};
   let _successCount = 0;
-  let failCount = 0;
+  let codeFailCount = 0;
+  let infraFailCount = 0;
   let baseBranch = null;
 
   for (const depId of deps) {
@@ -209,24 +222,47 @@ function resolveDependencyBranch(issue, outcomeMap) {
       outcomes[depId] = "pending";
       continue;
     }
-    outcomes[depId] = outcome.status;
+    if (outcome.failureType) {
+      outcomes[depId] = `${outcome.status}:${outcome.failureType}`;
+    } else {
+      outcomes[depId] = outcome.status;
+    }
+
     if (outcome.status === "completed" && outcome.branch) {
       _successCount++;
       // Use the first successful dependency branch as base
       if (!baseBranch) baseBranch = outcome.branch;
     } else if (outcome.status === "failed" || outcome.status === "skipped") {
-      failCount++;
+      if (outcome.failureType === "infrastructure") {
+        infraFailCount++;
+      } else {
+        codeFailCount++;
+      }
     }
   }
 
   const knownDeps = deps.filter((d) => outcomeMap.has(d));
-  const allDepsFailed = knownDeps.length > 0 && failCount === knownDeps.length;
+  const allDepsCodeFailed =
+    knownDeps.length > 0 && codeFailCount === knownDeps.length;
+  const hasInfrastructureBlockedDeps = infraFailCount > 0;
 
-  return { baseBranch, allDepsFailed, depOutcomes: outcomes };
+  return {
+    baseBranch,
+    allDepsCodeFailed,
+    hasInfrastructureBlockedDeps,
+    depOutcomes: outcomes,
+  };
 }
 
 const isRateLimitError = (text) =>
   /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
+
+const isInfrastructureFailure = (errorText) => {
+  const t = String(errorText || "");
+  return /repo working tree is not clean|not a git repository|failed to (?:run `git status`|determine current git branch|checkout|create branch|diff against base)|branch .* already exists|workflow artifact detected|wip checkpoint|git push failed|gh pr create failed|test infrastructure missing|missing required env var|gemini_api_key|ppcommit.*failed to diff|remote .* not found|authentication failed|non-fast-forward/i.test(
+    t,
+  );
+};
 
 /**
  * Run the autonomous develop loop — process multiple issues.
@@ -236,7 +272,6 @@ export async function runDevelopLoop(opts, ctx) {
     goal = "resolve all assigned issues",
     projectFilter,
     maxIssues = 10,
-    destructiveReset = false,
     testCmd,
     testConfigPath,
     allowNoTests = false,
@@ -292,31 +327,47 @@ export async function runDevelopLoop(opts, ctx) {
     prUrl: null,
     error: null,
     baseBranch: null,
+    startedAt: null,
+    completedAt: null,
   }));
   loopState.currentIndex = 0;
+  loopState.currentStage = "queue_ready";
+  loopState.currentStageStartedAt = new Date().toISOString();
+  loopState.lastHeartbeatAt = loopState.currentStageStartedAt;
   loopState.startedAt = new Date().toISOString();
   saveLoopState(ctx.workspaceDir, loopState);
 
-  /** @type {Map<string, { status: string, branch?: string }>} */
+  /** @type {Map<string, { status: string, branch?: string, failureType?: "code" | "infrastructure" }>} */
   const outcomeMap = new Map();
   const results = [];
   let completed = 0;
   let failed = 0;
   let skipped = 0;
 
+  const setLoopStage = (stage) => {
+    loopState.currentStage = stage;
+    loopState.currentStageStartedAt = new Date().toISOString();
+    loopState.lastHeartbeatAt = new Date().toISOString();
+    saveLoopState(ctx.workspaceDir, loopState);
+  };
+
   // Helper: process a single issue
   async function processIssue(issue, i, { isRetry = false } = {}) {
     loopState.currentIndex = i;
-    loopState.currentStage = isRetry ? "retry" : "processing";
-    loopState.lastHeartbeatAt = new Date().toISOString();
-    saveLoopState(ctx.workspaceDir, loopState);
-
-    const { baseBranch, allDepsFailed, depOutcomes } = resolveDependencyBranch(
-      issue,
-      outcomeMap,
+    loopState.issueQueue[i].status = "in_progress";
+    loopState.issueQueue[i].startedAt ||= new Date().toISOString();
+    setLoopStage(
+      isRetry ? `issue:${issue.id}:retry` : `issue:${issue.id}:processing`,
     );
 
-    if (allDepsFailed) {
+    const {
+      baseBranch,
+      allDepsCodeFailed,
+      hasInfrastructureBlockedDeps,
+      depOutcomes,
+    } = resolveDependencyBranch(issue, outcomeMap);
+
+    if (allDepsCodeFailed) {
       ctx.log({
         event: "issue_skipped",
         issueId: issue.id,
@@ -325,12 +376,42 @@ export async function runDevelopLoop(opts, ctx) {
       });
       loopState.issueQueue[i].status = "skipped";
       loopState.issueQueue[i].error = "All dependencies failed";
-      outcomeMap.set(issue.id, { status: "skipped" });
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
+      outcomeMap.set(issue.id, {
+        status: "skipped",
+        failureType: "code",
+      });
       skipped++;
       results.push({
         ...issue,
         status: "skipped",
         error: "All dependencies failed",
+      });
+      saveLoopState(ctx.workspaceDir, loopState);
+      return "skipped";
+    }
+
+    if (hasInfrastructureBlockedDeps) {
+      ctx.log({
+        event: "issue_skipped",
+        issueId: issue.id,
+        reason: "dependencies_infrastructure_blocked",
+        depOutcomes,
+      });
+      loopState.issueQueue[i].status = "skipped";
+      loopState.issueQueue[i].error =
+        "Dependency infrastructure failure requires operator intervention";
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
+      outcomeMap.set(issue.id, {
+        status: "skipped",
+        failureType: "infrastructure",
+      });
+      skipped++;
+      results.push({
+        ...issue,
+        status: "skipped",
+        error:
+          "Dependency infrastructure failure requires operator intervention",
       });
       saveLoopState(ctx.workspaceDir, loopState);
       return "skipped";
@@ -358,6 +439,31 @@ export async function runDevelopLoop(opts, ctx) {
     }
 
     const repoPath = normalizeRepoPath(ctx.workspaceDir, issue.repo_path);
+    const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
+    const issueBranch = buildIssueBranchName(issue);
+    if (existsSync(repoRoot)) {
+      const localBranchExists =
+        spawnSync(
+          "git",
+          ["show-ref", "--verify", "--quiet", `refs/heads/${issueBranch}`],
+          { cwd: repoRoot, encoding: "utf8" },
+        ).status === 0;
+      const remoteBranchExists =
+        spawnSync(
+          "git",
+          ["ls-remote", "--exit-code", "--heads", "origin", issueBranch],
+          { cwd: repoRoot, encoding: "utf8" },
+        ).status === 0;
+      if (localBranchExists || remoteBranchExists) {
+        ctx.log({
+          event: "issue_branch_preflight",
+          issueId: issue.id,
+          branch: issueBranch,
+          localExists: localBranchExists,
+          remoteExists: remoteBranchExists,
+        });
+      }
+    }
 
     try {
       const pipelineResult = await runDevelopPipeline(
@@ -372,6 +478,9 @@ export async function runDevelopLoop(opts, ctx) {
           allowNoTests,
           ppcommitPreset,
           force: true,
+          onStageChange: (stage) => {
+            setLoopStage(`issue:${issue.id}:${stage}`);
+          },
         },
         ctx,
       );
@@ -383,6 +492,7 @@ export async function runDevelopLoop(opts, ctx) {
         loopState.issueQueue[i].status = "completed";
         loopState.issueQueue[i].branch = branch;
         loopState.issueQueue[i].prUrl = prResult?.data?.prUrl;
+        loopState.issueQueue[i].completedAt = new Date().toISOString();
         outcomeMap.set(issue.id, { status: "completed", branch });
         completed++;
         results.push({
@@ -400,14 +510,24 @@ export async function runDevelopLoop(opts, ctx) {
           saveLoopState(ctx.workspaceDir, loopState);
           return "deferred";
         }
+        const failureType = isInfrastructureFailure(errText)
+          ? "infrastructure"
+          : "code";
         loopState.issueQueue[i].status = "failed";
         loopState.issueQueue[i].error = errText;
-        outcomeMap.set(issue.id, { status: "failed" });
+        loopState.issueQueue[i].completedAt = new Date().toISOString();
+        outcomeMap.set(issue.id, { status: "failed", failureType });
+        ctx.log({
+          event: "issue_failed",
+          issueId: issue.id,
+          failureType,
+        });
         failed++;
         results.push({
           ...issue,
           status: "failed",
           error: errText,
+          failureType,
         });
       }
     } catch (err) {
@@ -418,11 +538,25 @@ export async function runDevelopLoop(opts, ctx) {
         saveLoopState(ctx.workspaceDir, loopState);
         return "deferred";
       }
+      const failureType = isInfrastructureFailure(err.message)
+        ? "infrastructure"
+        : "code";
       loopState.issueQueue[i].status = "failed";
       loopState.issueQueue[i].error = err.message;
-      outcomeMap.set(issue.id, { status: "failed" });
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
+      outcomeMap.set(issue.id, { status: "failed", failureType });
+      ctx.log({
+        event: "issue_failed",
+        issueId: issue.id,
+        failureType,
+      });
       failed++;
-      results.push({ ...issue, status: "failed", error: err.message });
+      results.push({
+        ...issue,
+        status: "failed",
+        error: err.message,
+        failureType,
+      });
     }
 
     saveLoopState(ctx.workspaceDir, loopState);
@@ -430,7 +564,6 @@ export async function runDevelopLoop(opts, ctx) {
     // Reset between issues
     const issueStatus = loopState.issueQueue[i].status;
     await resetForNextIssue(ctx.workspaceDir, repoPath, {
-      destructiveReset,
       issueStatus,
     });
     return issueStatus;
@@ -594,7 +727,10 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
   }
 
   loopState.status = ctx.cancelToken.cancelled ? "cancelled" : "completed";
+  loopState.currentStage = null;
+  loopState.currentStageStartedAt = null;
   loopState.completedAt = new Date().toISOString();
+  loopState.lastHeartbeatAt = loopState.completedAt;
   saveLoopState(ctx.workspaceDir, loopState);
 
   return {
@@ -613,7 +749,7 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
 async function resetForNextIssue(
   workspaceDir,
   repoPath,
-  { destructiveReset = false, issueStatus = "completed" } = {},
+  { issueStatus = "completed" } = {},
 ) {
   // Delete per-issue state
   const statePath = statePathFor(workspaceDir);
@@ -629,9 +765,24 @@ async function resetForNextIssue(
   // Git cleanup
   const repoRoot = resolveRepoRoot(workspaceDir, repoPath);
   if (existsSync(repoRoot)) {
+    const defaultBranch = detectDefaultBranch(repoRoot);
+
+    // Determine if we're on an issue branch (not the default branch).
+    // If the issue failed before branch creation, we're still on default —
+    // do NOT commit WIP to the default branch as that pollutes main.
+    const currentBranch = (
+      spawnSync("git", ["branch", "--show-current"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      }).stdout || ""
+    ).trim();
+    const isOnIssueBranch = currentBranch && currentBranch !== defaultBranch;
+
     // For failed/skipped issues, preserve partial work on the issue branch
     // before switching back to the default branch.
-    const needsPreserve = issueStatus === "failed" || issueStatus === "skipped";
+    const needsPreserve =
+      isOnIssueBranch &&
+      (issueStatus === "failed" || issueStatus === "skipped");
 
     if (needsPreserve) {
       const status = spawnSync("git", ["status", "--porcelain"], {
@@ -639,7 +790,7 @@ async function resetForNextIssue(
         encoding: "utf8",
       });
       if ((status.stdout || "").trim()) {
-        // Commit partial work to the current (issue) branch so it's not lost
+        // Commit partial work to the issue branch so it's not lost
         spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
         spawnSync(
           "git",
@@ -649,27 +800,32 @@ async function resetForNextIssue(
       }
     }
 
-    const defaultBranch = detectDefaultBranch(repoRoot);
     spawnSync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
     });
 
-    if (destructiveReset) {
-      const status = spawnSync("git", ["status", "--porcelain"], {
+    // Always ensure the working tree is clean after switching back to
+    // the default branch.  Without this, leftover files from a failed
+    // issue (agent-created directories, stale artifacts) block every
+    // subsequent issue's gitCleanOrThrow check.
+    const status = spawnSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if ((status.stdout || "").trim()) {
+      spawnSync("git", ["restore", "--staged", "--worktree", "."], {
         cwd: repoRoot,
         encoding: "utf8",
       });
-      if ((status.stdout || "").trim()) {
-        spawnSync("git", ["restore", "--staged", "--worktree", "."], {
+      spawnSync(
+        "git",
+        ["clean", "-fd", "--exclude=.coder/", "--exclude=.gemini/"],
+        {
           cwd: repoRoot,
           encoding: "utf8",
-        });
-        spawnSync("git", ["clean", "-fd"], {
-          cwd: repoRoot,
-          encoding: "utf8",
-        });
-      }
+        },
+      );
     }
   }
 }

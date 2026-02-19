@@ -12,45 +12,105 @@ import { parseAgentPayload, requireExitZero } from "./_shared.js";
 
 const HANG_TIMEOUT_MS = 1000 * 60 * 2;
 
+function parseIssueMarkdownMeta(content) {
+  const heading = content.match(/^#\s+(.+)$/m);
+  const title = heading
+    ? heading[1].replace(/^ISSUE-\d+\s*[—–-]\s*/, "").trim()
+    : "";
+
+  const statusMatch = content.match(/^Status\s*:\s*(.+)$/im);
+  const status = statusMatch ? statusMatch[1].trim() : "";
+
+  const dependsMatch = content.match(/^Depends-On\s*:\s*(.+)$/im);
+  let dependsOn = null;
+  if (dependsMatch) {
+    const raw = dependsMatch[1].trim();
+    if (!raw || /^_?none_?$/i.test(raw) || /^n\/a$/i.test(raw)) {
+      dependsOn = [];
+    } else {
+      dependsOn = raw
+        .split(/[,;\s]+/)
+        .map((d) => d.trim())
+        .filter(Boolean);
+    }
+  }
+
+  return { title, status, dependsOn };
+}
+
+function isDoneStatus(status) {
+  return /^(done|completed|complete|closed|resolved)$/i.test(
+    String(status || "").trim(),
+  );
+}
+
 /**
  * Load issues from a local manifest.json + markdown files.
  *
  * @param {string} issuesDir - Absolute path to issues directory
- * @returns {{ issues: z.infer<typeof IssueItemSchema>[], recommended_index: number } | null}
+ * @returns {{
+ *   ok: boolean,
+ *   reason: string,
+ *   data?: { issues: z.infer<typeof IssueItemSchema>[], recommended_index: number, skippedDone: number }
+ * }}
  */
 function loadLocalIssues(issuesDir) {
   const manifestPath = path.join(issuesDir, "manifest.json");
-  if (!existsSync(manifestPath)) return null;
+  if (!existsSync(manifestPath)) {
+    return {
+      ok: false,
+      reason: `manifest not found: ${manifestPath}`,
+    };
+  }
 
   let manifest;
   try {
     manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   } catch {
-    return null;
+    return {
+      ok: false,
+      reason: "manifest parse failed",
+    };
   }
 
-  if (!Array.isArray(manifest.issues)) return null;
+  if (!Array.isArray(manifest.issues)) {
+    return {
+      ok: false,
+      reason: "manifest has no issues array",
+    };
+  }
 
   const issues = [];
+  let skippedDone = 0;
   for (const entry of manifest.issues) {
     if (!entry.id || !entry.file) continue;
 
-    // Resolve title from manifest or markdown file
-    let title = entry.title || "";
-    if (!title && entry.file) {
-      const mdPath = path.resolve(path.dirname(issuesDir), entry.file);
-      if (existsSync(mdPath)) {
-        try {
-          const content = readFileSync(mdPath, "utf8");
-          const heading = content.match(/^#\s+(.+)/m);
-          title = heading
-            ? heading[1].replace(/^ISSUE-\d+\s*[—–-]\s*/, "").trim()
-            : entry.id;
-        } catch {
-          title = entry.id;
-        }
+    // Resolve markdown metadata:
+    // 1) title fallback
+    // 2) Status: done/completed/closed -> skip
+    // 3) Depends-On override when present in markdown
+    // Prefer issue-dir relative paths, then parent-dir legacy paths.
+    let mdMeta = { title: "", status: "", dependsOn: null };
+    let mdPath = path.resolve(issuesDir, entry.file);
+    if (!existsSync(mdPath)) {
+      mdPath = path.resolve(path.dirname(issuesDir), entry.file);
+    }
+    if (existsSync(mdPath)) {
+      try {
+        mdMeta = parseIssueMarkdownMeta(readFileSync(mdPath, "utf8"));
+      } catch {
+        mdMeta = { title: "", status: "", dependsOn: null };
       }
     }
+
+    const status = mdMeta.status || entry.status || "";
+    if (isDoneStatus(status)) {
+      skippedDone++;
+      continue;
+    }
+    const title = entry.title || mdMeta.title || entry.id;
+    const dependsOn =
+      mdMeta.dependsOn || entry.dependsOn || entry.depends_on || [];
 
     const parsed = IssueItemSchema.safeParse({
       source: "local",
@@ -59,12 +119,16 @@ function loadLocalIssues(issuesDir) {
       repo_path: entry.repo_path || "",
       difficulty: entry.difficulty ?? 3,
       reason: entry.reason || `Priority: ${entry.priority || "P2"}`,
-      depends_on: entry.dependsOn || entry.depends_on || [],
+      depends_on: dependsOn,
     });
     if (parsed.success) issues.push(parsed.data);
   }
 
-  return issues.length > 0 ? { issues, recommended_index: 0 } : null;
+  return {
+    ok: true,
+    reason: "local manifest loaded",
+    data: { issues, recommended_index: 0, skippedDone },
+  };
 }
 
 export default defineMachine({
@@ -95,24 +159,25 @@ export default defineMachine({
         : path.resolve(ctx.workspaceDir, input.localIssuesDir);
 
       const local = loadLocalIssues(resolvedDir);
-      if (local) {
+      if (local.ok) {
         ctx.log({
           event: "step1_local_issues",
-          count: local.issues.length,
+          count: local.data.issues.length,
+          skippedDone: local.data.skippedDone,
           dir: resolvedDir,
         });
         return {
           status: "ok",
           data: {
-            issues: local.issues,
-            recommended_index: local.recommended_index,
+            issues: local.data.issues,
+            recommended_index: local.data.recommended_index,
             source: "local",
           },
         };
       }
       ctx.log({
         event: "step1_local_issues_fallback",
-        reason: "manifest not found or empty, falling back to remote",
+        reason: `${local.reason}, falling back to remote`,
         dir: resolvedDir,
       });
     }

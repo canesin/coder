@@ -69,6 +69,7 @@ Unified control plane for all three workflows:
 - \`action: "events"\` — Read structured events with cursor pagination
 - \`action: "cancel"\` — Cooperative cancellation (requires runId)
 - \`action: "pause" / "resume"\` — Control execution at stage boundaries
+- \`action: "reset"\` — Clear stale workflow state and issue branches after failed runs
 
 ## Quick Start: Develop Workflow${projectFilter ? ` (filtered to "${projectFilter}")` : ""}
 

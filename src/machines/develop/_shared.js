@@ -22,28 +22,56 @@ export function artifactPaths(artifactsDir) {
 export function ensureBranch(repoRoot, branch) {
   if (!branch) throw new Error("No branch set. Run issue-draft first.");
 
-  const current = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  const runGit = (args) =>
+    spawnSync("git", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+
+  const current = runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
   if (current.status !== 0)
     throw new Error("Failed to determine current git branch.");
 
   const currentBranch = (current.stdout || "").trim();
   if (currentBranch === branch) return;
 
-  const checkout = spawnSync("git", ["checkout", branch], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  if (checkout.status === 0) return;
+  const localExists =
+    runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])
+      .status === 0;
+  if (localExists) {
+    const checkoutExisting = runGit(["checkout", branch]);
+    if (checkoutExisting.status !== 0) {
+      throw new Error(
+        `Failed to checkout existing branch ${branch}: ${checkoutExisting.stderr || checkoutExisting.stdout}`,
+      );
+    }
+    return;
+  }
 
-  const create = spawnSync("git", ["checkout", "-b", branch], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  const remoteExists =
+    runGit(["ls-remote", "--exit-code", "--heads", "origin", branch]).status ===
+    0;
+  if (remoteExists) {
+    const trackRemote = runGit([
+      "checkout",
+      "-b",
+      branch,
+      "--track",
+      `origin/${branch}`,
+    ]);
+    if (trackRemote.status !== 0) {
+      throw new Error(
+        `Failed to checkout remote branch ${branch}: ${trackRemote.stderr || trackRemote.stdout}`,
+      );
+    }
+    return;
+  }
+
+  const create = runGit(["checkout", "-b", branch]);
   if (create.status !== 0) {
-    throw new Error(`Failed to create branch ${branch}: ${create.stderr}`);
+    throw new Error(
+      `Failed to create branch ${branch}: ${create.stderr || create.stdout}`,
+    );
   }
 }
 
@@ -137,9 +165,21 @@ export function maybeCheckpointWip(repoRoot, branch, wipConfig, log) {
   const runGit = (args) =>
     spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
 
+  let remoteUrl = "";
   try {
     const remoteCheck = runGit(["remote", "get-url", remote]);
-    if (remoteCheck.status !== 0) return;
+    if (remoteCheck.status !== 0) {
+      if (log) {
+        log({
+          event: "wip_checkpoint_skipped_remote_missing",
+          branch,
+          remote,
+          error: (remoteCheck.stderr || remoteCheck.stdout || "").trim(),
+        });
+      }
+      return;
+    }
+    remoteUrl = (remoteCheck.stdout || "").trim();
 
     if (autoCommit) {
       const status = runGit(["status", "--porcelain"]);
@@ -171,9 +211,17 @@ export function maybeCheckpointWip(repoRoot, branch, wipConfig, log) {
     if (push.status !== 0)
       throw new Error(`git push failed: ${push.stderr || push.stdout}`);
 
-    if (log) log({ event: "wip_checkpoint_pushed", branch, remote });
+    if (log) log({ event: "wip_checkpoint_pushed", branch, remote, remoteUrl });
   } catch (err) {
-    if (log) log({ event: "wip_checkpoint_failed", error: err.message });
+    if (log) {
+      log({
+        event: "wip_checkpoint_failed",
+        branch,
+        remote,
+        remoteUrl,
+        error: err.message,
+      });
+    }
     if (failOnError) throw err;
   }
 }

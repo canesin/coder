@@ -309,18 +309,27 @@ export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {
   return head.join("\n").trim();
 }
 
-export function gitCleanOrThrow(repoDir) {
-  const res = spawnSync("git", ["status", "--porcelain"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
-  if (res.status !== 0) throw new Error("Failed to run `git status`.");
+/**
+ * Check that the git working tree is clean (ignoring workflow artifacts).
+ *
+ * @param {string} repoDir - Path to the git repository
+ * @param {{ autoClean?: boolean }} options
+ *   - autoClean: if true, stash untracked/modified files before checking
+ *     so that a dirty tree from a prior failed issue doesn't block the next one.
+ */
+export function gitCleanOrThrow(repoDir, { autoClean = false } = {}) {
   const ignorePatterns = [
     ".coder/",
     ".gemini/",
     ".gitignore",
     ".geminiignore",
   ].map((p) => p.replace(/\\/g, "/"));
+
+  const runGit = (args) =>
+    spawnSync("git", args, {
+      cwd: repoDir,
+      encoding: "utf8",
+    });
 
   const isIgnored = (filePath) => {
     return ignorePatterns.some((pattern) => {
@@ -337,14 +346,45 @@ export function gitCleanOrThrow(repoDir) {
     });
   };
 
-  const lines = (res.stdout || "").split("\n").filter((l) => {
-    if (l.trim() === "") return false;
-    const pathField = l.slice(3); // skip status prefix (e.g. "?? " or " M ")
-    const filePath = pathField.includes(" -> ")
-      ? pathField.split(" -> ").pop() || pathField
-      : pathField;
-    return !isIgnored(filePath);
-  });
+  const isGitIgnored = (filePath) => {
+    const check = runGit(["check-ignore", "--quiet", "--", filePath]);
+    return check.status === 0;
+  };
+
+  const getDirtyLines = () => {
+    const res = runGit(["status", "--porcelain", "--ignored=no"]);
+    if (res.status !== 0) throw new Error("Failed to run `git status`.");
+    return (res.stdout || "").split("\n").filter((l) => {
+      if (l.trim() === "") return false;
+      const statusCode = l.slice(0, 2);
+      const pathField = l.slice(3); // skip status prefix (e.g. "?? " or " M ")
+      const filePath = pathField.includes(" -> ")
+        ? pathField.split(" -> ").pop() || pathField
+        : pathField;
+      if (isIgnored(filePath)) return false;
+      if (statusCode === "??" && isGitIgnored(filePath)) return false;
+      return true;
+    });
+  };
+
+  let lines = getDirtyLines();
+  if (lines.length > 0 && autoClean) {
+    // Try to auto-clean: restore staged/modified files, then remove untracked
+    spawnSync("git", ["restore", "--staged", "--worktree", "."], {
+      cwd: repoDir,
+      encoding: "utf8",
+    });
+    spawnSync(
+      "git",
+      ["clean", "-fd", "--exclude=.coder/", "--exclude=.gemini/"],
+      {
+        cwd: repoDir,
+        encoding: "utf8",
+      },
+    );
+    lines = getDirtyLines();
+  }
+
   if (lines.length > 0) {
     throw new Error(
       `Repo working tree is not clean: ${repoDir}\n${lines.join("\n")}`,
