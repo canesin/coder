@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -18,13 +18,13 @@ const HANG_TIMEOUT_MS = 1000 * 60 * 2;
  * @param {string} issuesDir - Absolute path to issues directory
  * @returns {{ issues: z.infer<typeof IssueItemSchema>[], recommended_index: number } | null}
  */
-function loadLocalIssues(issuesDir) {
+async function loadLocalIssues(issuesDir) {
   const manifestPath = path.join(issuesDir, "manifest.json");
-  if (!existsSync(manifestPath)) return null;
+  if (!(await access(manifestPath).then(() => true).catch(() => false))) return null;
 
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   } catch {
     return null;
   }
@@ -39,9 +39,9 @@ function loadLocalIssues(issuesDir) {
     let title = entry.title || "";
     if (!title && entry.file) {
       const mdPath = path.resolve(path.dirname(issuesDir), entry.file);
-      if (existsSync(mdPath)) {
+      if (await access(mdPath).then(() => true).catch(() => false)) {
         try {
-          const content = readFileSync(mdPath, "utf8");
+          const content = await readFile(mdPath, "utf8");
           const heading = content.match(/^#\s+(.+)/m);
           title = heading
             ? heading[1].replace(/^ISSUE-\d+\s*[—–-]\s*/, "").trim()
@@ -94,7 +94,7 @@ export default defineMachine({
         ? input.localIssuesDir
         : path.resolve(ctx.workspaceDir, input.localIssuesDir);
 
-      const local = loadLocalIssues(resolvedDir);
+      const local = await loadLocalIssues(resolvedDir);
       if (local) {
         ctx.log({
           event: "step1_local_issues",

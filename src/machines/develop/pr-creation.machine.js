@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { z } from "zod";
 import {
   buildPrBodyFromIssue,
@@ -124,8 +124,8 @@ export default defineMachine({
     let body = input.description || "";
     if (!body) {
       const paths = artifactPaths(ctx.artifactsDir);
-      if (existsSync(paths.issue)) {
-        const issueMd = readFileSync(paths.issue, "utf8");
+      if (await access(paths.issue).then(() => true).catch(() => false)) {
+        const issueMd = await readFile(paths.issue, "utf8");
         body = buildPrBodyFromIssue(issueMd, { maxLines: 10 });
       }
     }

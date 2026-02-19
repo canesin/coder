@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { runPlanreview, stripAgentNoise } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
@@ -28,8 +28,8 @@ export default defineMachine({
     }
 
     if (state.steps.wroteCritique) {
-      const critiqueMd = existsSync(paths.critique)
-        ? readFileSync(paths.critique, "utf8")
+      const critiqueMd = (await access(paths.critique).then(() => true).catch(() => false))
+        ? await readFile(paths.critique, "utf8")
         : "";
       return { status: "ok", data: { critiqueMd } };
     }
@@ -44,7 +44,7 @@ export default defineMachine({
       const rc = runPlanreview(repoRoot, paths.plan, paths.critique);
       if (rc !== 0) {
         ctx.log({ event: "plan_review_nonzero", exitCode: rc });
-        if (!existsSync(paths.critique)) {
+        if (!(await access(paths.critique).then(() => true).catch(() => false))) {
           throw new Error(
             `Plan review failed (exit code ${rc}) and produced no critique file.`,
           );
@@ -70,7 +70,7 @@ Constraints:
       });
       requireExitZero(planReviewerName, "plan review failed", reviewRes);
 
-      if (!existsSync(paths.critique)) {
+      if (!(await access(paths.critique).then(() => true).catch(() => false))) {
         const cleaned = stripAgentNoise(reviewRes.stdout || "", {
           dropLeadingOnly: true,
         });
@@ -79,18 +79,18 @@ Constraints:
           throw new Error(
             `${planReviewerName} plan review produced no critique output.`,
           );
-        writeFileSync(paths.critique, filtered + "\n", "utf8");
+        await writeFile(paths.critique, filtered + "\n", "utf8");
       }
     }
 
     state.steps.wroteCritique = true;
     saveState(ctx.workspaceDir, state);
 
-    const planMd = existsSync(paths.plan)
-      ? readFileSync(paths.plan, "utf8")
+    const planMd = (await access(paths.plan).then(() => true).catch(() => false))
+      ? await readFile(paths.plan, "utf8")
       : "";
-    const critiqueMd = existsSync(paths.critique)
-      ? readFileSync(paths.critique, "utf8")
+    const critiqueMd = (await access(paths.critique).then(() => true).catch(() => false))
+      ? await readFile(paths.critique, "utf8")
       : "";
 
     maybeCheckpointWip(
