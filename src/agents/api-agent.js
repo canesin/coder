@@ -153,18 +153,18 @@ export function createApiAgent(opts) {
   if (provider === "gemini") {
     return new ApiAgent({
       provider: "gemini",
-      endpoint: config.agents.geminiApiEndpoint,
-      apiKey: secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY || "",
-      model: config.models.gemini,
+      endpoint: config.models.gemini.apiEndpoint,
+      apiKey: secrets[config.models.gemini.apiKeyEnv] || "",
+      model: config.models.gemini.model,
       systemPrompt: opts.systemPrompt,
     });
   }
 
   return new ApiAgent({
     provider: "anthropic",
-    endpoint: config.agents.anthropicApiEndpoint,
-    apiKey: secrets.ANTHROPIC_API_KEY || "",
-    model: config.models.claude,
+    endpoint: config.models.claude.apiEndpoint,
+    apiKey: secrets[config.models.claude.apiKeyEnv] || "",
+    model: config.models.claude.model,
     systemPrompt: opts.systemPrompt,
   });
 }
