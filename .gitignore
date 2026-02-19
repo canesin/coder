@@ -33,3 +33,5 @@ Thumbs.db
 dist/
 build/
 .gemini/
+
+ISSUES.md
