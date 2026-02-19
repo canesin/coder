@@ -149,7 +149,8 @@ export class AgentPool {
     const stale = [];
     for (const [key, agent] of this._agents) {
       const secondColonIndex = key.indexOf(":", key.indexOf(":") + 1);
-      const extractedCwd = secondColonIndex === -1 ? "" : key.substring(secondColonIndex + 1);
+      const extractedCwd =
+        secondColonIndex === -1 ? "" : key.substring(secondColonIndex + 1);
       // cli agents keyed as cli:name:cwd — kill those pointing at a different repo root
       if (
         key.startsWith("cli:") &&
