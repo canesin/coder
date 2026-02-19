@@ -116,7 +116,7 @@ export class CliAgent extends AgentAdapter {
       if (structured) {
         return geminiJsonPipeWithModel(prompt, this.config.models.gemini);
       }
-      const model = this.config.models.gemini;
+      const model = this.config.models.gemini?.model;
       const cmd = model ? `gemini --yolo -m ${model}` : "gemini --yolo";
       return heredocPipe(prompt, cmd);
     }
