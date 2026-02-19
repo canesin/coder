@@ -151,20 +151,28 @@ export function createApiAgent(opts) {
   const provider = opts.provider || "gemini";
 
   if (provider === "gemini") {
+    const entry = config.models.gemini;
+    const keyEnv = entry.apiKeyEnv || "GEMINI_API_KEY";
     return new ApiAgent({
       provider: "gemini",
-      endpoint: config.agents.geminiApiEndpoint,
-      apiKey: secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY || "",
-      model: config.models.gemini,
+      endpoint: entry.apiEndpoint,
+      apiKey:
+        secrets[keyEnv] ||
+        secrets.GEMINI_API_KEY ||
+        secrets.GOOGLE_API_KEY ||
+        "",
+      model: entry.model,
       systemPrompt: opts.systemPrompt,
     });
   }
 
+  const entry = config.models.claude;
+  const keyEnv = entry.apiKeyEnv || "ANTHROPIC_API_KEY";
   return new ApiAgent({
     provider: "anthropic",
-    endpoint: config.agents.anthropicApiEndpoint,
-    apiKey: secrets.ANTHROPIC_API_KEY || "",
-    model: config.models.claude,
+    endpoint: entry.apiEndpoint,
+    apiKey: secrets[keyEnv] || secrets.ANTHROPIC_API_KEY || "",
+    model: entry.model,
     systemPrompt: opts.systemPrompt,
   });
 }

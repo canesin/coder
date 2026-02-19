@@ -108,8 +108,10 @@ export default defineMachine({
     state.scratchpadPath = path.relative(ctx.workspaceDir, scratchpadPath);
     saveState(ctx.workspaceDir, state);
 
-    // Verify clean repo, then set up ignore files
-    gitCleanOrThrow(repoRoot);
+    // Verify clean repo, then set up ignore files.
+    // autoClean: true allows recovering from a prior failed issue that left
+    // untracked files (e.g. agent-created directories) on the default branch.
+    gitCleanOrThrow(repoRoot, { autoClean: true });
     ensureGitignore(ctx.workspaceDir);
     state.steps.verifiedCleanRepo = true;
     saveState(ctx.workspaceDir, state);

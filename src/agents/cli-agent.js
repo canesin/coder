@@ -114,17 +114,17 @@ export class CliAgent extends AgentAdapter {
   _buildCommand(prompt, { structured = false, sessionId, resumeId } = {}) {
     if (this.name === "gemini") {
       if (structured) {
-        return geminiJsonPipeWithModel(prompt, this.config.models.gemini);
+        return geminiJsonPipeWithModel(prompt, this.config.models.gemini.model);
       }
-      const model = this.config.models.gemini;
+      const model = this.config.models.gemini.model;
       const cmd = model ? `gemini --yolo -m ${model}` : "gemini --yolo";
       return heredocPipe(prompt, cmd);
     }
 
     if (this.name === "claude") {
       let flags = "claude -p";
-      if (this.config.models.claude) {
-        flags += ` --model ${this.config.models.claude}`;
+      if (this.config.models.claude.model) {
+        flags += ` --model ${this.config.models.claude.model}`;
       }
       if (this.config.claude.skipPermissions) {
         flags += " --dangerously-skip-permissions";
@@ -135,7 +135,9 @@ export class CliAgent extends AgentAdapter {
     }
 
     // codex
-    return `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
+    const codexModel = this.config.models.codex.model;
+    const modelFlag = codexModel ? ` --model ${codexModel}` : "";
+    return `codex exec${modelFlag} --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
   }
 
   async execute(prompt, opts = {}) {
