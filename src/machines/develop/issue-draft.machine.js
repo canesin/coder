@@ -89,7 +89,11 @@ export default defineMachine({
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
     ctx.agentPool.setRepoRoot(repoRoot);
 
-    if (!(await access(repoRoot).then(() => true).catch(() => false)))
+    if (
+      !(await access(repoRoot)
+        .then(() => true)
+        .catch(() => false))
+    )
       throw new Error(`Repo root does not exist: ${repoRoot}`);
 
     const isGit = spawnSync("git", ["rev-parse", "--git-dir"], {
@@ -108,7 +112,11 @@ export default defineMachine({
     });
     const scratchpadPath = scratchpad.issueScratchpadPath(input.issue);
     scratchpad.restoreFromSqlite(scratchpadPath);
-    if (!(await access(scratchpadPath).then(() => true).catch(() => false))) {
+    if (
+      !(await access(scratchpadPath)
+        .then(() => true)
+        .catch(() => false))
+    ) {
       const header = [
         `# Scratchpad for ${input.issue.source}#${input.issue.id}`,
         "",
@@ -187,11 +195,15 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 
     // Prefer on-disk file if agent wrote it via tool use
     let issueMd;
-    if (await access(paths.issue).then(() => true).catch(() => false)) {
+    if (
+      await access(paths.issue)
+        .then(() => true)
+        .catch(() => false)
+    ) {
       const onDisk = sanitizeIssueMarkdown(await readFile(paths.issue, "utf8"));
       if (onDisk.length > 40 && onDisk.startsWith("#")) {
         issueMd = onDisk + "\n";
-        if (issueMd !== await readFile(paths.issue, "utf8")) {
+        if (issueMd !== (await readFile(paths.issue, "utf8"))) {
           await writeFile(paths.issue, issueMd);
         }
       }

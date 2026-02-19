@@ -49,7 +49,9 @@ export function ensureBranch(repoRoot, branch) {
 
 export async function ensureGitignore(workspaceDir) {
   const gitignorePath = path.join(workspaceDir, ".gitignore");
-  let giContent = (await access(gitignorePath).then(() => true).catch(() => false))
+  let giContent = (await access(gitignorePath)
+    .then(() => true)
+    .catch(() => false))
     ? await readFile(gitignorePath, "utf8")
     : "";
   const giLines = giContent.split("\n").map((l) => l.trim());
@@ -63,7 +65,9 @@ export async function ensureGitignore(workspaceDir) {
 
   const artifacts = [ISSUE_FILE, PLAN_FILE, CRITIQUE_FILE];
   const geminiIgnorePath = path.join(workspaceDir, ".geminiignore");
-  const gmContent = (await access(geminiIgnorePath).then(() => true).catch(() => false))
+  const gmContent = (await access(geminiIgnorePath)
+    .then(() => true)
+    .catch(() => false))
     ? await readFile(geminiIgnorePath, "utf8")
     : "";
   const keepRules = [
@@ -105,12 +109,17 @@ export function parseAgentPayload(agentName, stdout) {
     : extractJson(stdout);
 }
 
-export async function checkArtifactCollisions(artifactsDir, { force = false } = {}) {
+export async function checkArtifactCollisions(
+  artifactsDir,
+  { force = false } = {},
+) {
   if (force) return;
   const paths = artifactPaths(artifactsDir);
   const checks = await Promise.all(
     Object.entries(paths).map(async ([k, p]) => {
-      const exists = await access(p).then(() => true).catch(() => false);
+      const exists = await access(p)
+        .then(() => true)
+        .catch(() => false);
       return exists ? k : null;
     }),
   );

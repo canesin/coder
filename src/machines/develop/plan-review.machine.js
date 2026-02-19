@@ -28,7 +28,9 @@ export default defineMachine({
     }
 
     if (state.steps.wroteCritique) {
-      const critiqueMd = (await access(paths.critique).then(() => true).catch(() => false))
+      const critiqueMd = (await access(paths.critique)
+        .then(() => true)
+        .catch(() => false))
         ? await readFile(paths.critique, "utf8")
         : "";
       return { status: "ok", data: { critiqueMd } };
@@ -44,7 +46,11 @@ export default defineMachine({
       const rc = runPlanreview(repoRoot, paths.plan, paths.critique);
       if (rc !== 0) {
         ctx.log({ event: "plan_review_nonzero", exitCode: rc });
-        if (!(await access(paths.critique).then(() => true).catch(() => false))) {
+        if (
+          !(await access(paths.critique)
+            .then(() => true)
+            .catch(() => false))
+        ) {
           throw new Error(
             `Plan review failed (exit code ${rc}) and produced no critique file.`,
           );
@@ -70,7 +76,11 @@ Constraints:
       });
       requireExitZero(planReviewerName, "plan review failed", reviewRes);
 
-      if (!(await access(paths.critique).then(() => true).catch(() => false))) {
+      if (
+        !(await access(paths.critique)
+          .then(() => true)
+          .catch(() => false))
+      ) {
         const cleaned = stripAgentNoise(reviewRes.stdout || "", {
           dropLeadingOnly: true,
         });
@@ -86,10 +96,14 @@ Constraints:
     state.steps.wroteCritique = true;
     saveState(ctx.workspaceDir, state);
 
-    const planMd = (await access(paths.plan).then(() => true).catch(() => false))
+    const planMd = (await access(paths.plan)
+      .then(() => true)
+      .catch(() => false))
       ? await readFile(paths.plan, "utf8")
       : "";
-    const critiqueMd = (await access(paths.critique).then(() => true).catch(() => false))
+    const critiqueMd = (await access(paths.critique)
+      .then(() => true)
+      .catch(() => false))
       ? await readFile(paths.critique, "utf8")
       : "";
 

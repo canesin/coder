@@ -124,7 +124,11 @@ export default defineMachine({
     let body = input.description || "";
     if (!body) {
       const paths = artifactPaths(ctx.artifactsDir);
-      if (await access(paths.issue).then(() => true).catch(() => false)) {
+      if (
+        await access(paths.issue)
+          .then(() => true)
+          .catch(() => false)
+      ) {
         const issueMd = await readFile(paths.issue, "utf8");
         body = buildPrBodyFromIssue(issueMd, { maxLines: 10 });
       }

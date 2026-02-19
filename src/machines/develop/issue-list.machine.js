@@ -20,7 +20,12 @@ const HANG_TIMEOUT_MS = 1000 * 60 * 2;
  */
 async function loadLocalIssues(issuesDir) {
   const manifestPath = path.join(issuesDir, "manifest.json");
-  if (!(await access(manifestPath).then(() => true).catch(() => false))) return null;
+  if (
+    !(await access(manifestPath)
+      .then(() => true)
+      .catch(() => false))
+  )
+    return null;
 
   let manifest;
   try {
@@ -39,7 +44,11 @@ async function loadLocalIssues(issuesDir) {
     let title = entry.title || "";
     if (!title && entry.file) {
       const mdPath = path.resolve(path.dirname(issuesDir), entry.file);
-      if (await access(mdPath).then(() => true).catch(() => false)) {
+      if (
+        await access(mdPath)
+          .then(() => true)
+          .catch(() => false)
+      ) {
         try {
           const content = await readFile(mdPath, "utf8");
           const heading = content.match(/^#\s+(.+)/m);
