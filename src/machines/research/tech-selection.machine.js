@@ -137,7 +137,9 @@ Return JSON:
   }
 }`;
 
-    const res = await agent.executeWithRetry(prompt, { timeoutMs: 1000 * 60 * 8 });
+    const res = await agent.executeWithRetry(prompt, {
+      timeoutMs: 1000 * 60 * 8,
+    });
     requireExitZero(agentName, "tech_selection", res);
 
     const payload = parseAgentPayload(agentName, res.stdout);

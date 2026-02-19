@@ -90,7 +90,9 @@ Return JSON:
   "searchSummary": "brief summary of findings"
 }`;
 
-    const res = await agent.executeWithRetry(prompt, { timeoutMs: 1000 * 60 * 5 });
+    const res = await agent.executeWithRetry(prompt, {
+      timeoutMs: 1000 * 60 * 5,
+    });
     if (res.exitCode !== 0) {
       endPipelineStep(
         pipeline,
