@@ -199,7 +199,7 @@ async function readWorkflowStatus(workspaceDir) {
   const activityPath = path.join(workspaceDir, ".coder", "activity.json");
   if (existsSync(activityPath)) {
     try {
-      agentActivity = JSON.parse(readFileSync(activityPath, "utf8"));
+      agentActivity = JSON.parse(await readFile(activityPath, "utf8"));
     } catch {
       /* best-effort */
     }
