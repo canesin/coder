@@ -190,9 +190,7 @@ Hard constraints:
       );
     }
     state.steps.testsPassed = true;
-    state.reviewFingerprint = computeGitWorktreeFingerprint(repoRoot);
     state.reviewedAt = new Date().toISOString();
-    saveState(ctx.workspaceDir, state);
 
     upsertIssueCompletionBlock(paths.issue, {
       ppcommitClean: true,
@@ -206,6 +204,11 @@ Hard constraints:
       ctx.config.workflow.wip,
       ctx.log,
     );
+
+    // Save fingerprint after all workflow-internal file modifications and WIP
+    // commits are done, so pr_creation sees the same state.
+    state.reviewFingerprint = computeGitWorktreeFingerprint(repoRoot);
+    saveState(ctx.workspaceDir, state);
     return {
       status: "ok",
       data: {
