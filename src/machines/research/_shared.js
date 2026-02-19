@@ -118,7 +118,7 @@ export async function runStructuredStep({
     scope: "workspace",
   });
 
-  const res = await agent.execute(prompt, { timeoutMs });
+  const res = await agent.executeWithRetry(prompt, { timeoutMs });
   if (res.exitCode !== 0) {
     await endPipelineStep(
       pipeline,

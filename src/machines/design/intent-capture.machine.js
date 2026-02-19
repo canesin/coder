@@ -74,7 +74,7 @@ Return ONLY valid JSON in this schema:
   "notes": "string"
 }`;
 
-    const res = await agent.execute(parsePrompt, {
+    const res = await agent.executeWithRetry(parsePrompt, {
       timeoutMs: 1000 * 60 * 5,
     });
     if (res.exitCode !== 0) {

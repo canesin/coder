@@ -104,7 +104,7 @@ Hard constraints:
 - If a command fails, fix the underlying issue and re-run until it passes
 - Remove ALL unnecessary code, comments, and abstractions`;
 
-      const res = await agent.execute(prompt, {
+      const res = await agent.executeWithRetry(prompt, {
         timeoutMs: 1000 * 60 * 90,
       });
       requireExitZero(agentName, label, res);

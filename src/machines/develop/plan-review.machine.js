@@ -71,7 +71,7 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
-      const reviewRes = await planReviewerAgent.execute(reviewPrompt, {
+      const reviewRes = await planReviewerAgent.executeWithRetry(reviewPrompt, {
         timeoutMs: 1000 * 60 * 40,
       });
       requireExitZero(planReviewerName, "plan review failed", reviewRes);

@@ -569,7 +569,7 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
       const { agent } = ctx.agentPool.getAgent("reviewer", {
         scope: "repo",
       });
-      const res = await agent.execute(prompt, {
+      const res = await agent.executeWithRetry(prompt, {
         timeoutMs: 1000 * 60 * 15,
       });
 

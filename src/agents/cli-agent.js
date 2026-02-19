@@ -175,7 +175,7 @@ export class CliAgent extends AgentAdapter {
     const retries = opts.retries ?? 5;
     const backoffMs = opts.backoffMs ?? 5000;
     const maxTimeout = opts.maxTimeoutMs ?? 60000;
-    const retryOnRateLimit = opts.retryOnRateLimit ?? false;
+    const retryOnRateLimit = opts.retryOnRateLimit ?? true;
 
     const isRateLimited = (txt) =>
       /rate limit|429|resource_exhausted|quota/i.test(String(txt || ""));

@@ -188,7 +188,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 5. **Out of Scope**: What this does NOT include
 `;
 
-    const res = await agent.execute(issuePrompt, {
+    const res = await agent.executeWithRetry(issuePrompt, {
       timeoutMs: 1000 * 60 * 10,
     });
     requireExitZero(agentName, "ISSUE.md drafting failed", res);

@@ -277,3 +277,37 @@ test("config: ModelEntrySchema rejects invalid fallbackModel names", () => {
     });
   }, /Invalid model name/);
 });
+
+test("executeWithRetry: retryOnRateLimit defaults to true", async () => {
+  const tmp = makeTmpDir();
+  const config = makeMinimalConfig();
+  const agent = new CliAgent("gemini", {
+    cwd: tmp,
+    secrets: {},
+    config,
+    workspaceDir: tmp,
+  });
+
+  let calls = 0;
+  const mockRun = async () => {
+    calls++;
+    return { exitCode: 1, stdout: "rate limit exceeded 429", stderr: "" };
+  };
+
+  agent._sandbox = {
+    on: () => {},
+    commands: { run: mockRun },
+    kill: async () => {},
+  };
+
+  await assert.rejects(
+    async () => {
+      await agent.executeWithRetry("test prompt", { backoffMs: 1 });
+    },
+    (err) => err.name === "RateLimitError",
+  );
+
+  assert.ok(calls > 1, `Expected retries, got calls=${calls}`);
+
+  rmSync(tmp, { recursive: true, force: true });
+});

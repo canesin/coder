@@ -143,7 +143,7 @@ Constraints:
 
     let res;
     try {
-      res = await plannerAgent.execute(planPrompt, {
+      res = await plannerAgent.executeWithRetry(planPrompt, {
         sessionId: plannerName === "claude" ? state.claudeSessionId : undefined,
         timeoutMs: 1000 * 60 * 40,
       });

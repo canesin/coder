@@ -103,7 +103,7 @@ Return JSON:
   "limitations": ["known limitations of this PoC"]
 }`;
 
-    const res = await agent.execute(prompt, {
+    const res = await agent.executeWithRetry(prompt, {
       timeoutMs: input.timeoutMs,
     });
 

@@ -137,7 +137,7 @@ Return JSON:
   "feedback": ["actionable feedback items for next iteration"]
 }`;
 
-    const res = await agent.execute(prompt, { timeoutMs: 1000 * 60 * 8 });
+    const res = await agent.executeWithRetry(prompt, { timeoutMs: 1000 * 60 * 8 });
     requireExitZero(agentName, "issue_critique", res);
 
     const payload = parseAgentPayload(agentName, res.stdout);
