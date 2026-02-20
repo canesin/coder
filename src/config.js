@@ -134,7 +134,7 @@ export const CoderConfigSchema = z.object({
   models: z
     .object({
       gemini: ModelEntrySchema.default({
-        model: "gemini-3-flash-preview",
+        model: "gemini-3.1-pro-preview",
         apiEndpoint: "https://generativelanguage.googleapis.com/v1beta",
         apiKeyEnv: "GEMINI_API_KEY",
       }),

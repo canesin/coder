@@ -99,7 +99,7 @@ export class ApiAgent extends AgentAdapter {
   }
 
   async _callAnthropic(prompt) {
-    const model = this.model || "claude-sonnet-4-5-20250929";
+    const model = this.model || "claude-sonnet-4-6";
     const url = `${this.endpoint}/v1/messages`;
 
     const body = {

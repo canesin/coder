@@ -1044,7 +1044,7 @@ Respond with ONLY a JSON array. Each item:
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: config?.llmModel || "gemini-3-flash-preview",
+            model: config?.llmModel || "gemini-3.1-pro-preview",
             messages: [{ role: "user", content: prompt }],
             temperature: 0,
           }),

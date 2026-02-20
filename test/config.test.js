@@ -59,7 +59,7 @@ test("loadConfig: user config only merges with defaults", () => {
     const config = loadConfig(dir);
     assert.equal(config.verbose, true);
     assert.equal(config.models.claude, "claude-sonnet-4-5-20250929");
-    assert.equal(config.models.gemini, "gemini-2.5-flash"); // default preserved
+    assert.equal(config.models.gemini, "gemini-3.1-pro-preview"); // default preserved
   } finally {
     if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = origXdg;
