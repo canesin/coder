@@ -311,19 +311,23 @@ class HostSandboxInstance extends EventEmitter {
     }
   }
   _launch(command, { background, timeoutMs }) {
+    // Strip CLAUDECODE so nested claude invocations are not blocked by the
+    // "cannot launch inside another Claude Code session" check added in 2.1.x.
+    const { CLAUDECODE: _cc, ...env } = this.env;
+
     if (this.useSystemdRun) {
       const unitName = makeSystemdUnitName("coder-agent");
       const args = buildSystemdRunArgs(command, {
         unitName,
         cwd: this.cwd,
-        env: this.env,
+        env,
         timeoutMs,
         wait: !background,
         pipe: !background,
       });
       const child = spawn("systemd-run", args, {
         cwd: this.cwd,
-        env: this.env,
+        env,
         stdio: background ? "ignore" : ["ignore", "pipe", "pipe"],
       });
       return { child, useSystemd: true, unitName };
@@ -331,7 +335,7 @@ class HostSandboxInstance extends EventEmitter {
 
     const child = spawn("bash", ["-lc", command], {
       cwd: this.cwd,
-      env: this.env,
+      env,
       stdio: background ? "ignore" : ["ignore", "pipe", "pipe"],
       detached: true,
     });
