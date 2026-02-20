@@ -68,7 +68,7 @@ export class ApiAgent extends AgentAdapter {
   }
 
   async _callGemini(prompt) {
-    const model = this.model || "gemini-2.5-flash";
+    const model = this.model || "gemini-3.1-pro-preview";
     const url = `${this.endpoint}/models/${model}:generateContent?key=${this.apiKey}`;
 
     const body = {

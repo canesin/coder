@@ -181,11 +181,10 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
 
 ```jsonc
 {
-  // Model selection
+  // Model selection (see coder.example.json for full structure)
   "models": {
-    "gemini": "gemini-2.5-flash",
-    "geminiPreview": "gemini-3-flash-preview",
-    "claude": "claude-opus-4-6"
+    "gemini": { "model": "gemini-3.1-pro-preview" },
+    "claude": { "model": "claude-sonnet-4-6" }
   },
 
   // Agent role assignments (gemini | claude | codex)
@@ -204,7 +203,7 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
   // Commit hygiene (tree-sitter AST-based)
   "ppcommit": {
     "enableLlm": true,
-    "llmModel": "gemini-3-flash-preview"
+    "llmModelRef": "gemini"
   },
 
   // Test execution
