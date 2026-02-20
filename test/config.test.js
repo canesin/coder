@@ -49,7 +49,7 @@ test("loadConfig: user config only merges with defaults", () => {
     path.join(xdg, "coder", "config.json"),
     JSON.stringify({
       verbose: true,
-      models: { claude: "claude-sonnet-4-5-20250929" },
+      models: { claude: { model: "claude-sonnet-4-5-20250929" } },
     }),
   );
 
@@ -158,11 +158,13 @@ test("resolveConfig: ppcommit llm settings can be overridden", () => {
       enableLlm: false,
       llmServiceUrl: "https://example.com/v1",
       llmModelRef: "claude",
+      llmApiKey: "my-key",
     },
   });
   assert.equal(config.ppcommit.enableLlm, false);
   assert.equal(config.ppcommit.llmServiceUrl, "https://example.com/v1");
   assert.equal(config.ppcommit.llmModelRef, "claude");
+  assert.equal(config.ppcommit.llmApiKey, "my-key");
 });
 
 test("userConfigPath: respects XDG_CONFIG_HOME", () => {

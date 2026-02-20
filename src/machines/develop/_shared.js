@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   extractGeminiPayloadJson,
@@ -47,10 +47,12 @@ export function ensureBranch(repoRoot, branch) {
   }
 }
 
-export function ensureGitignore(workspaceDir) {
+export async function ensureGitignore(workspaceDir) {
   const gitignorePath = path.join(workspaceDir, ".gitignore");
-  let giContent = existsSync(gitignorePath)
-    ? readFileSync(gitignorePath, "utf8")
+  let giContent = (await access(gitignorePath)
+    .then(() => true)
+    .catch(() => false))
+    ? await readFile(gitignorePath, "utf8")
     : "";
   const giLines = giContent.split("\n").map((l) => l.trim());
   const needed = [".coder/", ".gemini/", ".coder/logs/"];
@@ -58,13 +60,15 @@ export function ensureGitignore(workspaceDir) {
   if (missing.length > 0) {
     const suffix = giContent.endsWith("\n") || giContent === "" ? "" : "\n";
     giContent += `${suffix}# coder workflow artifacts\n${missing.join("\n")}\n`;
-    writeFileSync(gitignorePath, giContent);
+    await writeFile(gitignorePath, giContent);
   }
 
   const artifacts = [ISSUE_FILE, PLAN_FILE, CRITIQUE_FILE];
   const geminiIgnorePath = path.join(workspaceDir, ".geminiignore");
-  const gmContent = existsSync(geminiIgnorePath)
-    ? readFileSync(geminiIgnorePath, "utf8")
+  const gmContent = (await access(geminiIgnorePath)
+    .then(() => true)
+    .catch(() => false))
+    ? await readFile(geminiIgnorePath, "utf8")
     : "";
   const keepRules = [
     "!.coder/",
@@ -78,7 +82,7 @@ export function ensureGitignore(workspaceDir) {
   );
   if (missingGeminiRules.length > 0) {
     const suffix = gmContent.endsWith("\n") || gmContent === "" ? "" : "\n";
-    writeFileSync(
+    await writeFile(
       geminiIgnorePath,
       gmContent +
         `${suffix}# coder workflow artifacts must remain readable\n${missingGeminiRules.join("\n")}\n`,
@@ -105,12 +109,21 @@ export function parseAgentPayload(agentName, stdout) {
     : extractJson(stdout);
 }
 
-export function checkArtifactCollisions(artifactsDir, { force = false } = {}) {
+export async function checkArtifactCollisions(
+  artifactsDir,
+  { force = false } = {},
+) {
   if (force) return;
   const paths = artifactPaths(artifactsDir);
-  const existing = Object.entries(paths)
-    .filter(([, p]) => existsSync(p))
-    .map(([k]) => k);
+  const checks = await Promise.all(
+    Object.entries(paths).map(async ([k, p]) => {
+      const exists = await access(p)
+        .then(() => true)
+        .catch(() => false);
+      return exists ? k : null;
+    }),
+  );
+  const existing = checks.filter(Boolean);
   if (existing.length > 0) {
     throw new Error(
       `Artifact collision: ${existing.join(", ")} already exist in ${artifactsDir}. ` +

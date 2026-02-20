@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -18,13 +18,18 @@ const HANG_TIMEOUT_MS = 1000 * 60 * 2;
  * @param {string} issuesDir - Absolute path to issues directory
  * @returns {{ issues: z.infer<typeof IssueItemSchema>[], recommended_index: number } | null}
  */
-function loadLocalIssues(issuesDir) {
+async function loadLocalIssues(issuesDir) {
   const manifestPath = path.join(issuesDir, "manifest.json");
-  if (!existsSync(manifestPath)) return null;
+  if (
+    !(await access(manifestPath)
+      .then(() => true)
+      .catch(() => false))
+  )
+    return null;
 
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   } catch {
     return null;
   }
@@ -39,9 +44,13 @@ function loadLocalIssues(issuesDir) {
     let title = entry.title || "";
     if (!title && entry.file) {
       const mdPath = path.resolve(path.dirname(issuesDir), entry.file);
-      if (existsSync(mdPath)) {
+      if (
+        await access(mdPath)
+          .then(() => true)
+          .catch(() => false)
+      ) {
         try {
-          const content = readFileSync(mdPath, "utf8");
+          const content = await readFile(mdPath, "utf8");
           const heading = content.match(/^#\s+(.+)/m);
           title = heading
             ? heading[1].replace(/^ISSUE-\d+\s*[—–-]\s*/, "").trim()
@@ -70,7 +79,7 @@ function loadLocalIssues(issuesDir) {
 export default defineMachine({
   name: "develop.issue_list",
   description:
-    "List assigned GitHub and Linear issues, rate difficulty, return with recommended_index.",
+    "List assigned GitHub, GitLab, and Linear issues, rate difficulty, return with recommended_index.",
   inputSchema: z.object({
     projectFilter: z.string().optional(),
     localIssuesDir: z
@@ -94,7 +103,7 @@ export default defineMachine({
         ? input.localIssuesDir
         : path.resolve(ctx.workspaceDir, input.localIssuesDir);
 
-      const local = loadLocalIssues(resolvedDir);
+      const local = await loadLocalIssues(resolvedDir);
       if (local) {
         ctx.log({
           event: "step1_local_issues",
@@ -121,7 +130,7 @@ export default defineMachine({
     const { agentName, agent } = ctx.agentPool.getAgent("issueSelector", {
       scope: "workspace",
     });
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     // Sub-step: list Linear teams if LINEAR_API_KEY is available
@@ -168,7 +177,7 @@ Return ONLY valid JSON in this schema:
           if (match) state.selectedProject = match;
         }
         state.steps.listedProjects = true;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       } catch (err) {
         ctx.log({
           event: "step0_list_projects_failed",
@@ -176,7 +185,7 @@ Return ONLY valid JSON in this schema:
         });
         state.steps.listedProjects = true;
         state.linearProjects ||= [];
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
     }
 
@@ -189,7 +198,7 @@ Return ONLY valid JSON in this schema:
       projectFilterClause = `\nOnly include Linear issues from projects matching "${input.projectFilter}".`;
     }
 
-    const listPrompt = `Use your GitHub MCP and Linear MCP to list the issues assigned to me.${projectFilterClause}
+    const listPrompt = `Use your GitHub MCP, GitLab MCP, and Linear MCP to list the issues assigned to me.${projectFilterClause}
 
 Then estimate implementation difficulty and directness (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
 
@@ -199,7 +208,7 @@ Return ONLY valid JSON in this schema:
 {
   "issues": [
     {
-      "source": "github" | "linear",
+      "source": "github" | "gitlab" | "linear",
       "id": "string",
       "title": "string",
       "repo_path": "string (relative path to repo subfolder in workspace, or empty if unknown)",
@@ -226,7 +235,7 @@ Return ONLY valid JSON in this schema:
 
     state.steps.listedIssues = true;
     state.issuesPayload = issuesPayload;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     return {
       status: "ok",

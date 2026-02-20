@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
@@ -61,41 +61,45 @@ export default defineMachine({
     const stepsDir = path.join(runDir, "steps");
 
     // Auto-load accumulated artifacts from stepsDir when not passed explicitly
-    const analysisBrief = resolveArtifact(
+    const analysisBrief = await resolveArtifact(
       input.analysisBrief,
       stepsDir,
       "analysis-brief",
     );
-    const webReferenceMap = resolveArtifact(
+    const webReferenceMap = await resolveArtifact(
       input.webReferenceMap,
       stepsDir,
       "web-references",
     );
-    const validationPlan = resolveArtifact(
+    const validationPlan = await resolveArtifact(
       input.validationPlan,
       stepsDir,
       "validation-plan",
     );
-    const validationResults = resolveArtifact(
+    const validationResults = await resolveArtifact(
       input.validationResults,
       stepsDir,
       "validation-results",
     );
     const finalReview =
       input.finalReview ||
-      loadStepArtifact(stepsDir, "review-02") ||
-      loadStepArtifact(stepsDir, "review-01");
+      (await loadStepArtifact(stepsDir, "review-02")) ||
+      (await loadStepArtifact(stepsDir, "review-01"));
 
     // Track this step in the pipeline
-    const pipeline = loadPipeline(pipelinePath) || {
+    const pipeline = (await loadPipeline(pipelinePath)) || {
       version: 1,
       current: "spec_publish",
       history: [],
       steps: {},
     };
-    beginPipelineStep(pipeline, pipelinePath, scratchpadPath, "spec_publish", {
-      issueCount: selectedIssues.length,
-    });
+    await beginPipelineStep(
+      pipeline,
+      pipelinePath,
+      scratchpadPath,
+      "spec_publish",
+      { issueCount: selectedIssues.length },
+    );
 
     const generatedIssues = [];
     for (let i = 0; i < selectedIssues.length; i++) {
@@ -117,7 +121,7 @@ export default defineMachine({
         pointers,
         scratchpadRelPath,
       });
-      writeFileSync(issuePath, issueMd, "utf8");
+      await writeFile(issuePath, issueMd, "utf8");
 
       const references = Array.isArray(item?.references) ? item.references : [];
       const validationStatus = String(item?.validation?.status || "not_run");
@@ -160,9 +164,9 @@ export default defineMachine({
       issues: generatedIssues,
     };
     const manifestPath = path.join(runDir, "manifest.json");
-    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    endPipelineStep(
+    await endPipelineStep(
       pipeline,
       pipelinePath,
       scratchpadPath,
@@ -173,7 +177,7 @@ export default defineMachine({
       },
     );
 
-    appendScratchpad(scratchpadPath, "Generated Issues", [
+    await appendScratchpad(scratchpadPath, "Generated Issues", [
       ...generatedIssues.map((entry) => `- ${entry.id}: ${entry.filePath}`),
       `- manifest: ${path.relative(ctx.workspaceDir, manifestPath)}`,
     ]);

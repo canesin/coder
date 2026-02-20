@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
@@ -116,7 +116,7 @@ export default defineMachine({
         "",
       );
 
-      writeFileSync(mdPath, sections.join("\n"), "utf8");
+      await writeFile(mdPath, sections.join("\n"), "utf8");
       exportedFiles.push(path.relative(ctx.workspaceDir, mdPath));
 
       if (screen.imagePath) {
@@ -128,7 +128,7 @@ export default defineMachine({
     if (designTokens) {
       if (designTokens.css) {
         const cssPath = path.join(specDir, "design-tokens.css");
-        writeFileSync(cssPath, designTokens.css, "utf8");
+        await writeFile(cssPath, designTokens.css, "utf8");
         exportedFiles.push(path.relative(ctx.workspaceDir, cssPath));
       }
       if (designTokens.tailwind) {
@@ -137,7 +137,7 @@ export default defineMachine({
           typeof designTokens.tailwind === "string"
             ? designTokens.tailwind
             : `module.exports = ${JSON.stringify(designTokens.tailwind, null, 2)};\n`;
-        writeFileSync(twPath, content, "utf8");
+        await writeFile(twPath, content, "utf8");
         exportedFiles.push(path.relative(ctx.workspaceDir, twPath));
       }
     }
@@ -161,7 +161,7 @@ export default defineMachine({
       exportedAt: new Date().toISOString(),
     };
     const summaryPath = path.join(specDir, "spec-summary.json");
-    writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
+    await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
     exportedFiles.push(path.relative(ctx.workspaceDir, summaryPath));
 
     ctx.log({

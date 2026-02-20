@@ -51,3 +51,12 @@ test("buildSemanticBranchName uses explicit type and keeps issue tags", () => {
   });
   assert.equal(branch, "bux/optimize-startup-telemetry-and_GH_42");
 });
+
+test("buildIssueBranchName uses GL shortcode for gitlab source", () => {
+  const branch = buildIssueBranchName({
+    source: "gitlab",
+    id: "42",
+    title: "Add gitlab support",
+  });
+  assert.equal(branch, "feat/add-gitlab-support_GL_42");
+});

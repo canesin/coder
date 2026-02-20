@@ -24,14 +24,15 @@ export function detectTestCommand(repoDir) {
   return null;
 }
 
-export function runTestCommand(repoDir, argv) {
+export function runTestCommand(repoDir, argv, timeoutMs = 10 * 60 * 1000) {
   const res = spawnSync(argv[0], argv.slice(1), {
     cwd: repoDir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs,
   });
   return {
-    exitCode: res.status ?? 0,
+    exitCode: res.status ?? -1,
     stdout: res.stdout || "",
     stderr: res.stderr || "",
   };
@@ -115,7 +116,7 @@ export async function waitForHealthCheck(url, retries, intervalMs) {
       try {
         const res = await fetch(url, {
           signal: controller.signal,
-          redirect: "error",
+          redirect: "follow",
         });
         if (res.ok) return;
       } finally {
@@ -145,11 +146,11 @@ export async function runTestConfig(repoDir, config) {
         cwd: repoDir,
         timeoutMs: config.timeoutMs,
       });
-      details.setup.push({ cmd, exitCode: res.exitCode ?? 0 });
-      if ((res.exitCode ?? 0) !== 0) {
+      details.setup.push({ cmd, exitCode: res.exitCode ?? -1 });
+      if ((res.exitCode ?? -1) !== 0) {
         return {
           cmd,
-          exitCode: res.exitCode ?? 1,
+          exitCode: res.exitCode ?? -1,
           stdout: res.stdout || "",
           stderr: res.stderr || `Setup command failed: ${cmd}`,
           details,
@@ -187,7 +188,7 @@ export async function runTestConfig(repoDir, config) {
 
     return {
       cmd: config.test,
-      exitCode: testRes.exitCode ?? 0,
+      exitCode: testRes.exitCode ?? -1,
       stdout: testRes.stdout || "",
       stderr: testRes.stderr || "",
       details,
@@ -199,7 +200,7 @@ export async function runTestConfig(repoDir, config) {
         cwd: repoDir,
         timeoutMs: 120000,
       });
-      details.teardown.push({ cmd, exitCode: res.exitCode ?? 0 });
+      details.teardown.push({ cmd, exitCode: res.exitCode ?? -1 });
     }
   }
 }

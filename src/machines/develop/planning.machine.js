@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { z } from "zod";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
@@ -18,12 +18,17 @@ export default defineMachine({
   inputSchema: z.object({}),
 
   async execute(_input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
     // Reconcile from artifacts
-    if (existsSync(paths.issue)) state.steps.wroteIssue = true;
+    if (
+      await access(paths.issue)
+        .then(() => true)
+        .catch(() => false)
+    )
+      state.steps.wroteIssue = true;
     if (!state.steps.wroteIssue) {
       throw new Error(
         "Precondition failed: ISSUE.md does not exist. Run develop.issue_draft first.",
@@ -84,7 +89,7 @@ export default defineMachine({
     // Generate Claude session ID for reuse across steps
     if (plannerName === "claude" && !state.claudeSessionId) {
       state.claudeSessionId = randomUUID();
-      saveState(ctx.workspaceDir, state);
+      await saveState(ctx.workspaceDir, state);
     }
 
     const planPrompt = `You are planning an implementation. Follow this structured approach:
@@ -143,7 +148,7 @@ Constraints:
 
     let res;
     try {
-      res = await plannerAgent.execute(planPrompt, {
+      res = await plannerAgent.executeWithRetry(planPrompt, {
         sessionId: plannerName === "claude" ? state.claudeSessionId : undefined,
         timeoutMs: 1000 * 60 * 40,
       });
@@ -151,7 +156,7 @@ Constraints:
     } catch (err) {
       if (state.claudeSessionId) {
         state.claudeSessionId = null;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
       throw err;
     }
@@ -191,10 +196,14 @@ Constraints:
       }
     }
 
-    if (!existsSync(paths.plan))
+    if (
+      !(await access(paths.plan)
+        .then(() => true)
+        .catch(() => false))
+    )
       throw new Error(`PLAN.md not found: ${paths.plan}`);
     state.steps.wrotePlan = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     return { status: "ok", data: { planMd: "written" } };
   },

@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { AgentPool } from "../../agents/pool.js";
@@ -11,14 +11,14 @@ import { resolveWorkspaceForMcp } from "../workspace.js";
 /**
  * Build a workflow context for standalone machine execution (not part of a workflow).
  */
-function buildStandaloneContext(workspaceDir, overrides = {}) {
+async function buildStandaloneContext(workspaceDir, overrides = {}) {
   const config = resolveConfig(workspaceDir, overrides);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
   const scratchpadDir = path.join(workspaceDir, ".coder", "scratchpad");
 
-  mkdirSync(path.join(workspaceDir, ".coder"), { recursive: true });
-  mkdirSync(artifactsDir, { recursive: true });
-  mkdirSync(scratchpadDir, { recursive: true });
+  await mkdir(path.join(workspaceDir, ".coder"), { recursive: true });
+  await mkdir(artifactsDir, { recursive: true });
+  await mkdir(scratchpadDir, { recursive: true });
   ensureLogsDir(workspaceDir);
 
   const log = makeJsonlLogger(workspaceDir, "machines");
@@ -84,7 +84,7 @@ export function registerMachineTools(server, defaultWorkspace) {
         try {
           const ws = resolveWorkspaceForMcp(params.workspace, defaultWorkspace);
           const { workspace: _ws, ...machineInput } = params;
-          ctx = buildStandaloneContext(ws, machineInput);
+          ctx = await buildStandaloneContext(ws, machineInput);
 
           const result = await machine.run(machineInput, ctx);
 
@@ -103,7 +103,9 @@ export function registerMachineTools(server, defaultWorkspace) {
             isError: true,
           };
         } finally {
-          if (ctx?.agentPool) await ctx.agentPool.killAll();
+          if (ctx?.agentPool) {
+            await ctx.agentPool.killAll();
+          }
         }
       },
     );

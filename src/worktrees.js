@@ -35,6 +35,7 @@ export function normalizeBranchType(type, { fallback = "feat" } = {}) {
 
 function sourceShortCode(source) {
   if (source === "github") return "GH";
+  if (source === "gitlab") return "GL";
   if (source === "linear") return "LN";
   const normalized = String(source || "")
     .toUpperCase()
@@ -128,7 +129,11 @@ export function ensureWorktree(repoRoot, worktreesRoot, branch) {
     cwd: repoRoot,
     encoding: "utf8",
   });
+  if (res.error) {
+    throw new Error(`Failed to spawn git worktree: ${res.error.message}`);
+  }
   if (res.status !== 0) {
+    if (existsSync(wtPath)) return wtPath;
     throw new Error(
       `Failed to create worktree for ${safeBranch}: ${res.stderr || res.stdout}`,
     );
@@ -141,6 +146,9 @@ export function removeWorktree(repoRoot, wtPath) {
     cwd: repoRoot,
     encoding: "utf8",
   });
+  if (res.error) {
+    throw new Error(`Failed to spawn git worktree: ${res.error.message}`);
+  }
   if (res.status !== 0) {
     throw new Error(
       `Failed to remove worktree ${wtPath}: ${res.stderr || res.stdout}`,

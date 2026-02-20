@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const IssueItemSchema = z.object({
-  source: z.enum(["github", "linear", "local"]),
+  source: z.enum(["github", "gitlab", "linear", "local"]),
   id: z.string().min(1),
   title: z.string().min(1),
   repo_path: z.string().default(""),

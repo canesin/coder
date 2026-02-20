@@ -22,13 +22,13 @@ export default defineMachine({
 
   async execute(input, ctx) {
     const { stepsDir, scratchpadPath, pipelinePath, webResearch } = input;
-    const pipeline = loadPipeline(pipelinePath) || {
+    const pipeline = (await loadPipeline(pipelinePath)) || {
       version: 1,
       current: "deep_research",
       history: [],
       steps: {},
     };
-    const analysisBrief = resolveArtifact(
+    const analysisBrief = await resolveArtifact(
       input.analysisBrief,
       stepsDir,
       "analysis-brief",
@@ -78,7 +78,7 @@ Return ONLY valid JSON in this schema:
       });
       webReferenceMap = referencesRes.payload || webReferenceMap;
     } else {
-      skipPipelineStep(
+      await skipPipelineStep(
         pipeline,
         pipelinePath,
         scratchpadPath,

@@ -11,6 +11,10 @@ export const ModelEntrySchema = z.object({
   model: z.string().regex(modelNameRegex, "Invalid model name"),
   apiEndpoint: z.string().default(""),
   apiKeyEnv: z.string().default(""),
+  fallbackModel: z
+    .string()
+    .refine((v) => v === "" || modelNameRegex.test(v), "Invalid model name")
+    .default(""),
 });
 
 /** Preset defaults for ppcommit check strictness levels. */

@@ -3,6 +3,7 @@ node_modules/
 
 # Local config (examples are committed)
 .mcp.json
+coder.json
 
 # Logs
 *.log
@@ -11,6 +12,7 @@ node_modules/
 # Workflow artifacts
 .coder/
 .coder-worktrees/
+issues/
 
 # IDE
 .idea/

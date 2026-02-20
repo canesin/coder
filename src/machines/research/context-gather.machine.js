@@ -1,5 +1,9 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFile = promisify(execFileCb);
+
+import { access, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
@@ -33,14 +37,14 @@ export default defineMachine({
 
     // Validate repo
     const repoRoot = path.resolve(ctx.workspaceDir, input.repoPath || ".");
-    if (!existsSync(repoRoot)) {
+    try {
+      await access(repoRoot);
+    } catch {
       throw new Error(`Repo root does not exist: ${repoRoot}`);
     }
-    const isGit = spawnSync("git", ["rev-parse", "--git-dir"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    if (isGit.status !== 0) {
+    try {
+      await execFile("git", ["rev-parse", "--git-dir"], { cwd: repoRoot });
+    } catch {
       throw new Error(`Not a git repository: ${repoRoot}`);
     }
 
@@ -53,10 +57,10 @@ export default defineMachine({
       pointersDir,
       scratchpadPath,
       pipelinePath,
-    } = initRunDirectory(ctx.scratchpadDir);
+    } = await initRunDirectory(ctx.scratchpadDir);
 
     // Write scratchpad header
-    writeFileSync(
+    await writeFile(
       scratchpadPath,
       [
         `# Idea-to-Issue Research Run: ${runId}`,
@@ -93,11 +97,11 @@ export default defineMachine({
         pointersDir,
         `chunk-${String(i + 1).padStart(2, "0")}.txt`,
       );
-      writeFileSync(chunkPath, `${pointerChunks[i]}\n`, "utf8");
+      await writeFile(chunkPath, `${pointerChunks[i]}\n`, "utf8");
     }
 
     // Initialize pipeline
-    const pipeline = initPipeline(runId, pipelinePath);
+    const pipeline = await initPipeline(runId, pipelinePath);
 
     const stepOpts = { stepsDir, scratchpadPath, pipeline, pipelinePath, ctx };
 
@@ -162,7 +166,7 @@ Return ONLY valid JSON in this schema:
     });
     const analysisBrief = analysisRes.payload || {};
 
-    appendScratchpad(scratchpadPath, "Context Gather Complete", [
+    await appendScratchpad(scratchpadPath, "Context Gather Complete", [
       `- chunks_analyzed: ${pointerChunks.length}`,
       `- problem_spaces: ${Array.isArray(analysisBrief.problem_spaces) ? analysisBrief.problem_spaces.length : 0}`,
     ]);

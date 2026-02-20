@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assign, setup } from "xstate";
 import { z } from "zod";
@@ -14,9 +14,9 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function persistSnapshotToSqlite(sqlitePath, payload) {
+async function persistSnapshotToSqlite(sqlitePath, payload) {
   if (!sqlitePath || !sqliteAvailable()) return;
-  mkdirSync(path.dirname(sqlitePath), { recursive: true });
+  await mkdir(path.dirname(sqlitePath), { recursive: true });
   const valueJson = JSON.stringify(payload.value ?? null);
   const contextJson = JSON.stringify(payload.context ?? {});
   const sql = `
@@ -42,7 +42,7 @@ export function workflowStatePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "workflow-state.json");
 }
 
-export function saveWorkflowSnapshot(
+export async function saveWorkflowSnapshot(
   workspaceDir,
   { runId, workflow = "develop", snapshot, sqlitePath = "" },
 ) {
@@ -56,13 +56,13 @@ export function saveWorkflowSnapshot(
     updatedAt: nowIso(),
   };
   const statePath = workflowStatePathFor(workspaceDir);
-  mkdirSync(path.dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
-  persistSnapshotToSqlite(sqlitePath, payload);
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
-export function saveWorkflowTerminalState(
+export async function saveWorkflowTerminalState(
   workspaceDir,
   { runId, workflow = "develop", state, context = {}, sqlitePath = "" },
 ) {
@@ -76,17 +76,32 @@ export function saveWorkflowTerminalState(
     updatedAt: nowIso(),
   };
   const statePath = workflowStatePathFor(workspaceDir);
-  mkdirSync(path.dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
-  persistSnapshotToSqlite(sqlitePath, payload);
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
-export function loadWorkflowSnapshot(workspaceDir) {
+const WorkflowSnapshotSchema = z.object({
+  version: z.number().int().default(WORKFLOW_STATE_SCHEMA_VERSION),
+  workflow: z.string().default("develop"),
+  runId: z.string(),
+  value: z.any(),
+  context: z.any().default({}),
+  updatedAt: z.string(),
+});
+
+export async function loadWorkflowSnapshot(workspaceDir) {
   const p = workflowStatePathFor(workspaceDir);
-  if (!existsSync(p)) return null;
+  if (
+    !(await access(p)
+      .then(() => true)
+      .catch(() => false))
+  )
+    return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8"));
+    const data = JSON.parse(await readFile(p, "utf8"));
+    return WorkflowSnapshotSchema.parse(data);
   } catch {
     return null;
   }
@@ -207,7 +222,7 @@ export function createWorkflowLifecycleMachine() {
 
 const LoopIssueResultSchema = z
   .object({
-    source: z.enum(["github", "linear", "local"]),
+    source: z.enum(["github", "gitlab", "linear", "local"]),
     id: z.string().min(1),
     title: z.string(),
     repoPath: z.string().default(""),
@@ -252,26 +267,27 @@ export function loopStatePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "loop-state.json");
 }
 
-export function loadLoopState(workspaceDir) {
+export async function loadLoopState(workspaceDir) {
   const p = loopStatePathFor(workspaceDir);
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = JSON.parse(await readFile(p, "utf8"));
     return LoopStateSchema.parse(raw);
   } catch {
     return LoopStateSchema.parse({});
   }
 }
 
-export function saveLoopState(workspaceDir, loopState) {
+export async function saveLoopState(workspaceDir, loopState) {
   const p = loopStatePathFor(workspaceDir);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(loopState, null, 2) + "\n");
+  const validated = LoopStateSchema.parse(loopState);
+  await mkdir(path.dirname(p), { recursive: true });
+  await writeFile(p, JSON.stringify(validated, null, 2) + "\n");
 }
 
 // --- Per-issue state ---
 
 const SelectedIssueSchema = z.object({
-  source: z.enum(["github", "linear", "local"]),
+  source: z.enum(["github", "gitlab", "linear", "local"]),
   id: z.string().min(1),
   title: z.string().min(1),
   repo_path: z.string().default(""),
@@ -351,18 +367,18 @@ export function statePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "state.json");
 }
 
-export function loadState(workspaceDir) {
+export async function loadState(workspaceDir) {
   const p = statePathFor(workspaceDir);
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = JSON.parse(await readFile(p, "utf8"));
     return IssueStateSchema.parse(raw);
   } catch {
     return { ...DEFAULT_ISSUE_STATE };
   }
 }
 
-export function saveState(workspaceDir, state) {
+export async function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
+  await mkdir(path.dirname(p), { recursive: true });
+  await writeFile(p, JSON.stringify(state, null, 2) + "\n");
 }

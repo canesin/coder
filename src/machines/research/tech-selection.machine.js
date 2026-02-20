@@ -46,25 +46,25 @@ export default defineMachine({
       scope: "workspace",
     });
 
-    const pipeline = loadPipeline(input.pipelinePath) || {
+    const pipeline = (await loadPipeline(input.pipelinePath)) || {
       version: 1,
       runId: "tech-selection",
       current: "init",
       history: [],
       steps: {},
     };
-    const analysisBrief = resolveArtifact(
+    const analysisBrief = await resolveArtifact(
       input.analysisBrief,
       input.stepsDir,
       "analysis-brief",
     );
-    const webRefs = resolveArtifact(
+    const webRefs = await resolveArtifact(
       input.webReferenceMap,
       input.stepsDir,
       "web-references",
     );
 
-    beginPipelineStep(
+    await beginPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,
@@ -72,7 +72,30 @@ export default defineMachine({
       { agent: agentName },
     );
 
-    const refSummary = Object.values(webRefs)
+    const flattenRefs = (refs) => {
+      if (!refs || typeof refs !== "object") return [];
+      if (Array.isArray(refs)) return refs;
+      const allRefs = [];
+      try {
+        for (const val of Object.values(refs)) {
+          if (Array.isArray(val)) {
+            for (const item of val) {
+              if (item && typeof item === "object") {
+                if (item.references && Array.isArray(item.references)) {
+                  allRefs.push(...item.references);
+                } else if (item.url || item.title) {
+                  allRefs.push(item);
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        return [];
+      }
+      return allRefs;
+    };
+    const refSummary = flattenRefs(webRefs)
       .slice(0, 10)
       .map((ref) => `- ${ref.title || ref.url}: ${ref.summary || ""}`)
       .join("\n");
@@ -137,18 +160,20 @@ Return JSON:
   }
 }`;
 
-    const res = await agent.execute(prompt, { timeoutMs: 1000 * 60 * 8 });
+    const res = await agent.executeWithRetry(prompt, {
+      timeoutMs: 1000 * 60 * 8,
+    });
     requireExitZero(agentName, "tech_selection", res);
 
     const payload = parseAgentPayload(agentName, res.stdout);
 
-    appendScratchpad(input.scratchpadPath, "Tech Selection", [
+    await appendScratchpad(input.scratchpadPath, "Tech Selection", [
       `- agent: ${agentName}`,
       `- categories: ${(payload?.categories || []).length}`,
       `- stack: ${payload?.stack?.summary || "unknown"}`,
     ]);
 
-    endPipelineStep(
+    await endPipelineStep(
       pipeline,
       input.pipelinePath,
       input.scratchpadPath,

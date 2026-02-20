@@ -1,35 +1,53 @@
-import { existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { resolveConfig } from "../../config.js";
 import { loadState } from "../../state/workflow-state.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
-function readActivityFile(workspaceDir) {
+async function readActivityFile(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "activity.json");
-  if (!existsSync(p)) return null;
+  if (
+    !(await access(p).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8"));
+    return JSON.parse(await readFile(p, "utf8"));
   } catch {
     return null;
   }
 }
 
-function readMcpHealth(workspaceDir) {
+async function readMcpHealth(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "mcp-health.json");
-  if (!existsSync(p)) return null;
+  if (
+    !(await access(p).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8"));
+    return JSON.parse(await readFile(p, "utf8"));
   } catch {
     return null;
   }
 }
 
-function readResearchState(workspaceDir) {
+async function readResearchState(workspaceDir) {
   const statePath = path.join(workspaceDir, ".coder", "research-state.json");
-  if (!existsSync(statePath)) return null;
+  if (
+    !(await access(statePath).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
   try {
-    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const state = JSON.parse(await readFile(statePath, "utf8"));
     const runId = state.runId;
     if (!runId) return { runId: null, pipeline: null };
     const pipelinePath = path.join(
@@ -40,9 +58,14 @@ function readResearchState(workspaceDir) {
       "pipeline.json",
     );
     let pipeline = null;
-    if (existsSync(pipelinePath)) {
+    if (
+      await access(pipelinePath).then(
+        () => true,
+        () => false,
+      )
+    ) {
       try {
-        pipeline = JSON.parse(readFileSync(pipelinePath, "utf8"));
+        pipeline = JSON.parse(await readFile(pipelinePath, "utf8"));
       } catch {
         // ignore corrupt pipeline
       }
@@ -53,15 +76,36 @@ function readResearchState(workspaceDir) {
   }
 }
 
-function getStatus(workspaceDir) {
+async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
-  const state = loadState(workspaceDir);
+  const state = await loadState(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
   const scratchpadDir = path.join(workspaceDir, ".coder", "scratchpad");
 
   const scratchpadPath = state.scratchpadPath
     ? path.resolve(workspaceDir, state.scratchpadPath)
     : null;
+
+  const [issueExists, planExists, critiqueExists] = await Promise.all([
+    access(path.join(artifactsDir, "ISSUE.md")).then(
+      () => true,
+      () => false,
+    ),
+    access(path.join(artifactsDir, "PLAN.md")).then(
+      () => true,
+      () => false,
+    ),
+    access(path.join(artifactsDir, "PLANREVIEW.md")).then(
+      () => true,
+      () => false,
+    ),
+  ]);
+  const currentExists = scratchpadPath
+    ? await access(scratchpadPath).then(
+        () => true,
+        () => false,
+      )
+    : false;
 
   return {
     selected: state.selected || null,
@@ -83,26 +127,26 @@ function getStatus(workspaceDir) {
       lastPushedAt: state.lastWipPushAt || null,
     },
     artifacts: {
-      issueExists: existsSync(path.join(artifactsDir, "ISSUE.md")),
-      planExists: existsSync(path.join(artifactsDir, "PLAN.md")),
-      critiqueExists: existsSync(path.join(artifactsDir, "PLANREVIEW.md")),
+      issueExists,
+      planExists,
+      critiqueExists,
     },
     scratchpad: {
       dir: scratchpadDir,
       current: state.scratchpadPath || null,
-      currentExists: scratchpadPath ? existsSync(scratchpadPath) : false,
+      currentExists,
       sqlite: {
         enabled: config.workflow.scratchpad.sqliteSync,
         path: config.workflow.scratchpad.sqlitePath,
       },
     },
-    agentActivity: readActivityFile(workspaceDir),
+    agentActivity: await readActivityFile(workspaceDir),
     currentStage: null,
     currentStageStartedAt: null,
     lastHeartbeatAt: null,
     activeAgent: null,
-    mcpHealth: readMcpHealth(workspaceDir),
-    researchWorkflow: readResearchState(workspaceDir),
+    mcpHealth: await readMcpHealth(workspaceDir),
+    researchWorkflow: await readResearchState(workspaceDir),
   };
 }
 
@@ -129,7 +173,7 @@ export function registerStatusTools(server, defaultWorkspace) {
     async ({ workspace }) => {
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
-        const status = getStatus(ws);
+        const status = await getStatus(ws);
         return {
           content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
         };

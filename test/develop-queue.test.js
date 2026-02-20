@@ -111,7 +111,7 @@ test("LoopIssueResultSchema accepts local source", async () => {
   );
   const tmp = makeTmpDir();
   try {
-    saveLoopState(tmp, {
+    await saveLoopState(tmp, {
       runId: "test-1",
       status: "running",
       issueQueue: [
@@ -124,7 +124,7 @@ test("LoopIssueResultSchema accepts local source", async () => {
         },
       ],
     });
-    const loaded = loadLoopState(tmp);
+    const loaded = await loadLoopState(tmp);
     assert.equal(loaded.issueQueue[0].source, "local");
     assert.deepEqual(loaded.issueQueue[0].dependsOn, ["ISSUE-00"]);
   } finally {
@@ -221,4 +221,15 @@ test("diamond dependency: D depends on B and C, both depend on A", () => {
   assert.ok(sorted.indexOf("A") < sorted.indexOf("C"));
   assert.ok(sorted.indexOf("B") < sorted.indexOf("D"));
   assert.ok(sorted.indexOf("C") < sorted.indexOf("D"));
+});
+
+test("IssueItemSchema accepts gitlab source", async () => {
+  const { IssueItemSchema } = await import("../src/schemas.js");
+  const result = IssueItemSchema.safeParse({
+    source: "gitlab",
+    id: "42",
+    title: "Test",
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.data.source, "gitlab");
 });

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { extractJson } from "../../helpers.js";
@@ -20,18 +20,19 @@ export default defineMachine({
       ctx.workspaceDir,
       ctx.config.design?.specDir || "spec/UI",
     );
-    mkdirSync(specDir, { recursive: true });
+    await mkdir(specDir, { recursive: true });
 
     // Load reference screenshots if provided
     const references = [];
     for (const screenshotPath of input.screenshotPaths) {
       const absPath = path.resolve(ctx.workspaceDir, screenshotPath);
-      if (existsSync(absPath)) {
+      try {
+        await access(absPath);
         references.push({
           path: screenshotPath,
           exists: true,
         });
-      } else {
+      } catch {
         ctx.log({ event: "design_screenshot_missing", path: screenshotPath });
       }
     }
@@ -73,7 +74,7 @@ Return ONLY valid JSON in this schema:
   "notes": "string"
 }`;
 
-    const res = await agent.execute(parsePrompt, {
+    const res = await agent.executeWithRetry(parsePrompt, {
       timeoutMs: 1000 * 60 * 5,
     });
     if (res.exitCode !== 0) {
@@ -105,7 +106,7 @@ Return ONLY valid JSON in this schema:
       capturedAt: new Date().toISOString(),
     };
     const intentPath = path.join(specDir, "intent.json");
-    writeFileSync(intentPath, `${JSON.stringify(intentSpec, null, 2)}\n`);
+    await writeFile(intentPath, `${JSON.stringify(intentSpec, null, 2)}\n`);
 
     const stitchAvailable = ctx.config.design?.stitch?.enabled === true;
     if (!stitchAvailable) {

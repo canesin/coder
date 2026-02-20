@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
@@ -99,7 +99,7 @@ export default defineMachine({
               if (mobileImage) {
                 const mobileFileName = `${screen.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-mobile.png`;
                 const mobilePath = path.join(specDir, mobileFileName);
-                writeFileSync(
+                await writeFile(
                   mobilePath,
                   Buffer.from(mobileImage.data, "base64"),
                 );
@@ -139,7 +139,7 @@ export default defineMachine({
 
       // Write design tokens to disk
       const tokensPath = path.join(specDir, "design-tokens.json");
-      writeFileSync(tokensPath, `${JSON.stringify(designTokens, null, 2)}\n`);
+      await writeFile(tokensPath, `${JSON.stringify(designTokens, null, 2)}\n`);
     } catch (err) {
       ctx.log({ event: "stitch_tokens_error", error: err.message });
     }
@@ -152,7 +152,7 @@ export default defineMachine({
       refinedAt: new Date().toISOString(),
     };
     const statePath = path.join(specDir, "refinement-state.json");
-    writeFileSync(statePath, `${JSON.stringify(refinementState, null, 2)}\n`);
+    await writeFile(statePath, `${JSON.stringify(refinementState, null, 2)}\n`);
 
     ctx.log({
       event: "design_refinement_complete",

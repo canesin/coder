@@ -50,8 +50,24 @@ export const DEFAULT_PASS_ENV = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "OPENAI_API_KEY",
   "GITHUB_TOKEN",
+  "GITLAB_TOKEN",
   "LINEAR_API_KEY",
 ];
+
+export function detectRemoteType(repoDir) {
+  const res = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  if (res.status === 0) {
+    const url = (res.stdout || "").trim();
+    const httpsMatch = url.match(/^https?:\/\/([^/:]+)/);
+    const sshMatch = url.match(/^[^@]+@([^:]+):/);
+    const host = (httpsMatch?.[1] || sshMatch?.[1] || "").toLowerCase();
+    if (host.includes("gitlab")) return "gitlab";
+  }
+  return "github";
+}
 
 const AGENT_NOISE_LINE_PATTERNS = [
   /^Warning:/i,
@@ -252,7 +268,11 @@ export function geminiJsonPipe(prompt) {
 }
 
 export function geminiJsonPipeWithModel(prompt, model) {
-  const modelArg = String(model || "").trim();
+  const modelArg = (
+    model && typeof model === "object"
+      ? String(model.model || "")
+      : String(model || "")
+  ).trim();
   const cmd = modelArg
     ? `gemini --yolo -m ${modelArg} -o json`
     : "gemini --yolo -o json";
@@ -502,20 +522,17 @@ export function computeGitWorktreeFingerprint(repoDir) {
 
   let untrackedHashes = "";
   if (untrackedPaths.length > 0) {
-    const input = untrackedPaths.join("\n") + "\n";
-    const ho = spawnSync("git", ["hash-object", "--stdin-paths"], {
-      cwd: repoDir,
-      encoding: "utf8",
-      input,
-    });
-    if (ho.status !== 0) {
-      const msg = (ho.stderr || ho.stdout || "").trim();
-      throw new Error(`git hash-object failed${msg ? `: ${msg}` : ""}`);
-    }
-    const hashes = (ho.stdout || "").trim().split("\n").filter(Boolean);
-    // `git hash-object --stdin-paths` returns hashes in the same order as input paths.
     untrackedHashes = untrackedPaths
-      .map((p, i) => `${p}\n${hashes[i] || ""}\n`)
+      .map((p) => {
+        const abs = path.join(repoDir, p);
+        try {
+          const content = readFileSync(abs);
+          const digest = createHash("sha256").update(content).digest("hex");
+          return `${p}\n${digest}\n`;
+        } catch {
+          return `${p}\n<unreadable>\n`;
+        }
+      })
       .join("");
   }
 
@@ -627,7 +644,7 @@ export async function runHostTests(
     const res = runShellSync(testCmd, { cwd: repoDir });
     return {
       cmd: res.cmd,
-      exitCode: res.exitCode ?? 0,
+      exitCode: res.exitCode ?? -1,
       stdout: res.stdout || "",
       stderr: res.stderr || "",
     };

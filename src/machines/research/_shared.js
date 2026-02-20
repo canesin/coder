@@ -1,10 +1,4 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   extractGeminiPayloadJson,
@@ -117,14 +111,16 @@ export async function runStructuredStep({
 }) {
   if (ctx.cancelToken.cancelled) throw new Error("Run cancelled");
 
-  beginPipelineStep(pipeline, pipelinePath, scratchpadPath, stepName, { role });
+  await beginPipelineStep(pipeline, pipelinePath, scratchpadPath, stepName, {
+    role,
+  });
   const { agentName, agent } = ctx.agentPool.getAgent(role, {
     scope: "workspace",
   });
 
-  const res = await agent.execute(prompt, { timeoutMs });
+  const res = await agent.executeWithRetry(prompt, { timeoutMs });
   if (res.exitCode !== 0) {
-    endPipelineStep(
+    await endPipelineStep(
       pipeline,
       pipelinePath,
       scratchpadPath,
@@ -144,9 +140,9 @@ export async function runStructuredStep({
     stepsDir,
     `${sanitizeFilenameSegment(artifactName || stepName, { fallback: "step" })}.json`,
   );
-  writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+  await writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
   const relOutputPath = path.relative(ctx.workspaceDir, outputPath);
-  endPipelineStep(
+  await endPipelineStep(
     pipeline,
     pipelinePath,
     scratchpadPath,
@@ -164,16 +160,15 @@ export async function runStructuredStep({
  * Load a step artifact from the run directory.
  * @param {string} stepsDir
  * @param {string} artifactName
- * @returns {any|null}
+ * @returns {Promise<any|null>}
  */
-export function loadStepArtifact(stepsDir, artifactName) {
+export async function loadStepArtifact(stepsDir, artifactName) {
   const p = path.join(
     stepsDir,
     `${sanitizeFilenameSegment(artifactName, { fallback: "step" })}.json`,
   );
-  if (!existsSync(p)) return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8"));
+    return JSON.parse(await readFile(p, "utf8"));
   } catch {
     return null;
   }
@@ -183,7 +178,7 @@ export function loadStepArtifact(stepsDir, artifactName) {
  * Resolve a parameter that may be an empty default ({}) or null.
  * Returns the parameter if it has content, otherwise loads from stepsDir.
  */
-export function resolveArtifact(param, stepsDir, artifactName) {
+export async function resolveArtifact(param, stepsDir, artifactName) {
   if (
     param != null &&
     typeof param === "object" &&
@@ -191,13 +186,13 @@ export function resolveArtifact(param, stepsDir, artifactName) {
   )
     return param;
   if (Array.isArray(param) && param.length > 0) return param;
-  return loadStepArtifact(stepsDir, artifactName) || {};
+  return (await loadStepArtifact(stepsDir, artifactName)) || {};
 }
 
 /**
  * Append a section to the scratchpad markdown file.
  */
-export function appendScratchpad(filePath, heading, lines = []) {
+export async function appendScratchpad(filePath, heading, lines = []) {
   const body = Array.isArray(lines)
     ? lines.filter((line) => line !== null && line !== undefined)
     : [String(lines)];
@@ -208,23 +203,23 @@ export function appendScratchpad(filePath, heading, lines = []) {
     ...body,
     "",
   ].join("\n");
-  appendFileSync(filePath, block, "utf8");
+  await appendFile(filePath, block, "utf8");
 }
 
 /**
  * Initialize the research run directory structure.
  * @param {string} scratchpadDir
- * @returns {{ runId: string, runDir: string, issuesDir: string, stepsDir: string, pointersDir: string, scratchpadPath: string, pipelinePath: string }}
+ * @returns {Promise<{ runId: string, runDir: string, issuesDir: string, stepsDir: string, pointersDir: string, scratchpadPath: string, pipelinePath: string }>}
  */
-export function initRunDirectory(scratchpadDir) {
+export async function initRunDirectory(scratchpadDir) {
   const runId = `idea-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const runDir = path.join(scratchpadDir, runId);
   const issuesDir = path.join(runDir, "issues");
   const stepsDir = path.join(runDir, "steps");
   const pointersDir = path.join(runDir, "pointers");
-  mkdirSync(issuesDir, { recursive: true });
-  mkdirSync(stepsDir, { recursive: true });
-  mkdirSync(pointersDir, { recursive: true });
+  await mkdir(issuesDir, { recursive: true });
+  await mkdir(stepsDir, { recursive: true });
+  await mkdir(pointersDir, { recursive: true });
 
   const scratchpadPath = path.join(runDir, "SCRATCHPAD.md");
   const pipelinePath = path.join(runDir, "pipeline.json");
@@ -243,7 +238,7 @@ export function initRunDirectory(scratchpadDir) {
 /**
  * Create and persist the initial pipeline state.
  */
-export function initPipeline(runId, pipelinePath) {
+export async function initPipeline(runId, pipelinePath) {
   const pipeline = {
     version: 1,
     runId,
@@ -251,17 +246,16 @@ export function initPipeline(runId, pipelinePath) {
     history: [],
     steps: {},
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  await writeFile(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
   return pipeline;
 }
 
 /**
  * Load pipeline state from disk.
  */
-export function loadPipeline(pipelinePath) {
-  if (!existsSync(pipelinePath)) return null;
+export async function loadPipeline(pipelinePath) {
   try {
-    return JSON.parse(readFileSync(pipelinePath, "utf8"));
+    return JSON.parse(await readFile(pipelinePath, "utf8"));
   } catch {
     return null;
   }
@@ -270,7 +264,7 @@ export function loadPipeline(pipelinePath) {
 /**
  * Begin a pipeline step.
  */
-export function beginPipelineStep(
+export async function beginPipelineStep(
   pipeline,
   pipelinePath,
   scratchpadPath,
@@ -289,14 +283,16 @@ export function beginPipelineStep(
     startedAt: new Date().toISOString(),
     ...meta,
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
-  appendScratchpad(scratchpadPath, `Step: ${name}`, ["- status: running"]);
+  await writeFile(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  await appendScratchpad(scratchpadPath, `Step: ${name}`, [
+    "- status: running",
+  ]);
 }
 
 /**
  * End a pipeline step.
  */
-export function endPipelineStep(
+export async function endPipelineStep(
   pipeline,
   pipelinePath,
   scratchpadPath,
@@ -317,8 +313,8 @@ export function endPipelineStep(
     endedAt: new Date().toISOString(),
     ...meta,
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
-  appendScratchpad(scratchpadPath, `Step: ${name}`, [
+  await writeFile(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  await appendScratchpad(scratchpadPath, `Step: ${name}`, [
     `- status: ${status}`,
     ...Object.entries(meta).map(([k, v]) => `- ${k}: ${String(v)}`),
   ]);
@@ -327,17 +323,22 @@ export function endPipelineStep(
 /**
  * Mark a step as skipped in the pipeline.
  */
-export function skipPipelineStep(
+export async function skipPipelineStep(
   pipeline,
   pipelinePath,
   scratchpadPath,
   name,
   reason,
 ) {
-  beginPipelineStep(pipeline, pipelinePath, scratchpadPath, name, {});
-  endPipelineStep(pipeline, pipelinePath, scratchpadPath, name, "skipped", {
-    reason,
-  });
+  await beginPipelineStep(pipeline, pipelinePath, scratchpadPath, name, {});
+  await endPipelineStep(
+    pipeline,
+    pipelinePath,
+    scratchpadPath,
+    name,
+    "skipped",
+    { reason },
+  );
 }
 
 /**

@@ -35,23 +35,23 @@ export default defineMachine({
       iterations,
       maxIssues,
     } = input;
-    const pipeline = loadPipeline(pipelinePath) || {
+    const pipeline = (await loadPipeline(pipelinePath)) || {
       version: 1,
       current: "issue_synthesis",
       history: [],
       steps: {},
     };
-    const analysisBrief = resolveArtifact(
+    const analysisBrief = await resolveArtifact(
       input.analysisBrief,
       stepsDir,
       "analysis-brief",
     );
-    const webReferenceMap = resolveArtifact(
+    const webReferenceMap = await resolveArtifact(
       input.webReferenceMap,
       stepsDir,
       "web-references",
     );
-    const validationResults = resolveArtifact(
+    const validationResults = await resolveArtifact(
       input.validationResults,
       stepsDir,
       "validation-results",
@@ -172,7 +172,7 @@ Return ONLY valid JSON in this schema:
       }
       prevIssueCount = currentCount;
 
-      appendScratchpad(scratchpadPath, `Iteration ${i} Draft`, [
+      await appendScratchpad(scratchpadPath, `Iteration ${i} Draft`, [
         `- agent: ${draftRes.agentName}`,
         `- candidate_issues: ${draftPayload.issues.length}`,
         `- draft_json: ${draftRes.relOutputPath}`,
@@ -234,7 +234,7 @@ Return ONLY valid JSON in this schema:
         .filter(Boolean)
         .slice(0, 30);
 
-      appendScratchpad(scratchpadPath, `Iteration ${i} Critique`, [
+      await appendScratchpad(scratchpadPath, `Iteration ${i} Critique`, [
         `- agent: ${reviewRes.agentName}`,
         `- must_fix: ${mustFix.length}`,
         `- should_fix: ${shouldFix.length}`,
@@ -251,7 +251,7 @@ Return ONLY valid JSON in this schema:
         finalDraft,
         finalReview,
         priorFeedback,
-        selectedIssues: finalDraft.issues.slice(0, maxIssues),
+        selectedIssues: finalDraft?.issues?.slice(0, maxIssues) ?? [],
       },
     };
   },

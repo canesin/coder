@@ -30,18 +30,18 @@ export default defineMachine({
       validateIdeas,
       validationMode,
     } = input;
-    const pipeline = loadPipeline(pipelinePath) || {
+    const pipeline = (await loadPipeline(pipelinePath)) || {
       version: 1,
       current: "poc_validation",
       history: [],
       steps: {},
     };
-    const analysisBrief = resolveArtifact(
+    const analysisBrief = await resolveArtifact(
       input.analysisBrief,
       stepsDir,
       "analysis-brief",
     );
-    const webReferenceMap = resolveArtifact(
+    const webReferenceMap = await resolveArtifact(
       input.webReferenceMap,
       stepsDir,
       "web-references",
@@ -56,14 +56,14 @@ export default defineMachine({
     };
 
     if (!validateIdeas) {
-      skipPipelineStep(
+      await skipPipelineStep(
         pipeline,
         pipelinePath,
         scratchpadPath,
         "plan_validation_tracks",
         "validateIdeas disabled",
       );
-      skipPipelineStep(
+      await skipPipelineStep(
         pipeline,
         pipelinePath,
         scratchpadPath,
@@ -157,7 +157,7 @@ Return ONLY valid JSON in this schema:
       });
       validationResults = validationExecRes.payload || validationResults;
     } else {
-      skipPipelineStep(
+      await skipPipelineStep(
         pipeline,
         pipelinePath,
         scratchpadPath,

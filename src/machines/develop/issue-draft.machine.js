@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -28,7 +28,7 @@ export default defineMachine({
     "Draft ISSUE.md for the selected issue: validate repo, create branch, research codebase, write structured issue spec.",
   inputSchema: z.object({
     issue: z.object({
-      source: z.enum(["github", "linear", "local"]),
+      source: z.enum(["github", "gitlab", "linear", "local"]),
       id: z.string().min(1),
       title: z.string().min(1),
     }),
@@ -39,17 +39,21 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    checkArtifactCollisions(ctx.artifactsDir, { force: input.force });
+    await checkArtifactCollisions(ctx.artifactsDir, { force: input.force });
 
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     // Idempotency: skip if this issue's draft is already on disk
     if (state.steps.wroteIssue && state.selected?.id === input.issue.id) {
       const earlyPaths = artifactPaths(ctx.artifactsDir);
-      if (existsSync(earlyPaths.issue)) {
+      if (
+        await access(earlyPaths.issue)
+          .then(() => true)
+          .catch(() => false)
+      ) {
         const onDisk = sanitizeIssueMarkdown(
-          readFileSync(earlyPaths.issue, "utf8"),
+          await readFile(earlyPaths.issue, "utf8"),
         );
         if (onDisk.length > 40 && onDisk.trim().startsWith("#")) {
           ctx.log({
@@ -83,13 +87,17 @@ export default defineMachine({
     state.repoPath = repoPath;
     state.baseBranch = input.baseBranch || null;
     state.branch = buildIssueBranchName(input.issue);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Update pool repo root
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
     ctx.agentPool.setRepoRoot(repoRoot);
 
-    if (!existsSync(repoRoot))
+    if (
+      !(await access(repoRoot)
+        .then(() => true)
+        .catch(() => false))
+    )
       throw new Error(`Repo root does not exist: ${repoRoot}`);
 
     const isGit = spawnSync("git", ["rev-parse", "--git-dir"], {
@@ -107,8 +115,12 @@ export default defineMachine({
       sqliteSync: ctx.config.workflow.scratchpad.sqliteSync,
     });
     const scratchpadPath = scratchpad.issueScratchpadPath(input.issue);
-    scratchpad.restoreFromSqlite(scratchpadPath);
-    if (!existsSync(scratchpadPath)) {
+    await scratchpad.restoreFromSqlite(scratchpadPath);
+    if (
+      !(await access(scratchpadPath)
+        .then(() => true)
+        .catch(() => false))
+    ) {
       const header = [
         `# Scratchpad for ${input.issue.source}#${input.issue.id}`,
         "",
@@ -118,19 +130,19 @@ export default defineMachine({
         "Use this file for iterative issue research notes and feedback loops.",
         "",
       ].join("\n");
-      writeFileSync(scratchpadPath, header, "utf8");
+      await writeFile(scratchpadPath, header, "utf8");
     }
-    scratchpad.appendSection(scratchpadPath, "Input", [
+    await scratchpad.appendSection(scratchpadPath, "Input", [
       `- clarifications: ${(input.clarifications || "(none provided)").trim()}`,
     ]);
     state.scratchpadPath = path.relative(ctx.workspaceDir, scratchpadPath);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Verify clean repo, then set up ignore files
     gitCleanOrThrow(repoRoot);
-    ensureGitignore(ctx.workspaceDir);
+    await ensureGitignore(ctx.workspaceDir);
     state.steps.verifiedCleanRepo = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Optional base branch checkout for stacked PRs
     if (state.baseBranch) {
@@ -180,29 +192,40 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 5. **Out of Scope**: What this does NOT include
 `;
 
-    const res = await agent.execute(issuePrompt, {
+    const res = await agent.executeWithRetry(issuePrompt, {
       timeoutMs: 1000 * 60 * 10,
     });
     requireExitZero(agentName, "ISSUE.md drafting failed", res);
 
     // Prefer on-disk file if agent wrote it via tool use
+    // Accept markdown with either # headings or **bold** section headers.
+    const looksLikeMd = (s) =>
+      s.length > 40 &&
+      (s.startsWith("#") ||
+        s.startsWith("**") ||
+        s.includes("\n#") ||
+        s.includes("\n**"));
     let issueMd;
-    if (existsSync(paths.issue)) {
-      const onDisk = sanitizeIssueMarkdown(readFileSync(paths.issue, "utf8"));
-      if (onDisk.length > 40 && onDisk.startsWith("#")) {
+    if (
+      await access(paths.issue)
+        .then(() => true)
+        .catch(() => false)
+    ) {
+      const onDisk = sanitizeIssueMarkdown(await readFile(paths.issue, "utf8"));
+      if (looksLikeMd(onDisk)) {
         issueMd = onDisk + "\n";
-        if (issueMd !== readFileSync(paths.issue, "utf8")) {
-          writeFileSync(paths.issue, issueMd);
+        if (issueMd !== (await readFile(paths.issue, "utf8"))) {
+          await writeFile(paths.issue, issueMd);
         }
       }
     }
     if (!issueMd) {
-      issueMd = sanitizeIssueMarkdown(res.stdout.trimEnd()) + "\n";
-      if (!issueMd.trim().startsWith("#")) {
+      issueMd = sanitizeIssueMarkdown((res.stdout || "").trimEnd()) + "\n";
+      if (!looksLikeMd(issueMd.trim())) {
         const fallback = stripAgentNoise(res.stdout || "", {
           dropLeadingOnly: true,
         }).trim();
-        if (!fallback.startsWith("#")) {
+        if (!looksLikeMd(fallback)) {
           const rawPreview = (res.stdout || "")
             .slice(0, 300)
             .replace(/\n/g, "\\n");
@@ -213,13 +236,13 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
         }
         issueMd = fallback + "\n";
       }
-      writeFileSync(paths.issue, issueMd);
+      await writeFile(paths.issue, issueMd);
     }
 
     state.steps.wroteIssue = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
-    scratchpad.appendSection(scratchpadPath, "Drafted ISSUE.md", [
+    await scratchpad.appendSection(scratchpadPath, "Drafted ISSUE.md", [
       `- issue_artifact: ${paths.issue}`,
       "- status: complete",
     ]);

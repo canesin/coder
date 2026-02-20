@@ -44,3 +44,17 @@ test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => 
   assert.match(event.array[0], /access_token=\[REDACTED\]/);
   assert.match(event.array[0], /token=\[REDACTED\]/);
 });
+
+test("makeJsonlLogger reuses stream for same log path", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-logging-reuse-"));
+  const loggerA = makeJsonlLogger(ws, "shared");
+  const loggerB = makeJsonlLogger(ws, "shared");
+
+  loggerA({ msg: "first" });
+  loggerB({ msg: "second" });
+  await closeAllLoggers();
+
+  const content = readFileSync(path.join(logsDir(ws), "shared.jsonl"), "utf8");
+  assert.match(content, /"msg":"first"/);
+  assert.match(content, /"msg":"second"/);
+});

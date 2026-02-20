@@ -1,0 +1,8 @@
+{
+  "workflow": {
+    "agentRoles": {
+      "planner": "gemini",
+      "programmer": "gemini"
+    }
+  }
+}

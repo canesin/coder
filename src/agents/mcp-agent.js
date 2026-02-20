@@ -40,13 +40,25 @@ export class McpAgent extends AgentAdapter {
     this._client = null;
     /** @type {import("@modelcontextprotocol/sdk/shared/transport.js").Transport|null} */
     this._transport = null;
-    /** @type {Map<string, object>|null} */
-    this._toolsCache = null;
+    /** @type {Promise<Client>|null} */
+    this._clientPromise = null;
   }
 
   async _ensureClient() {
     if (this._client) return this._client;
+    if (this._clientPromise) return this._clientPromise;
 
+    this._clientPromise = this._createClient();
+    try {
+      this._client = await this._clientPromise;
+      return this._client;
+    } catch (err) {
+      this._clientPromise = null;
+      throw err;
+    }
+  }
+
+  async _createClient() {
     if (this.transportType === "http") {
       if (!this.serverUrl) {
         throw new Error("McpAgent: serverUrl is required for HTTP transport.");
@@ -54,10 +66,8 @@ export class McpAgent extends AgentAdapter {
       const url = new URL(this.serverUrl);
       const requestInit = {};
 
-      // Set auth header if API key is available
       if (this.authHeader) {
-        // Look for the API key in env (passed from config resolution)
-        const apiKey = Object.values(this.env)[0] || "";
+        const apiKey = this._resolveApiKey();
         if (apiKey) {
           requestInit.headers = { [this.authHeader]: apiKey };
         }
@@ -79,13 +89,26 @@ export class McpAgent extends AgentAdapter {
       });
     }
 
-    this._client = new Client(
+    const client = new Client(
       { name: "coder-mcp-agent", version: "1.0.0" },
       { capabilities: {} },
     );
 
-    await this._client.connect(this._transport);
-    return this._client;
+    await client.connect(this._transport);
+    return client;
+  }
+
+  _resolveApiKey() {
+    const keyNames = [
+      "API_KEY",
+      "ANTHROPIC_API_KEY",
+      "GEMINI_API_KEY",
+      "OPENAI_API_KEY",
+    ];
+    for (const name of keyNames) {
+      if (this.env[name]) return this.env[name];
+    }
+    return "";
   }
 
   /**
@@ -95,9 +118,7 @@ export class McpAgent extends AgentAdapter {
   async listTools() {
     const client = await this._ensureClient();
     const result = await client.listTools();
-    const tools = result.tools || [];
-    this._toolsCache = new Map(tools.map((t) => [t.name, t]));
-    return tools;
+    return result.tools || [];
   }
 
   /**
@@ -181,13 +202,26 @@ export class McpAgent extends AgentAdapter {
 
   async executeStructured(prompt, opts = {}) {
     const res = await this.execute(prompt, opts);
-    return {
-      ...res,
-      parsed: res.exitCode === 0 ? JSON.parse(res.stdout) : null,
-    };
+    let parsed = null;
+    let parseError = null;
+    if (res.exitCode === 0) {
+      try {
+        parsed = JSON.parse(res.stdout);
+      } catch (err) {
+        parseError = `JSON parse error: ${err.message}. Preview: ${(res.stdout || "").slice(0, 200)}`;
+      }
+    }
+    return { ...res, parsed, parseError };
   }
 
   async kill() {
+    if (this._clientPromise) {
+      try {
+        await this._clientPromise;
+      } catch {
+        // best-effort - creation may have failed
+      }
+    }
     if (this._client) {
       try {
         await this._client.close();
@@ -204,6 +238,6 @@ export class McpAgent extends AgentAdapter {
       }
       this._transport = null;
     }
-    this._toolsCache = null;
+    this._clientPromise = null;
   }
 }

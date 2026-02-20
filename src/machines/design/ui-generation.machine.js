@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
@@ -18,11 +18,14 @@ export default defineMachine({
     const { specDir, intentSpec } = input;
 
     // Load intent spec from disk if not provided inline
-    const spec =
-      intentSpec ||
-      (existsSync(input.intentPath)
-        ? JSON.parse(readFileSync(input.intentPath, "utf8"))
-        : null);
+    let spec = intentSpec;
+    if (!spec) {
+      try {
+        spec = JSON.parse(await readFile(input.intentPath, "utf8"));
+      } catch {
+        spec = null;
+      }
+    }
     if (!spec || !Array.isArray(spec.screens)) {
       throw new Error("Intent spec missing or has no screens.");
     }
@@ -109,7 +112,7 @@ export default defineMachine({
           if (imageResult) {
             const imgFileName = `${screen.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
             imagePath = path.join(specDir, imgFileName);
-            writeFileSync(imagePath, Buffer.from(imageResult.data, "base64"));
+            await writeFile(imagePath, Buffer.from(imageResult.data, "base64"));
           }
         } catch (imgErr) {
           ctx.log({
@@ -166,7 +169,7 @@ export default defineMachine({
       generatedAt: new Date().toISOString(),
     };
     const statePath = path.join(specDir, "generation-state.json");
-    writeFileSync(statePath, `${JSON.stringify(generationState, null, 2)}\n`);
+    await writeFile(statePath, `${JSON.stringify(generationState, null, 2)}\n`);
 
     ctx.log({
       event: "design_generation_complete",

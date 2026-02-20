@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { buildDependencyGraph } from "../github/dependencies.js";
 import { detectDefaultBranch } from "../helpers.js";
@@ -25,6 +25,7 @@ import { WorkflowRunner } from "./_base.js";
 
 // Re-export machines for direct use
 export {
+  resolveDependencyBranch,
   issueListMachine,
   issueDraftMachine,
   planningMachine,
@@ -199,8 +200,8 @@ function resolveDependencyBranch(issue, outcomeMap) {
   }
 
   const outcomes = {};
-  let _successCount = 0;
   let failCount = 0;
+  let resolvedDepCount = 0;
   let baseBranch = null;
 
   for (const depId of deps) {
@@ -209,9 +210,9 @@ function resolveDependencyBranch(issue, outcomeMap) {
       outcomes[depId] = "pending";
       continue;
     }
+    resolvedDepCount++;
     outcomes[depId] = outcome.status;
     if (outcome.status === "completed" && outcome.branch) {
-      _successCount++;
       // Use the first successful dependency branch as base
       if (!baseBranch) baseBranch = outcome.branch;
     } else if (outcome.status === "failed" || outcome.status === "skipped") {
@@ -219,10 +220,11 @@ function resolveDependencyBranch(issue, outcomeMap) {
     }
   }
 
-  const knownDeps = deps.filter((d) => outcomeMap.has(d));
-  const allDepsFailed = knownDeps.length > 0 && failCount === knownDeps.length;
-
-  return { baseBranch, allDepsFailed, depOutcomes: outcomes };
+  return {
+    baseBranch,
+    allDepsFailed: resolvedDepCount > 0 && resolvedDepCount === failCount,
+    depOutcomes: outcomes,
+  };
 }
 
 const isRateLimitError = (text) =>
@@ -257,7 +259,7 @@ export async function runDevelopLoop(opts, ctx) {
     };
   }
 
-  const rawIssues = listResult.data.issues.slice(0, maxIssues);
+  const rawIssues = (listResult.data?.issues ?? []).slice(0, maxIssues);
   if (rawIssues.length === 0) {
     return {
       status: "completed",
@@ -282,23 +284,44 @@ export async function runDevelopLoop(opts, ctx) {
   });
 
   // Initialize loop state
-  const loopState = loadLoopState(ctx.workspaceDir);
+  const loopState = await loadLoopState(ctx.workspaceDir);
+  const priorIssueQueueById = new Map(
+    (loopState.issueQueue || []).map((iss) => [iss.id, iss]),
+  );
   loopState.status = "running";
-  loopState.issueQueue = issues.map((iss) => ({
-    ...iss,
-    dependsOn: iss.dependsOn || iss.depends_on || [],
-    status: "pending",
-    branch: null,
-    prUrl: null,
-    error: null,
-    baseBranch: null,
-  }));
+  loopState.issueQueue = issues.map((iss) => {
+    const prior = priorIssueQueueById.get(iss.id);
+    return {
+      ...iss,
+      dependsOn: iss.dependsOn || iss.depends_on || [],
+      status: prior?.status || "pending",
+      branch: prior?.branch || null,
+      prUrl: prior?.prUrl || null,
+      error: prior?.error || null,
+      baseBranch: prior?.baseBranch || null,
+    };
+  });
   loopState.currentIndex = 0;
   loopState.startedAt = new Date().toISOString();
-  saveLoopState(ctx.workspaceDir, loopState);
+  await saveLoopState(ctx.workspaceDir, loopState);
 
   /** @type {Map<string, { status: string, branch?: string }>} */
-  const outcomeMap = new Map();
+  const outcomeMap = new Map(
+    loopState.issueQueue
+      .filter(
+        (iss) =>
+          iss.status === "completed" ||
+          iss.status === "failed" ||
+          iss.status === "skipped",
+      )
+      .map((iss) => [
+        iss.id,
+        {
+          status: iss.status,
+          ...(iss.branch ? { branch: iss.branch } : {}),
+        },
+      ]),
+  );
   const results = [];
   let completed = 0;
   let failed = 0;
@@ -309,7 +332,7 @@ export async function runDevelopLoop(opts, ctx) {
     loopState.currentIndex = i;
     loopState.currentStage = isRetry ? "retry" : "processing";
     loopState.lastHeartbeatAt = new Date().toISOString();
-    saveLoopState(ctx.workspaceDir, loopState);
+    await saveLoopState(ctx.workspaceDir, loopState);
 
     const { baseBranch, allDepsFailed, depOutcomes } = resolveDependencyBranch(
       issue,
@@ -332,7 +355,7 @@ export async function runDevelopLoop(opts, ctx) {
         status: "skipped",
         error: "All dependencies failed",
       });
-      saveLoopState(ctx.workspaceDir, loopState);
+      await saveLoopState(ctx.workspaceDir, loopState);
       return "skipped";
     }
 
@@ -343,7 +366,7 @@ export async function runDevelopLoop(opts, ctx) {
     if (hasUnresolvedDeps && !isRetry) {
       ctx.log({ event: "issue_deferred", issueId: issue.id, depOutcomes });
       loopState.issueQueue[i].status = "deferred";
-      saveLoopState(ctx.workspaceDir, loopState);
+      await saveLoopState(ctx.workspaceDir, loopState);
       return "deferred";
     }
 
@@ -397,7 +420,7 @@ export async function runDevelopLoop(opts, ctx) {
           ctx.log({ event: "issue_rate_limited", issueId: issue.id });
           loopState.issueQueue[i].status = "deferred";
           loopState.issueQueue[i].error = errText;
-          saveLoopState(ctx.workspaceDir, loopState);
+          await saveLoopState(ctx.workspaceDir, loopState);
           return "deferred";
         }
         loopState.issueQueue[i].status = "failed";
@@ -415,7 +438,7 @@ export async function runDevelopLoop(opts, ctx) {
         ctx.log({ event: "issue_rate_limited", issueId: issue.id });
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = err.message;
-        saveLoopState(ctx.workspaceDir, loopState);
+        await saveLoopState(ctx.workspaceDir, loopState);
         return "deferred";
       }
       loopState.issueQueue[i].status = "failed";
@@ -425,7 +448,7 @@ export async function runDevelopLoop(opts, ctx) {
       results.push({ ...issue, status: "failed", error: err.message });
     }
 
-    saveLoopState(ctx.workspaceDir, loopState);
+    await saveLoopState(ctx.workspaceDir, loopState);
 
     // Reset between issues
     const issueStatus = loopState.issueQueue[i].status;
@@ -569,13 +592,13 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
       const { agent } = ctx.agentPool.getAgent("reviewer", {
         scope: "repo",
       });
-      const res = await agent.execute(prompt, {
+      const res = await agent.executeWithRetry(prompt, {
         timeoutMs: 1000 * 60 * 15,
       });
 
       const artifactsDir = path.join(ctx.workspaceDir, ".coder", "artifacts");
-      mkdirSync(artifactsDir, { recursive: true });
-      writeFileSync(
+      await mkdir(artifactsDir, { recursive: true });
+      await writeFile(
         path.join(artifactsDir, "COALESCE.md"),
         res.stdout || res.output || String(res),
         "utf8",
@@ -595,7 +618,7 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
 
   loopState.status = ctx.cancelToken.cancelled ? "cancelled" : "completed";
   loopState.completedAt = new Date().toISOString();
-  saveLoopState(ctx.workspaceDir, loopState);
+  await saveLoopState(ctx.workspaceDir, loopState);
 
   return {
     status: loopState.status,
@@ -617,18 +640,22 @@ async function resetForNextIssue(
 ) {
   // Delete per-issue state
   const statePath = statePathFor(workspaceDir);
-  if (existsSync(statePath)) rmSync(statePath, { force: true });
+  await rm(statePath, { force: true }).catch(() => {});
 
   // Delete workflow artifacts
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
   for (const name of ["ISSUE.md", "PLAN.md", "PLANREVIEW.md"]) {
     const p = path.join(artifactsDir, name);
-    if (existsSync(p)) rmSync(p, { force: true });
+    await rm(p, { force: true }).catch(() => {});
   }
 
   // Git cleanup
   const repoRoot = resolveRepoRoot(workspaceDir, repoPath);
-  if (existsSync(repoRoot)) {
+  if (
+    await access(repoRoot)
+      .then(() => true)
+      .catch(() => false)
+  ) {
     // For failed/skipped issues, preserve partial work on the issue branch
     // before switching back to the default branch.
     const needsPreserve = issueStatus === "failed" || issueStatus === "skipped";
@@ -639,21 +666,39 @@ async function resetForNextIssue(
         encoding: "utf8",
       });
       if ((status.stdout || "").trim()) {
-        // Commit partial work to the current (issue) branch so it's not lost
-        spawnSync("git", ["add", "-A"], { cwd: repoRoot, encoding: "utf8" });
-        spawnSync(
+        const addRes = spawnSync("git", ["add", "-A"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+        if (addRes.status !== 0) {
+          console.warn(`git add failed: ${addRes.stderr || addRes.stdout}`);
+        }
+        const commitRes = spawnSync(
           "git",
           ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
           { cwd: repoRoot, encoding: "utf8" },
         );
+        if (
+          commitRes.status !== 0 &&
+          !(commitRes.stdout || "").includes("nothing to commit")
+        ) {
+          console.warn(
+            `git commit failed: ${commitRes.stderr || commitRes.stdout}`,
+          );
+        }
       }
     }
 
     const defaultBranch = detectDefaultBranch(repoRoot);
-    spawnSync("git", ["checkout", defaultBranch], {
+    const checkoutRes = spawnSync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
     });
+    if (checkoutRes.status !== 0) {
+      console.warn(
+        `git checkout ${defaultBranch} failed: ${checkoutRes.stderr || checkoutRes.stdout}`,
+      );
+    }
 
     if (destructiveReset) {
       const status = spawnSync("git", ["status", "--porcelain"], {

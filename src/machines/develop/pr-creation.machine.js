@@ -1,9 +1,10 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { access, readFile } from "node:fs/promises";
 import { z } from "zod";
 import {
   buildPrBodyFromIssue,
   computeGitWorktreeFingerprint,
+  detectRemoteType,
   runPpcommit,
   stripAgentNoise,
 } from "../../helpers.js";
@@ -15,10 +16,28 @@ import {
 import { defineMachine } from "../_base.js";
 import { artifactPaths, ensureBranch, resolveRepoRoot } from "./_shared.js";
 
+function spawnAsync(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, args, { ...opts, stdio: "pipe" });
+    let stdout = "",
+      stderr = "";
+    proc.stdout.on("data", (d) => {
+      stdout += d;
+    });
+    proc.stderr.on("data", (d) => {
+      stderr += d;
+    });
+    proc.on("close", (code) => resolve({ status: code, stdout, stderr }));
+    proc.on("error", (err) =>
+      resolve({ status: 1, stdout: "", stderr: err.message }),
+    );
+  });
+}
+
 export default defineMachine({
   name: "develop.pr_creation",
   description:
-    "Create pull request: commit changes, push to remote, create PR via gh CLI.",
+    "Create pull request or merge request: commit changes, push to remote, create PR/MR via gh/glab CLI.",
   inputSchema: z.object({
     type: z.string().default("feat"),
     semanticName: z.string().default(""),
@@ -28,7 +47,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     if (!state.steps.testsPassed) {
@@ -78,13 +97,13 @@ export default defineMachine({
     }
 
     // Commit uncommitted changes
-    const status = spawnSync("git", ["status", "--porcelain"], {
+    const status = await spawnAsync("git", ["status", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf8",
     });
     const hasChanges = (status.stdout || "").trim().length > 0;
     if (hasChanges) {
-      const add = spawnSync("git", ["add", "."], {
+      const add = await spawnAsync("git", ["add", "-u"], {
         cwd: repoRoot,
         encoding: "utf8",
       });
@@ -92,7 +111,7 @@ export default defineMachine({
 
       const issueTitle = state.selected?.title || "coder workflow changes";
       const commitMsg = `${normalizedType}: ${issueTitle}`;
-      const commit = spawnSync("git", ["commit", "-m", commitMsg], {
+      const commit = await spawnAsync("git", ["commit", "-m", commitMsg], {
         cwd: repoRoot,
         encoding: "utf8",
       });
@@ -112,7 +131,7 @@ export default defineMachine({
     const baseBranch = input.base || state.baseBranch || null;
 
     // Push to remote
-    const push = spawnSync(
+    const push = await spawnAsync(
       "git",
       ["push", "-u", "origin", `HEAD:${remoteBranch}`],
       { cwd: repoRoot, encoding: "utf8" },
@@ -123,8 +142,12 @@ export default defineMachine({
     let body = input.description || "";
     if (!body) {
       const paths = artifactPaths(ctx.artifactsDir);
-      if (existsSync(paths.issue)) {
-        const issueMd = readFileSync(paths.issue, "utf8");
+      if (
+        await access(paths.issue)
+          .then(() => true)
+          .catch(() => false)
+      ) {
+        const issueMd = await readFile(paths.issue, "utf8");
         body = buildPrBodyFromIssue(issueMd, { maxLines: 10 });
       }
     }
@@ -136,7 +159,7 @@ export default defineMachine({
     // Append issue link
     if (state.selected) {
       const { source, id } = state.selected;
-      if (source === "github") {
+      if (source === "github" || source === "gitlab") {
         const normalized = String(id).trim();
         body += normalized.includes("#")
           ? `\n\nCloses ${normalized}`
@@ -150,28 +173,56 @@ export default defineMachine({
       input.title ||
       `${normalizedType}: ${state.selected?.title || input.semanticName || state.branch}`;
 
-    // Create PR
-    const prArgs = [
-      "pr",
-      "create",
-      "--head",
-      remoteBranch,
-      "--title",
-      prTitle,
-      "--body",
-      body,
-    ];
-    if (baseBranch) prArgs.push("--base", baseBranch);
-    const pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
+    // Create PR/MR
+    const source = state.selected?.source;
+    const useGitlab =
+      source === "gitlab" ||
+      (source === "local" && detectRemoteType(repoRoot) === "gitlab");
+
+    let pr;
+    let cliLabel;
+    if (useGitlab) {
+      const mrArgs = [
+        "mr",
+        "create",
+        "--source-branch",
+        remoteBranch,
+        "--title",
+        prTitle,
+        "--description",
+        body,
+        "--yes",
+      ];
+      if (baseBranch) mrArgs.push("--target-branch", baseBranch);
+      pr = await spawnAsync("glab", mrArgs, {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      cliLabel = "glab mr create";
+    } else {
+      const prArgs = [
+        "pr",
+        "create",
+        "--head",
+        remoteBranch,
+        "--title",
+        prTitle,
+        "--body",
+        body,
+      ];
+      if (baseBranch) prArgs.push("--base", baseBranch);
+      pr = await spawnAsync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
+      cliLabel = "gh pr create";
+    }
     if (pr.status !== 0)
-      throw new Error(`gh pr create failed: ${pr.stderr || pr.stdout}`);
+      throw new Error(`${cliLabel} failed: ${pr.stderr || pr.stdout}`);
 
     const raw = (pr.stdout || "").trim();
     const lines = raw.split("\n").filter((l) => l.trim());
     const prUrl = lines.find((l) => l.startsWith("http")) || lines.pop() || "";
     if (!prUrl || !prUrl.startsWith("http")) {
       throw new Error(
-        `gh pr create did not return a PR URL. Output:\n${raw || "(empty)"}`,
+        `${cliLabel} did not return a URL. Output:\n${raw || "(empty)"}`,
       );
     }
 
@@ -179,7 +230,7 @@ export default defineMachine({
     state.prBranch = remoteBranch;
     state.prBase = baseBranch;
     state.steps.prCreated = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     ctx.log({
       event: "pr_created",

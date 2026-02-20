@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   buildPrBodyFromIssue,
   buildSecretsWithFallback,
+  detectRemoteType,
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
@@ -229,4 +230,44 @@ Do the thing`;
   const body = buildPrBodyFromIssue(issue, { maxLines: 4 });
   assert.equal(body.includes("# Metadata"), true);
   assert.equal(body.includes("rejected stored OAuth token"), false);
+});
+
+test("detectRemoteType returns gitlab for HTTPS gitlab remote", () => {
+  const { repoDir } = setupGitRepo({ "README.md": "hello\n" });
+  spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://gitlab.com/org/repo.git"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
+  assert.equal(detectRemoteType(repoDir), "gitlab");
+});
+
+test("detectRemoteType returns gitlab for SSH gitlab remote", () => {
+  const { repoDir } = setupGitRepo({ "README.md": "hello\n" });
+  spawnSync("git", ["remote", "add", "origin", "git@gitlab.com:org/repo.git"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  assert.equal(detectRemoteType(repoDir), "gitlab");
+});
+
+test("detectRemoteType returns github for github remote", () => {
+  const { repoDir } = setupGitRepo({ "README.md": "hello\n" });
+  spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://github.com/org/repo.git"],
+    {
+      cwd: repoDir,
+      encoding: "utf8",
+    },
+  );
+  assert.equal(detectRemoteType(repoDir), "github");
+});
+
+test("detectRemoteType returns github when no remote exists", () => {
+  const { repoDir } = setupGitRepo({ "README.md": "hello\n" });
+  assert.equal(detectRemoteType(repoDir), "github");
 });
