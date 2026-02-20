@@ -6,6 +6,7 @@ import {
   endPipelineStep,
   initPipeline,
   initRunDirectory,
+  loadPipeline,
   parseAgentPayload,
 } from "../research/_shared.js";
 
@@ -47,12 +48,12 @@ export default defineMachine({
     let pipeline;
 
     if (!scratchpadPath || !pipelinePath) {
-      const dirs = initRunDirectory(ctx.scratchpadDir);
+      const dirs = await initRunDirectory(ctx.scratchpadDir);
       scratchpadPath = scratchpadPath || dirs.scratchpadPath;
       pipelinePath = pipelinePath || dirs.pipelinePath;
-      pipeline = initPipeline(dirs.runId, pipelinePath);
+      pipeline = await initPipeline(dirs.runId, pipelinePath);
     } else {
-      pipeline = {
+      pipeline = (await loadPipeline(pipelinePath)) || {
         version: 1,
         runId: "web-research",
         current: "init",
@@ -61,9 +62,15 @@ export default defineMachine({
       };
     }
 
-    beginPipelineStep(pipeline, pipelinePath, scratchpadPath, "web_research", {
-      agent: agentName,
-    });
+    await beginPipelineStep(
+      pipeline,
+      pipelinePath,
+      scratchpadPath,
+      "web_research",
+      {
+        agent: agentName,
+      },
+    );
 
     const queries =
       input.queries.length > 0
@@ -94,7 +101,7 @@ Return JSON:
       timeoutMs: 1000 * 60 * 5,
     });
     if (res.exitCode !== 0) {
-      endPipelineStep(
+      await endPipelineStep(
         pipeline,
         pipelinePath,
         scratchpadPath,
@@ -111,13 +118,13 @@ Return JSON:
     const payload = parseAgentPayload(agentName, res.stdout);
     const references = payload?.references || [];
 
-    appendScratchpad(scratchpadPath, "Web Research Results", [
+    await appendScratchpad(scratchpadPath, "Web Research Results", [
       `- topic: ${input.topic}`,
       `- references_found: ${references.length}`,
       `- agent: ${agentName}`,
     ]);
 
-    endPipelineStep(
+    await endPipelineStep(
       pipeline,
       pipelinePath,
       scratchpadPath,
@@ -132,7 +139,7 @@ Return JSON:
         references,
         searchSummary: payload?.searchSummary || "",
         webReferenceMap: Object.fromEntries(
-          references.map((ref) => [ref.url, ref]),
+          references.filter((ref) => ref?.url).map((ref) => [ref.url, ref]),
         ),
       },
     };

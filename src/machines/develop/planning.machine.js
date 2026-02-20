@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { z } from "zod";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
@@ -23,7 +23,12 @@ export default defineMachine({
     const paths = artifactPaths(ctx.artifactsDir);
 
     // Reconcile from artifacts
-    if (existsSync(paths.issue)) state.steps.wroteIssue = true;
+    if (
+      await access(paths.issue)
+        .then(() => true)
+        .catch(() => false)
+    )
+      state.steps.wroteIssue = true;
     if (!state.steps.wroteIssue) {
       throw new Error(
         "Precondition failed: ISSUE.md does not exist. Run develop.issue_draft first.",
@@ -191,7 +196,11 @@ Constraints:
       }
     }
 
-    if (!existsSync(paths.plan))
+    if (
+      !(await access(paths.plan)
+        .then(() => true)
+        .catch(() => false))
+    )
       throw new Error(`PLAN.md not found: ${paths.plan}`);
     state.steps.wrotePlan = true;
     await saveState(ctx.workspaceDir, state);

@@ -72,7 +72,30 @@ export default defineMachine({
       { agent: agentName },
     );
 
-    const refSummary = Object.values(webRefs)
+    const flattenRefs = (refs) => {
+      if (!refs || typeof refs !== "object") return [];
+      if (Array.isArray(refs)) return refs;
+      const allRefs = [];
+      try {
+        for (const val of Object.values(refs)) {
+          if (Array.isArray(val)) {
+            for (const item of val) {
+              if (item && typeof item === "object") {
+                if (item.references && Array.isArray(item.references)) {
+                  allRefs.push(...item.references);
+                } else if (item.url || item.title) {
+                  allRefs.push(item);
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        return [];
+      }
+      return allRefs;
+    };
+    const refSummary = flattenRefs(webRefs)
       .slice(0, 10)
       .map((ref) => `- ${ref.title || ref.url}: ${ref.summary || ""}`)
       .join("\n");

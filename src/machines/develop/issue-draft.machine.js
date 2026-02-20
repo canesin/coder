@@ -47,9 +47,13 @@ export default defineMachine({
     // Idempotency: skip if this issue's draft is already on disk
     if (state.steps.wroteIssue && state.selected?.id === input.issue.id) {
       const earlyPaths = artifactPaths(ctx.artifactsDir);
-      if (existsSync(earlyPaths.issue)) {
+      if (
+        await access(earlyPaths.issue)
+          .then(() => true)
+          .catch(() => false)
+      ) {
         const onDisk = sanitizeIssueMarkdown(
-          readFileSync(earlyPaths.issue, "utf8"),
+          await readFile(earlyPaths.issue, "utf8"),
         );
         if (onDisk.length > 40 && onDisk.trim().startsWith("#")) {
           ctx.log({
@@ -216,7 +220,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
       }
     }
     if (!issueMd) {
-      issueMd = sanitizeIssueMarkdown(res.stdout.trimEnd()) + "\n";
+      issueMd = sanitizeIssueMarkdown((res.stdout || "").trimEnd()) + "\n";
       if (!looksLikeMd(issueMd.trim())) {
         const fallback = stripAgentNoise(res.stdout || "", {
           dropLeadingOnly: true,

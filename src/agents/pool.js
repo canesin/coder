@@ -26,8 +26,9 @@ export class AgentPool {
     this.secrets = buildSecrets(opts.passEnv || DEFAULT_PASS_ENV);
     this.verbose = opts.verbose ?? opts.config.verbose;
 
-    /** @type {Map<string, import("./cli-agent.js").CliAgent>} */
+    /** @type {Map<string, import("./_base.js").AgentAdapter>} */
     this._agents = new Map();
+    this._reconfiguring = false;
   }
 
   /**
@@ -37,7 +38,11 @@ export class AgentPool {
    * @param {{ scope?: "workspace" | "repo", mode?: "cli" | "api" | "mcp" }} [opts]
    * @returns {{ agentName: string, agent: import("./_base.js").AgentAdapter }}
    */
-  getAgent(role, { scope = "repo", mode = "cli" } = {}) {
+  getAgent(role, opts = {}) {
+    if (this._reconfiguring) {
+      throw new Error("Agent pool is reconfiguring, please retry");
+    }
+    const { scope = "repo", mode = "cli" } = opts;
     const agentName = this._roleAgentName(role);
     const cwd = scope === "workspace" ? this.workspaceDir : this.repoRoot;
 
@@ -144,25 +149,26 @@ export class AgentPool {
    * Update the repo root (e.g. after issue draft sets repoPath).
    */
   async setRepoRoot(repoRoot) {
-    this.repoRoot = repoRoot;
-    // Invalidate repo-scoped agents since cwd changed — kill before removing
-    const stale = [];
-    for (const [key, agent] of this._agents) {
-      const secondColonIndex = key.indexOf(":", key.indexOf(":") + 1);
-      const extractedCwd =
-        secondColonIndex === -1 ? "" : key.substring(secondColonIndex + 1);
-      // cli agents keyed as cli:name:cwd — kill those pointing at a different repo root
-      if (
-        key.startsWith("cli:") &&
-        extractedCwd !== repoRoot &&
-        extractedCwd !== this.workspaceDir
-      ) {
-        stale.push({ key, agent });
+    this._reconfiguring = true;
+    try {
+      this.repoRoot = repoRoot;
+      const killPromises = [];
+      for (const [key, agent] of this._agents) {
+        const secondColonIndex = key.indexOf(":", key.indexOf(":") + 1);
+        const extractedCwd =
+          secondColonIndex === -1 ? "" : key.substring(secondColonIndex + 1);
+        if (
+          key.startsWith("cli:") &&
+          extractedCwd !== repoRoot &&
+          extractedCwd !== this.workspaceDir
+        ) {
+          this._agents.delete(key);
+          killPromises.push(agent.kill());
+        }
       }
-    }
-    for (const { key, agent } of stale) {
-      this._agents.delete(key);
-      await agent.kill();
+      await Promise.allSettled(killPromises);
+    } finally {
+      this._reconfiguring = false;
     }
   }
 

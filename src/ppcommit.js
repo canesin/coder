@@ -781,9 +781,12 @@ function getParserForFile(filePath) {
   return PARSERS.get(ext) || null;
 }
 
-function safeSliceByIndex(s, startIndex, endIndex) {
-  // tree-sitter indices are byte offsets; for ASCII code this matches JS indices.
-  return s.slice(startIndex, endIndex);
+function safeSliceByIndex(s, startByteIndex, endByteIndex) {
+  // tree-sitter indices are byte offsets; convert to UTF-8 byte slice
+  const buffer = Buffer.from(s, "utf8");
+  const start = Math.max(0, Math.min(startByteIndex, buffer.length));
+  const end = Math.max(start, Math.min(endByteIndex, buffer.length));
+  return buffer.subarray(start, end).toString("utf8");
 }
 
 function parseNumericLiteral(text) {
@@ -950,7 +953,11 @@ function extractJsonArray(text) {
   const lastBracket = trimmed.lastIndexOf("]");
   if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
     const candidate = trimmed.slice(firstBracket, lastBracket + 1);
-    return JSON.parse(jsonrepair(candidate));
+    try {
+      return JSON.parse(jsonrepair(candidate));
+    } catch {
+      return [];
+    }
   }
   return [];
 }

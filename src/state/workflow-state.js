@@ -82,6 +82,15 @@ export async function saveWorkflowTerminalState(
   return payload;
 }
 
+const WorkflowSnapshotSchema = z.object({
+  version: z.number().int().default(WORKFLOW_STATE_SCHEMA_VERSION),
+  workflow: z.string().default("develop"),
+  runId: z.string(),
+  value: z.any(),
+  context: z.any().default({}),
+  updatedAt: z.string(),
+});
+
 export async function loadWorkflowSnapshot(workspaceDir) {
   const p = workflowStatePathFor(workspaceDir);
   if (
@@ -91,7 +100,8 @@ export async function loadWorkflowSnapshot(workspaceDir) {
   )
     return null;
   try {
-    return JSON.parse(await readFile(p, "utf8"));
+    const data = JSON.parse(await readFile(p, "utf8"));
+    return WorkflowSnapshotSchema.parse(data);
   } catch {
     return null;
   }
@@ -269,8 +279,9 @@ export async function loadLoopState(workspaceDir) {
 
 export async function saveLoopState(workspaceDir, loopState) {
   const p = loopStatePathFor(workspaceDir);
+  const validated = LoopStateSchema.parse(loopState);
   await mkdir(path.dirname(p), { recursive: true });
-  await writeFile(p, JSON.stringify(loopState, null, 2) + "\n");
+  await writeFile(p, JSON.stringify(validated, null, 2) + "\n");
 }
 
 // --- Per-issue state ---

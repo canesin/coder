@@ -46,16 +46,6 @@ export default defineMachine({
       history: [],
       steps: {},
     };
-    const _analysisBrief = await resolveArtifact(
-      input.analysisBrief,
-      input.stepsDir,
-      "analysis-brief",
-    );
-    const _webReferenceMap = await resolveArtifact(
-      input.webReferenceMap,
-      input.stepsDir,
-      "web-references",
-    );
     const validationResults = await resolveArtifact(
       input.validationResults,
       input.stepsDir,

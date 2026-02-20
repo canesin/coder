@@ -16,6 +16,24 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
 ];
 const SUPPORTED_AGENTS = new Set(["gemini", "claude", "codex"]);
 
+/**
+ * Validate a shell argument to prevent command injection.
+ * Allows alphanumeric characters, hyphens, underscores, dots, colons, and slashes.
+ * @param {string} value
+ * @param {string} name - Parameter name for error messages
+ * @returns {string}
+ */
+function validateShellArg(value, name) {
+  if (!value) return "";
+  const str = String(value);
+  if (!/^[a-zA-Z0-9_.\-/:]+$/.test(str)) {
+    throw new Error(
+      `Invalid ${name}: contains unsafe characters. Must be alphanumeric with _.-/:`,
+    );
+  }
+  return str;
+}
+
 export function resolveAgentName(name) {
   const normalized = String(name || "")
     .trim()
@@ -56,6 +74,8 @@ export class CliAgent extends AgentAdapter {
       baseEnv: opts.secrets,
     });
     this._sandbox = null;
+    this._sandboxPromise = null;
+    this._sandboxListeners = [];
     this._log = makeJsonlLogger(opts.workspaceDir, this.name);
 
     this._mcpHealthParsed = false;
@@ -68,26 +88,46 @@ export class CliAgent extends AgentAdapter {
 
   async _ensureSandbox() {
     if (this._sandbox) return this._sandbox;
-    this._sandbox = await this._provider.create();
+    if (this._sandboxPromise) return this._sandboxPromise;
 
-    this._sandbox.on("stdout", (d) => {
+    this._sandboxPromise = this._createSandbox();
+    try {
+      this._sandbox = await this._sandboxPromise;
+      return this._sandbox;
+    } catch (err) {
+      this._sandboxPromise = null;
+      throw err;
+    }
+  }
+
+  async _createSandbox() {
+    const sandbox = await this._provider.create();
+
+    const stdoutListener = (d) => {
       this._log({ stream: "stdout", data: d });
       this._events.emit("stdout", d);
       if (this.verbose) {
         process.stdout.write(`[${this.name}] ${sanitizeLogEvent(String(d))}`);
       }
-    });
+    };
 
-    this._sandbox.on("stderr", (d) => {
+    const stderrListener = (d) => {
       this._log({ stream: "stderr", data: d });
       this._events.emit("stderr", d);
       if (this.verbose) {
         process.stderr.write(`[${this.name}] ${sanitizeLogEvent(String(d))}`);
       }
       this._parseMcpHealth(d);
-    });
+    };
 
-    return this._sandbox;
+    sandbox.on("stdout", stdoutListener);
+    sandbox.on("stderr", stderrListener);
+    this._sandboxListeners = [
+      { event: "stdout", fn: stdoutListener },
+      { event: "stderr", fn: stderrListener },
+    ];
+
+    return sandbox;
   }
 
   _parseMcpHealth(data) {
@@ -117,30 +157,41 @@ export class CliAgent extends AgentAdapter {
   ) {
     if (this.name === "gemini") {
       if (structured) {
-        const model = modelOverride || this.config.models.gemini;
-        return geminiJsonPipeWithModel(prompt, model);
+        const modelObj = modelOverride || this.config.models.gemini;
+        const modelStr =
+          modelObj && typeof modelObj === "object" ? modelObj.model : modelObj;
+        if (modelStr) validateShellArg(modelStr, "model");
+        return geminiJsonPipeWithModel(prompt, modelObj);
       }
-      const model = modelOverride || this.config.models.gemini?.model;
+      const model = validateShellArg(
+        modelOverride || this.config.models.gemini?.model,
+        "model",
+      );
       const cmd = model ? `gemini --yolo -m ${model}` : "gemini --yolo";
       return heredocPipe(prompt, cmd);
     }
 
     if (this.name === "claude") {
       let flags = "claude -p";
-      const claudeModel = modelOverride || this.config.models.claude?.model;
+      const claudeModel = validateShellArg(
+        modelOverride || this.config.models.claude?.model,
+        "model",
+      );
       if (claudeModel) {
         flags += ` --model ${claudeModel}`;
       }
       if (this.config.claude.skipPermissions) {
         flags += " --dangerously-skip-permissions";
       }
-      if (sessionId) flags += ` --session-id ${sessionId}`;
-      if (resumeId) flags += ` --resume ${resumeId}`;
+      const safeSessionId = validateShellArg(sessionId, "sessionId");
+      const safeResumeId = validateShellArg(resumeId, "resumeId");
+      if (safeSessionId) flags += ` --session-id ${safeSessionId}`;
+      if (safeResumeId) flags += ` --resume ${safeResumeId}`;
       return heredocPipe(prompt, flags);
     }
 
     // codex
-    return `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
+    return heredocPipe(prompt, "codex exec --full-auto --skip-git-repo-check");
   }
 
   async execute(prompt, opts = {}) {
@@ -164,11 +215,17 @@ export class CliAgent extends AgentAdapter {
 
   async executeStructured(prompt, opts = {}) {
     const res = await this.execute(prompt, { ...opts, structured: true });
-    const parsed =
-      this.name === "gemini"
-        ? extractGeminiPayloadJson(res.stdout)
-        : extractJson(res.stdout);
-    return { ...res, parsed };
+    let parsed = null;
+    let parseError = null;
+    try {
+      parsed =
+        this.name === "gemini"
+          ? extractGeminiPayloadJson(res.stdout)
+          : extractJson(res.stdout);
+    } catch (err) {
+      parseError = err.message;
+    }
+    return { ...res, parsed, parseError };
   }
 
   async executeWithRetry(prompt, opts = {}) {
@@ -245,9 +302,21 @@ export class CliAgent extends AgentAdapter {
   }
 
   async kill() {
+    if (this._sandboxPromise) {
+      try {
+        await this._sandboxPromise;
+      } catch {
+        // best-effort - creation may have failed
+      }
+    }
     if (this._sandbox) {
+      for (const { event, fn } of this._sandboxListeners) {
+        this._sandbox.off(event, fn);
+      }
+      this._sandboxListeners = [];
       await this._sandbox.kill();
       this._sandbox = null;
     }
+    this._sandboxPromise = null;
   }
 }

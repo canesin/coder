@@ -24,19 +24,23 @@ export class ApiAgent extends AgentAdapter {
     this.apiKey = opts.apiKey;
     this.model = opts.model || "";
     this.systemPrompt = opts.systemPrompt || "";
-    this._abortController = null;
+    /** @type {Map<string, AbortController>} */
+    this._activeControllers = new Map();
+    this._callIdCounter = 0;
   }
 
   async execute(prompt, opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 60_000;
-    this._abortController = new AbortController();
-    const timer = setTimeout(() => this._abortController.abort(), timeoutMs);
+    const callId = String(++this._callIdCounter);
+    const abortController = new AbortController();
+    this._activeControllers.set(callId, abortController);
+    const timer = setTimeout(() => abortController.abort(), timeoutMs);
 
     try {
       const response =
         this.provider === "gemini"
-          ? await this._callGemini(prompt)
-          : await this._callAnthropic(prompt);
+          ? await this._callGemini(prompt, abortController.signal)
+          : await this._callAnthropic(prompt, abortController.signal);
 
       return { exitCode: 0, stdout: response, stderr: "" };
     } catch (err) {
@@ -50,26 +54,38 @@ export class ApiAgent extends AgentAdapter {
       return { exitCode: 1, stdout: "", stderr: err.message };
     } finally {
       clearTimeout(timer);
-      this._abortController = null;
+      this._activeControllers.delete(callId);
     }
   }
 
   async executeStructured(prompt, opts = {}) {
     const res = await this.execute(prompt, opts);
-    const parsed = extractJson(res.stdout);
-    return { ...res, parsed };
+    let parsed = null;
+    let parseError = null;
+
+    if (res.stdout) {
+      try {
+        parsed = extractJson(res.stdout);
+      } catch (err) {
+        parseError = err.message;
+      }
+    } else if (res.exitCode === 0) {
+      parseError = "Empty response from API";
+    }
+
+    return { ...res, parsed, parseError };
   }
 
   async kill() {
-    if (this._abortController) {
-      this._abortController.abort();
-      this._abortController = null;
+    for (const controller of this._activeControllers.values()) {
+      controller.abort();
     }
+    this._activeControllers.clear();
   }
 
-  async _callGemini(prompt) {
+  async _callGemini(prompt, signal) {
     const model = this.model || "gemini-3.1-pro-preview";
-    const url = `${this.endpoint}/models/${model}:generateContent?key=${this.apiKey}`;
+    const url = `${this.endpoint}/models/${model}:generateContent`;
 
     const body = {
       contents: [{ parts: [{ text: prompt }] }],
@@ -80,9 +96,12 @@ export class ApiAgent extends AgentAdapter {
 
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": this.apiKey,
+      },
       body: JSON.stringify(body),
-      signal: this._abortController?.signal,
+      signal,
     });
 
     if (!res.ok) {
@@ -98,7 +117,7 @@ export class ApiAgent extends AgentAdapter {
     return parts.map((p) => p.text || "").join("");
   }
 
-  async _callAnthropic(prompt) {
+  async _callAnthropic(prompt, signal) {
     const model = this.model || "claude-sonnet-4-6";
     const url = `${this.endpoint}/v1/messages`;
 
@@ -119,7 +138,7 @@ export class ApiAgent extends AgentAdapter {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
-      signal: this._abortController?.signal,
+      signal,
     });
 
     if (!res.ok) {

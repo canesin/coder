@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
@@ -8,6 +8,7 @@ import {
   endPipelineStep,
   initPipeline,
   initRunDirectory,
+  loadPipeline,
   parseAgentPayload,
 } from "../research/_shared.js";
 
@@ -47,12 +48,12 @@ export default defineMachine({
     let pipeline;
 
     if (!scratchpadPath || !pipelinePath) {
-      const dirs = initRunDirectory(ctx.scratchpadDir);
+      const dirs = await initRunDirectory(ctx.scratchpadDir);
       scratchpadPath = scratchpadPath || dirs.scratchpadPath;
       pipelinePath = pipelinePath || dirs.pipelinePath;
-      pipeline = initPipeline(dirs.runId, pipelinePath);
+      pipeline = await initPipeline(dirs.runId, pipelinePath);
     } else {
-      pipeline = {
+      pipeline = (await loadPipeline(pipelinePath)) || {
         version: 1,
         runId: "poc-runner",
         current: "init",
@@ -63,12 +64,18 @@ export default defineMachine({
 
     const workDir =
       input.workDir || path.join(ctx.scratchpadDir, `poc-${Date.now()}`);
-    mkdirSync(workDir, { recursive: true });
+    await mkdir(workDir, { recursive: true });
 
-    beginPipelineStep(pipeline, pipelinePath, scratchpadPath, "poc_execution", {
-      agent: agentName,
-      title: input.title,
-    });
+    await beginPipelineStep(
+      pipeline,
+      pipelinePath,
+      scratchpadPath,
+      "poc_execution",
+      {
+        agent: agentName,
+        title: input.title,
+      },
+    );
 
     const prompt = `You are a PoC validation agent. Execute and evaluate the following proof of concept.
 
@@ -108,7 +115,7 @@ Return JSON:
     });
 
     if (res.exitCode !== 0) {
-      endPipelineStep(
+      await endPipelineStep(
         pipeline,
         pipelinePath,
         scratchpadPath,
@@ -124,13 +131,13 @@ Return JSON:
 
     const payload = parseAgentPayload(agentName, res.stdout);
 
-    appendScratchpad(scratchpadPath, `PoC: ${input.title}`, [
+    await appendScratchpad(scratchpadPath, `PoC: ${input.title}`, [
       `- success: ${payload?.success ?? "unknown"}`,
       `- exit_code: ${payload?.exitCode ?? "unknown"}`,
       `- analysis: ${(payload?.analysis || "").slice(0, 200)}`,
     ]);
 
-    endPipelineStep(
+    await endPipelineStep(
       pipeline,
       pipelinePath,
       scratchpadPath,

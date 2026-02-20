@@ -28,12 +28,13 @@ export default defineMachine({
     }
 
     if (state.steps.wroteCritique) {
+      const planMd = await readFile(paths.plan, "utf8");
       const critiqueMd = (await access(paths.critique)
         .then(() => true)
         .catch(() => false))
         ? await readFile(paths.critique, "utf8")
         : "";
-      return { status: "ok", data: { critiqueMd } };
+      return { status: "ok", data: { planMd, critiqueMd } };
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);

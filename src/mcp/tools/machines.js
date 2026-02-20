@@ -103,7 +103,9 @@ export function registerMachineTools(server, defaultWorkspace) {
             isError: true,
           };
         } finally {
-          if (ctx?.agentPool) await ctx.agentPool.killAll();
+          if (ctx?.agentPool) {
+            await ctx.agentPool.killAll();
+          }
         }
       },
     );

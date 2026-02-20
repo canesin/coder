@@ -32,11 +32,15 @@ export function sqlEscape(value) {
  * @param {string} sql - SQL statement(s) to execute
  * @returns {string} stdout from sqlite3
  */
-export function runSqlite(dbPath, sql) {
+export function runSqlite(dbPath, sql, timeoutMs = 30000) {
   const res = spawnSync("sqlite3", [dbPath], {
     encoding: "utf8",
     input: `${sql}\n`,
+    timeout: timeoutMs,
   });
+  if (res.signal === "SIGTERM") {
+    throw new Error(`sqlite3 query timed out after ${timeoutMs}ms`);
+  }
   if (res.status !== 0) {
     throw new Error(
       `sqlite3 failed: ${(res.stderr || res.stdout || "").trim() || "unknown error"}`,
@@ -52,8 +56,9 @@ export function runSqlite(dbPath, sql) {
  */
 export function runSqliteIgnoreErrors(dbPath, sql) {
   if (!dbPath || !sqliteAvailable()) return;
-  spawnSync("sqlite3", [dbPath, sql], {
+  spawnSync("sqlite3", [dbPath], {
     encoding: "utf8",
-    stdio: "ignore",
+    input: `${sql}\n`,
+    stdio: ["pipe", "ignore", "ignore"],
   });
 }

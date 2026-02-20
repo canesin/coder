@@ -44,6 +44,14 @@ async function findLatestScratchpadFile(scratchpadDir) {
   return latest?.path || null;
 }
 
+async function readFileOrFallback(filePath, fallbackText) {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch {
+    return fallbackText;
+  }
+}
+
 export function registerResources(server, defaultWorkspace) {
   server.resource(
     "state",
@@ -71,7 +79,7 @@ export function registerResources(server, defaultWorkspace) {
           {
             uri: "coder://state",
             mimeType: "application/json",
-            text: await readFile(statePath, "utf8"),
+            text: await readFileOrFallback(statePath, "{}"),
           },
         ],
       };
@@ -110,7 +118,10 @@ export function registerResources(server, defaultWorkspace) {
           {
             uri: "coder://issue",
             mimeType: "text/markdown",
-            text: await readFile(issuePath, "utf8"),
+            text: await readFileOrFallback(
+              issuePath,
+              "ISSUE.md does not exist yet.",
+            ),
           },
         ],
       };
@@ -149,7 +160,10 @@ export function registerResources(server, defaultWorkspace) {
           {
             uri: "coder://plan",
             mimeType: "text/markdown",
-            text: await readFile(planPath, "utf8"),
+            text: await readFileOrFallback(
+              planPath,
+              "PLAN.md does not exist yet.",
+            ),
           },
         ],
       };
@@ -188,7 +202,10 @@ export function registerResources(server, defaultWorkspace) {
           {
             uri: "coder://critique",
             mimeType: "text/markdown",
-            text: await readFile(critiquePath, "utf8"),
+            text: await readFileOrFallback(
+              critiquePath,
+              "PLANREVIEW.md does not exist yet.",
+            ),
           },
         ],
       };
@@ -225,7 +242,7 @@ export function registerResources(server, defaultWorkspace) {
           {
             uri: "coder://loop-state",
             mimeType: "application/json",
-            text: await readFile(loopPath, "utf8"),
+            text: await readFileOrFallback(loopPath, "{}"),
           },
         ],
       };
@@ -251,7 +268,8 @@ export function registerResources(server, defaultWorkspace) {
         )
       ) {
         try {
-          const state = JSON.parse(await readFile(statePath, "utf8"));
+          const rawState = await readFile(statePath, "utf8");
+          const state = JSON.parse(rawState);
           if (
             typeof state?.scratchpadPath === "string" &&
             state.scratchpadPath
@@ -268,8 +286,12 @@ export function registerResources(server, defaultWorkspace) {
             )
               scratchpadPath = candidate;
           }
-        } catch {
-          // best-effort
+        } catch (err) {
+          if (err instanceof SyntaxError) {
+            console.warn(
+              `Corrupted state JSON at ${statePath}: ${err.message}`,
+            );
+          }
         }
       }
 
@@ -289,12 +311,27 @@ export function registerResources(server, defaultWorkspace) {
         };
       }
 
+      let content;
+      try {
+        content = await readFile(scratchpadPath, "utf8");
+      } catch (err) {
+        return {
+          contents: [
+            {
+              uri: "coder://scratchpad",
+              mimeType: "text/markdown",
+              text: `Error reading scratchpad file: ${err.message}`,
+            },
+          ],
+        };
+      }
+
       return {
         contents: [
           {
             uri: "coder://scratchpad",
             mimeType: "text/markdown",
-            text: await readFile(scratchpadPath, "utf8"),
+            text: content,
           },
         ],
       };

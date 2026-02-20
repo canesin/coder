@@ -132,7 +132,7 @@ FORBIDDEN patterns:
     let res;
     try {
       res = await programmerAgent.executeWithRetry(implPrompt, {
-        resumeId:
+        sessionId:
           programmerName === "claude" ? state.claudeSessionId : undefined,
         timeoutMs: 1000 * 60 * 60,
       });

@@ -103,7 +103,7 @@ export default defineMachine({
     });
     const hasChanges = (status.stdout || "").trim().length > 0;
     if (hasChanges) {
-      const add = await spawnAsync("git", ["add", "."], {
+      const add = await spawnAsync("git", ["add", "-u"], {
         cwd: repoRoot,
         encoding: "utf8",
       });

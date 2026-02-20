@@ -251,7 +251,7 @@ Return ONLY valid JSON in this schema:
         finalDraft,
         finalReview,
         priorFeedback,
-        selectedIssues: finalDraft.issues.slice(0, maxIssues),
+        selectedIssues: finalDraft?.issues?.slice(0, maxIssues) ?? [],
       },
     };
   },

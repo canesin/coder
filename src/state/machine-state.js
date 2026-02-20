@@ -2,6 +2,8 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
+const checkpointLocks = new Map();
+
 /**
  * Per-machine state checkpoint — saved after each machine completes within a workflow.
  */
@@ -50,25 +52,56 @@ export async function loadCheckpoint(workspaceDir, runId) {
   }
 }
 
+async function withCheckpointLock(runId, fn) {
+  const lockKey = runId;
+
+  // Wait for any existing lock
+  while (checkpointLocks.has(lockKey)) {
+    await checkpointLocks.get(lockKey);
+  }
+
+  // Atomically set lock before any await
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  checkpointLocks.set(lockKey, promise);
+
+  // Verify we won the race (another call might have set between has() and set())
+  if (checkpointLocks.get(lockKey) !== promise) {
+    resolve();
+    return withCheckpointLock(runId, fn);
+  }
+
+  try {
+    return await fn();
+  } finally {
+    checkpointLocks.delete(lockKey);
+    resolve();
+  }
+}
+
 export async function appendStepCheckpoint(
   workspaceDir,
   runId,
   workflow,
   step,
 ) {
-  const existing = (await loadCheckpoint(workspaceDir, runId)) || {
-    runId,
-    workflow,
-    steps: [],
-    currentStep: 0,
-    updatedAt: new Date().toISOString(),
-  };
-  existing.steps.push({
-    ...step,
-    completedAt: new Date().toISOString(),
+  return withCheckpointLock(runId, async () => {
+    const existing = (await loadCheckpoint(workspaceDir, runId)) || {
+      runId,
+      workflow,
+      steps: [],
+      currentStep: 0,
+      updatedAt: new Date().toISOString(),
+    };
+    existing.steps.push({
+      ...step,
+      completedAt: new Date().toISOString(),
+    });
+    existing.currentStep = existing.steps.length;
+    existing.updatedAt = new Date().toISOString();
+    await saveCheckpoint(workspaceDir, existing);
+    return existing;
   });
-  existing.currentStep = existing.steps.length;
-  existing.updatedAt = new Date().toISOString();
-  await saveCheckpoint(workspaceDir, existing);
-  return existing;
 }

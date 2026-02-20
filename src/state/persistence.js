@@ -53,13 +53,26 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
     return this._sqliteEnabled;
   }
 
-  async _runSql(sql) {
+  async _runSql(sql, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       const proc = spawn("sqlite3", [this.sqlitePath], {
         stdio: ["pipe", "pipe", "pipe"],
       });
       let stdout = "",
         stderr = "";
+      let timedOut = false;
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {}
+        }, 5000);
+        reject(new Error(`sqlite3 query timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
       proc.stdout.on("data", (d) => {
         stdout += d;
       });
@@ -67,6 +80,8 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
         stderr += d;
       });
       proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (timedOut) return;
         if (code !== 0)
           reject(
             new Error(
@@ -75,7 +90,10 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
           );
         else resolve(stdout);
       });
-      proc.on("error", reject);
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        if (!timedOut) reject(err);
+      });
       proc.stdin.write(`${sql}\n`);
       proc.stdin.end();
     });
@@ -137,9 +155,11 @@ ON CONFLICT(file_path) DO UPDATE SET
     const relPath = this._relPath(filePath);
     if (!relPath) return false;
     try {
-      const out = await this._runSql(
-        `SELECT content FROM scratchpad_files WHERE file_path='${sqlEscape(relPath)}' LIMIT 1;`,
-      );
+      const out = (
+        await this._runSql(
+          `SELECT content FROM scratchpad_files WHERE file_path='${sqlEscape(relPath)}' LIMIT 1;`,
+        )
+      ).trimEnd();
       if (!out) return false;
       await mkdir(path.dirname(filePath), { recursive: true });
       await writeFile(filePath, out, "utf8");

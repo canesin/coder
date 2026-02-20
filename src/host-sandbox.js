@@ -8,7 +8,30 @@ import {
 } from "./systemd-run.js";
 
 // Keep only the tail of stdout/stderr to avoid OOM on long agent runs.
-const MAX_OUTPUT_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_OUTPUT_CHARS = 2 * 1024 * 1024; // ~2 MB for ASCII, may be larger for multi-byte
+
+// Map signal names to their numeric values
+const SIGNAL_NUMBERS = {
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGQUIT: 3,
+  SIGILL: 4,
+  SIGTRAP: 5,
+  SIGABRT: 6,
+  SIGBUS: 7,
+  SIGFPE: 8,
+  SIGKILL: 9,
+  SIGUSR1: 10,
+  SIGSEGV: 11,
+  SIGUSR2: 12,
+  SIGPIPE: 13,
+  SIGALRM: 14,
+  SIGTERM: 15,
+};
+
+function signalToNumber(signal) {
+  return SIGNAL_NUMBERS[signal] || 15; // Default to SIGTERM
+}
 
 export class CommandTimeoutError extends Error {
   constructor(command, timeoutMs) {
@@ -188,7 +211,7 @@ class HostSandboxInstance extends EventEmitter {
       let stderr = "";
       const appendCapped = (buf, chunk) => {
         buf += chunk;
-        if (buf.length > MAX_OUTPUT_BYTES) buf = buf.slice(-MAX_OUTPUT_BYTES);
+        if (buf.length > MAX_OUTPUT_CHARS) buf = buf.slice(-MAX_OUTPUT_CHARS);
         return buf;
       };
 
@@ -277,8 +300,8 @@ class HostSandboxInstance extends EventEmitter {
         settle(err);
       });
 
-      child.on("close", (code) => {
-        const exitCode = code ?? 0;
+      child.on("close", (code, signal) => {
+        const exitCode = code ?? (signal ? 128 + signalToNumber(signal) : -1);
         if (throwOnNonZero && exitCode !== 0) {
           const err = new Error(
             `Command exited with code ${exitCode}: ${command.slice(0, 200)}`,
