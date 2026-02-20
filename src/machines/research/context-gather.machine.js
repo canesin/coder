@@ -1,4 +1,6 @@
-import { execFile } from "node:child_process/promises";
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
+const execFile = promisify(execFileCb);
 import { access, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
