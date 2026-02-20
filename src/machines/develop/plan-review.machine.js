@@ -17,7 +17,7 @@ export default defineMachine({
   inputSchema: z.object({}),
 
   async execute(_input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
@@ -94,7 +94,7 @@ Constraints:
     }
 
     state.steps.wroteCritique = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     const planMd = (await access(paths.plan)
       .then(() => true)

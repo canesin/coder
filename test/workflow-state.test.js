@@ -34,14 +34,14 @@ test("loopStatePathFor returns expected path", () => {
   );
 });
 
-test("loadState returns defaults for nonexistent workspace", () => {
-  const state = loadState("/nonexistent-path-" + Date.now());
+test("loadState returns defaults for nonexistent workspace", async () => {
+  const state = await loadState("/nonexistent-path-" + Date.now());
   assert.equal(state.selected, null);
   assert.equal(state.repoPath, null);
   assert.deepEqual(state.steps, {});
 });
 
-test("saveState + loadState round-trip", () => {
+test("saveState + loadState round-trip", async () => {
   const ws = makeTmpDir();
   const state = {
     selected: { source: "github", id: "123", title: "Test issue" },
@@ -63,22 +63,22 @@ test("saveState + loadState round-trip", () => {
     scratchpadPath: null,
     lastWipPushAt: null,
   };
-  saveState(ws, state);
-  const loaded = loadState(ws);
+  await saveState(ws, state);
+  const loaded = await loadState(ws);
   assert.equal(loaded.selected.id, "123");
   assert.equal(loaded.repoPath, ".");
   assert.equal(loaded.steps.wroteIssue, true);
   rmSync(ws, { recursive: true, force: true });
 });
 
-test("loadLoopState returns defaults for nonexistent workspace", () => {
-  const state = loadLoopState("/nonexistent-path-" + Date.now());
+test("loadLoopState returns defaults for nonexistent workspace", async () => {
+  const state = await loadLoopState("/nonexistent-path-" + Date.now());
   assert.equal(state.status, "idle");
   assert.equal(state.runId, null);
   assert.deepEqual(state.issueQueue, []);
 });
 
-test("saveLoopState + loadLoopState round-trip", () => {
+test("saveLoopState + loadLoopState round-trip", async () => {
   const ws = makeTmpDir();
   const state = {
     runId: "abc123",
@@ -96,8 +96,8 @@ test("saveLoopState + loadLoopState round-trip", () => {
     startedAt: new Date().toISOString(),
     completedAt: null,
   };
-  saveLoopState(ws, state);
-  const loaded = loadLoopState(ws);
+  await saveLoopState(ws, state);
+  const loaded = await loadLoopState(ws);
   assert.equal(loaded.runId, "abc123");
   assert.equal(loaded.status, "running");
   assert.equal(loaded.goal, "test goal");
@@ -179,7 +179,7 @@ test("createWorkflowLifecycleMachine handles fail from running", () => {
   actor.stop();
 });
 
-test("saveWorkflowSnapshot + loadWorkflowSnapshot round-trip", () => {
+test("saveWorkflowSnapshot + loadWorkflowSnapshot round-trip", async () => {
   const ws = makeTmpDir();
   const machine = createWorkflowLifecycleMachine();
   const actor = createActor(machine);
@@ -191,13 +191,13 @@ test("saveWorkflowSnapshot + loadWorkflowSnapshot round-trip", () => {
     at: new Date().toISOString(),
   });
 
-  saveWorkflowSnapshot(ws, {
+  await saveWorkflowSnapshot(ws, {
     runId: "snap-run",
     workflow: "develop",
     snapshot: actor.getPersistedSnapshot(),
   });
 
-  const loaded = loadWorkflowSnapshot(ws);
+  const loaded = await loadWorkflowSnapshot(ws);
   assert.equal(loaded.runId, "snap-run");
   assert.equal(loaded.workflow, "develop");
   assert.equal(loaded.value, "running");
@@ -206,16 +206,16 @@ test("saveWorkflowSnapshot + loadWorkflowSnapshot round-trip", () => {
   rmSync(ws, { recursive: true, force: true });
 });
 
-test("saveWorkflowTerminalState persists terminal state", () => {
+test("saveWorkflowTerminalState persists terminal state", async () => {
   const ws = makeTmpDir();
-  saveWorkflowTerminalState(ws, {
+  await saveWorkflowTerminalState(ws, {
     runId: "term-run",
     workflow: "research",
     state: "completed",
     context: { runId: "term-run", workflow: "research" },
   });
 
-  const loaded = loadWorkflowSnapshot(ws);
+  const loaded = await loadWorkflowSnapshot(ws);
   assert.equal(loaded.runId, "term-run");
   assert.equal(loaded.value, "completed");
   assert.equal(loaded.workflow, "research");

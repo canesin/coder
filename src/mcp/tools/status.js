@@ -78,7 +78,7 @@ async function readResearchState(workspaceDir) {
 
 async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
-  const state = loadState(workspaceDir);
+  const state = await loadState(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
   const scratchpadDir = path.join(workspaceDir, ".coder", "scratchpad");
 

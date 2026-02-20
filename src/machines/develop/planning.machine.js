@@ -18,7 +18,7 @@ export default defineMachine({
   inputSchema: z.object({}),
 
   async execute(_input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
@@ -84,7 +84,7 @@ export default defineMachine({
     // Generate Claude session ID for reuse across steps
     if (plannerName === "claude" && !state.claudeSessionId) {
       state.claudeSessionId = randomUUID();
-      saveState(ctx.workspaceDir, state);
+      await saveState(ctx.workspaceDir, state);
     }
 
     const planPrompt = `You are planning an implementation. Follow this structured approach:
@@ -151,7 +151,7 @@ Constraints:
     } catch (err) {
       if (state.claudeSessionId) {
         state.claudeSessionId = null;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
       throw err;
     }
@@ -194,7 +194,7 @@ Constraints:
     if (!existsSync(paths.plan))
       throw new Error(`PLAN.md not found: ${paths.plan}`);
     state.steps.wrotePlan = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     return { status: "ok", data: { planMd: "written" } };
   },

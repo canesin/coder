@@ -17,7 +17,7 @@ export default defineMachine({
   inputSchema: z.object({}),
 
   async execute(_input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
@@ -140,13 +140,13 @@ FORBIDDEN patterns:
     } catch (err) {
       if (state.claudeSessionId) {
         state.claudeSessionId = null;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
       throw err;
     }
 
     state.steps.implemented = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     const diffStat = spawnSync("git", ["diff", "--stat", "HEAD"], {
       cwd: repoRoot,

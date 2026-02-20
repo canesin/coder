@@ -29,7 +29,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     if (!state.steps.implemented) {
@@ -125,7 +125,7 @@ Hard constraints:
     );
     state.steps.ppcommitInitiallyClean = ppBefore.exitCode === 0;
     ctx.log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Reviewer pass
     if (!state.steps.reviewerCompleted) {
@@ -142,7 +142,7 @@ Hard constraints:
         "review pass",
       );
       state.steps.reviewerCompleted = true;
-      saveState(ctx.workspaceDir, state);
+      await saveState(ctx.workspaceDir, state);
     }
 
     // Hard gate: ppcommit retry loop
@@ -176,7 +176,7 @@ Hard constraints:
       );
     }
     state.steps.ppcommitClean = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Hard gate: tests must pass
     const testRes = await runHostTests(repoRoot, {
@@ -208,7 +208,7 @@ Hard constraints:
     // Save fingerprint after all workflow-internal file modifications and WIP
     // commits are done, so pr_creation sees the same state.
     state.reviewFingerprint = computeGitWorktreeFingerprint(repoRoot);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
     return {
       status: "ok",
       data: {
