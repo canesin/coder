@@ -135,20 +135,21 @@ Rules:
 }
 
 function buildCommitterEscalationPrompt(paths, ppSection) {
-  return `You are the arbiter for unresolved review findings after 2 rounds of review.
+  return `You are the final gatekeeper before a PR is created. The programmer and reviewer have already done 2 rounds each.
 
-Read ${paths.reviewFindings} for the latest reviewer objections.
 Read ${paths.issue} for the original scope.
+Read ${paths.reviewFindings} for any remaining reviewer objections — you may DISMISS these if they are pedantic or stylistic.
 
-Your job:
-1. Fix findings that are LEGITIMATE code quality issues (bugs, missing edge cases, real over-engineering)
-2. DISMISS findings that are pedantic, stylistic preferences, or scope creep from the reviewer
-3. Fix any ppcommit issues:
+Your focus is commit hygiene and test health, NOT writing new code:
+
+1. Fix ppcommit issues:
 ${ppSection}
 
-Then run the repo's standard lint/format commands.
+2. Run the repo's lint/format commands and fix any failures
+3. Run tests and fix any failures — only minimal, targeted fixes (typos, imports, small adjustments)
+4. Remove unnecessary comments, dead code, or leftover debug artifacts
 
-Use your judgment — the reviewer and programmer couldn't converge, so you decide what actually matters.`;
+Do NOT refactor, add features, or make substantial code changes. If something needs significant work, leave it — the PR description will note it.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +234,9 @@ export default defineMachine({
 
       const maxRounds = 2;
 
+      // Flow: R1 → fix1 → R2 → fix2 → committer
+      // Programmer ALWAYS gets a fix pass after each REVISE.
+      // Committer only enters after both fix attempts are exhausted.
       for (let round = 1; round <= maxRounds; round++) {
         if (ctx.cancelToken.cancelled) break;
 
@@ -241,7 +245,6 @@ export default defineMachine({
           // Check if programmer fix is still needed for this round
           if (
             state.steps.reviewVerdict === "REVISE" &&
-            round < maxRounds &&
             (state.steps.programmerFixedRound || 0) < round
           ) {
             // Resume from programmer fix
@@ -302,56 +305,56 @@ export default defineMachine({
           }
         }
 
-        // --- Programmer fixes (if not last round) ---
-        if (round < maxRounds) {
-          // Recovery: skip if programmer already fixed this round
-          if ((state.steps.programmerFixedRound || 0) >= round) {
-            ctx.log({ event: "review_recovery_skip_fix", round });
-            continue;
-          }
-
-          ctx.log({ event: "programmer_fix", round, agent: programmerName });
-
-          const fixPrompt = buildProgrammerFixPrompt(paths, round);
-          const fixRes = await programmerAgent.execute(fixPrompt, {
-            resumeId: state.claudeSessionId || undefined,
-            timeoutMs: 1000 * 60 * 45,
-          });
-          requireExitZero(programmerName, `fix round ${round}`, fixRes);
-
-          state.steps.programmerFixedRound = round;
-          saveState(ctx.workspaceDir, state);
-
-          // WIP checkpoint after programmer fix
-          maybeCheckpointWip(
-            repoRoot,
-            state.branch,
-            ctx.config.workflow.wip,
-            ctx.log,
-          );
-        } else {
-          // --- Committer escalation (round == maxRounds and still REVISE) ---
-          ctx.log({
-            event: "committer_escalation",
-            round,
-            agent: committerName,
-          });
-
-          const escalationPrompt = buildCommitterEscalationPrompt(
-            paths,
-            ppSection,
-          );
-          const escalationRes = await committerAgent.execute(escalationPrompt, {
-            timeoutMs: 1000 * 60 * 60,
-          });
-          requireExitZero(committerName, "committer escalation", escalationRes);
-
-          state.steps.reviewerCompleted = true;
-          saveState(ctx.workspaceDir, state);
+        // --- Programmer fixes (after every REVISE) ---
+        // Recovery: skip if programmer already fixed this round
+        if ((state.steps.programmerFixedRound || 0) >= round) {
+          ctx.log({ event: "review_recovery_skip_fix", round });
+          continue;
         }
+
+        ctx.log({ event: "programmer_fix", round, agent: programmerName });
+
+        const fixPrompt = buildProgrammerFixPrompt(paths, round);
+        const fixRes = await programmerAgent.execute(fixPrompt, {
+          resumeId: state.claudeSessionId || undefined,
+          timeoutMs: 1000 * 60 * 45,
+        });
+        requireExitZero(programmerName, `fix round ${round}`, fixRes);
+
+        state.steps.programmerFixedRound = round;
+        saveState(ctx.workspaceDir, state);
+
+        // WIP checkpoint after programmer fix
+        maybeCheckpointWip(
+          repoRoot,
+          state.branch,
+          ctx.config.workflow.wip,
+          ctx.log,
+        );
       }
 
-      // Ensure reviewerCompleted is set even if we exited loop via cancellation
+      // --- Committer escalation (both rounds exhausted, still REVISE) ---
+      if (
+        !state.steps.reviewerCompleted &&
+        !ctx.cancelToken.cancelled &&
+        state.steps.reviewVerdict === "REVISE"
+      ) {
+        ctx.log({
+          event: "committer_escalation",
+          agent: committerName,
+        });
+
+        const escalationPrompt = buildCommitterEscalationPrompt(
+          paths,
+          ppSection,
+        );
+        const escalationRes = await committerAgent.execute(escalationPrompt, {
+          timeoutMs: 1000 * 60 * 60,
+        });
+        requireExitZero(committerName, "committer escalation", escalationRes);
+      }
+
+      // Mark review phase complete
       if (!state.steps.reviewerCompleted && !ctx.cancelToken.cancelled) {
         state.steps.reviewerCompleted = true;
         saveState(ctx.workspaceDir, state);
