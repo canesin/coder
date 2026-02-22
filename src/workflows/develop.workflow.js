@@ -621,7 +621,12 @@ async function resetForNextIssue(
 
   // Delete workflow artifacts
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  for (const name of ["ISSUE.md", "PLAN.md", "PLANREVIEW.md"]) {
+  for (const name of [
+    "ISSUE.md",
+    "PLAN.md",
+    "PLANREVIEW.md",
+    "REVIEW_FINDINGS.md",
+  ]) {
     const p = path.join(artifactsDir, name);
     if (existsSync(p)) rmSync(p, { force: true });
   }

@@ -10,12 +10,14 @@ import {
 export const ISSUE_FILE = "ISSUE.md";
 export const PLAN_FILE = "PLAN.md";
 export const CRITIQUE_FILE = "PLANREVIEW.md";
+export const REVIEW_FINDINGS_FILE = "REVIEW_FINDINGS.md";
 
 export function artifactPaths(artifactsDir) {
   return {
     issue: path.join(artifactsDir, ISSUE_FILE),
     plan: path.join(artifactsDir, PLAN_FILE),
     critique: path.join(artifactsDir, CRITIQUE_FILE),
+    reviewFindings: path.join(artifactsDir, REVIEW_FINDINGS_FILE),
   };
 }
 
@@ -61,7 +63,12 @@ export function ensureGitignore(workspaceDir) {
     writeFileSync(gitignorePath, giContent);
   }
 
-  const artifacts = [ISSUE_FILE, PLAN_FILE, CRITIQUE_FILE];
+  const artifacts = [
+    ISSUE_FILE,
+    PLAN_FILE,
+    CRITIQUE_FILE,
+    REVIEW_FINDINGS_FILE,
+  ];
   const geminiIgnorePath = path.join(workspaceDir, ".geminiignore");
   const gmContent = existsSync(geminiIgnorePath)
     ? readFileSync(geminiIgnorePath, "utf8")

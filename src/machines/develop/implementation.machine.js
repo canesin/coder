@@ -132,8 +132,7 @@ FORBIDDEN patterns:
     let res;
     try {
       res = await programmerAgent.execute(implPrompt, {
-        resumeId:
-          programmerName === "claude" ? state.claudeSessionId : undefined,
+        resumeId: state.claudeSessionId || undefined,
         timeoutMs: 1000 * 60 * 60,
       });
       requireExitZero(programmerName, "implementation failed", res);

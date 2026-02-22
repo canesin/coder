@@ -81,8 +81,8 @@ export default defineMachine({
       pre.filter((e) => e.status === "??").map((e) => e.path),
     );
 
-    // Generate Claude session ID for reuse across steps
-    if (plannerName === "claude" && !state.claudeSessionId) {
+    // Generate session ID for reuse across steps (planning -> implementation -> fix)
+    if (!state.claudeSessionId) {
       state.claudeSessionId = randomUUID();
       saveState(ctx.workspaceDir, state);
     }
@@ -144,7 +144,7 @@ Constraints:
     let res;
     try {
       res = await plannerAgent.execute(planPrompt, {
-        sessionId: plannerName === "claude" ? state.claudeSessionId : undefined,
+        sessionId: state.claudeSessionId || undefined,
         timeoutMs: 1000 * 60 * 40,
       });
       requireExitZero(plannerName, "plan generation failed", res);

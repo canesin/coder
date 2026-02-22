@@ -113,18 +113,25 @@ export class CliAgent extends AgentAdapter {
 
   _buildCommand(prompt, { structured = false, sessionId, resumeId } = {}) {
     if (this.name === "gemini") {
+      const modelEntry = this.config.models.gemini;
+      const modelName =
+        typeof modelEntry === "object" ? modelEntry?.model : modelEntry;
       if (structured) {
-        return geminiJsonPipeWithModel(prompt, this.config.models.gemini);
+        return geminiJsonPipeWithModel(prompt, modelName);
       }
-      const model = this.config.models.gemini;
-      const cmd = model ? `gemini --yolo -m ${model}` : "gemini --yolo";
+      let cmd = modelName ? `gemini --yolo -m ${modelName}` : "gemini --yolo";
+      if (sessionId) cmd += ` --sandbox-id ${sessionId}`;
+      if (resumeId) cmd += ` --sandbox-id ${resumeId}`;
       return heredocPipe(prompt, cmd);
     }
 
     if (this.name === "claude") {
       let flags = "claude -p";
-      if (this.config.models.claude) {
-        flags += ` --model ${this.config.models.claude}`;
+      const claudeEntry = this.config.models.claude;
+      const claudeModel =
+        typeof claudeEntry === "object" ? claudeEntry?.model : claudeEntry;
+      if (claudeModel) {
+        flags += ` --model ${claudeModel}`;
       }
       if (this.config.claude.skipPermissions) {
         flags += " --dangerously-skip-permissions";
@@ -135,7 +142,10 @@ export class CliAgent extends AgentAdapter {
     }
 
     // codex
-    return `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
+    let codexCmd = "codex exec --full-auto --skip-git-repo-check";
+    if (resumeId) codexCmd += ` --resume ${resumeId}`;
+    codexCmd += ` ${JSON.stringify(prompt)}`;
+    return codexCmd;
   }
 
   async execute(prompt, opts = {}) {

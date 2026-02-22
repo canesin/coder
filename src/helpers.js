@@ -252,7 +252,8 @@ export function geminiJsonPipe(prompt) {
 }
 
 export function geminiJsonPipeWithModel(prompt, model) {
-  const modelArg = String(model || "").trim();
+  const raw = typeof model === "object" && model ? model.model : model;
+  const modelArg = String(raw || "").trim();
   const cmd = modelArg
     ? `gemini --yolo -m ${modelArg} -o json`
     : "gemini --yolo -o json";
