@@ -70,7 +70,7 @@ function loadLocalIssues(issuesDir) {
 export default defineMachine({
   name: "develop.issue_list",
   description:
-    "List assigned GitHub and Linear issues, rate difficulty, return with recommended_index.",
+    "List assigned GitHub, GitLab, and Linear issues, rate difficulty, return with recommended_index.",
   inputSchema: z.object({
     projectFilter: z.string().optional(),
     localIssuesDir: z
@@ -184,12 +184,18 @@ Return ONLY valid JSON in this schema:
     ctx.log({ event: "step1_list_issues" });
     let projectFilterClause = "";
     if (state.selectedProject) {
-      projectFilterClause = `\nOnly include Linear issues from the "${state.selectedProject.name}" team (key: ${state.selectedProject.key}).`;
+      projectFilterClause = `\nOnly include Linear or GitLab issues from the "${state.selectedProject.name}" team (key: ${state.selectedProject.key}).`;
     } else if (input.projectFilter) {
-      projectFilterClause = `\nOnly include Linear issues from projects matching "${input.projectFilter}".`;
+      projectFilterClause = `\nOnly include Linear or GitLab issues from projects matching "${input.projectFilter}".`;
     }
 
-    const listPrompt = `Use your GitHub MCP and Linear MCP to list the issues assigned to me.${projectFilterClause}
+    let gitlabClause = "";
+    if (ctx.secrets.GITLAB_TOKEN) {
+      gitlabClause =
+        "\nAlso use the `glab` CLI to list GitLab issues assigned to me (`glab issue list --assignee=@me`).";
+    }
+
+    const listPrompt = `Use your GitHub MCP and Linear MCP to list the issues assigned to me.${gitlabClause}${projectFilterClause}
 
 Then estimate implementation difficulty and directness (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
 
@@ -199,7 +205,7 @@ Return ONLY valid JSON in this schema:
 {
   "issues": [
     {
-      "source": "github" | "linear",
+      "source": "github" | "linear" | "gitlab",
       "id": "string",
       "title": "string",
       "repo_path": "string (relative path to repo subfolder in workspace, or empty if unknown)",

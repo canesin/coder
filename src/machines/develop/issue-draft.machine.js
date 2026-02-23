@@ -28,7 +28,7 @@ export default defineMachine({
     "Draft ISSUE.md for the selected issue: validate repo, create branch, research codebase, write structured issue spec.",
   inputSchema: z.object({
     issue: z.object({
-      source: z.enum(["github", "linear", "local"]),
+      source: z.enum(["github", "linear", "local", "gitlab"]),
       id: z.string().min(1),
       title: z.string().min(1),
     }),
