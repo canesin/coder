@@ -5,6 +5,7 @@ import {
   extractJson,
   geminiJsonPipeWithModel,
   heredocPipe,
+  resolveModelName,
 } from "../helpers.js";
 import { HostSandboxProvider } from "../host-sandbox.js";
 import { makeJsonlLogger, sanitizeLogEvent } from "../logging.js";
@@ -113,9 +114,7 @@ export class CliAgent extends AgentAdapter {
 
   _buildCommand(prompt, { structured = false, sessionId, resumeId } = {}) {
     if (this.name === "gemini") {
-      const modelEntry = this.config.models.gemini;
-      const modelName =
-        typeof modelEntry === "object" ? modelEntry?.model : modelEntry;
+      const modelName = resolveModelName(this.config.models.gemini);
       if (structured) {
         return geminiJsonPipeWithModel(prompt, modelName);
       }
@@ -127,9 +126,7 @@ export class CliAgent extends AgentAdapter {
 
     if (this.name === "claude") {
       let flags = "claude -p";
-      const claudeEntry = this.config.models.claude;
-      const claudeModel =
-        typeof claudeEntry === "object" ? claudeEntry?.model : claudeEntry;
+      const claudeModel = resolveModelName(this.config.models.claude);
       if (claudeModel) {
         flags += ` --model ${claudeModel}`;
       }

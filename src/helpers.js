@@ -251,9 +251,17 @@ export function geminiJsonPipe(prompt) {
   return heredocPipe(prompt, "gemini --yolo -o json");
 }
 
+/**
+ * Extract the model name string from a config entry that may be
+ * either a plain string or an object with a `.model` property.
+ */
+export function resolveModelName(entry) {
+  if (typeof entry === "object" && entry) return entry.model;
+  return entry;
+}
+
 export function geminiJsonPipeWithModel(prompt, model) {
-  const raw = typeof model === "object" && model ? model.model : model;
-  const modelArg = String(raw || "").trim();
+  const modelArg = String(resolveModelName(model) || "").trim();
   const cmd = modelArg
     ? `gemini --yolo -m ${modelArg} -o json`
     : "gemini --yolo -o json";

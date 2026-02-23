@@ -1,4 +1,4 @@
-import { extractJson } from "../helpers.js";
+import { extractJson, resolveModelName } from "../helpers.js";
 import { AgentAdapter } from "./_base.js";
 
 /**
@@ -151,26 +151,20 @@ export function createApiAgent(opts) {
   const provider = opts.provider || "gemini";
 
   if (provider === "gemini") {
-    const geminiEntry = config.models.gemini;
-    const geminiModel =
-      typeof geminiEntry === "object" ? geminiEntry?.model : geminiEntry;
     return new ApiAgent({
       provider: "gemini",
       endpoint: config.agents.geminiApiEndpoint,
       apiKey: secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY || "",
-      model: geminiModel,
+      model: resolveModelName(config.models.gemini),
       systemPrompt: opts.systemPrompt,
     });
   }
 
-  const claudeEntry = config.models.claude;
-  const claudeModel =
-    typeof claudeEntry === "object" ? claudeEntry?.model : claudeEntry;
   return new ApiAgent({
     provider: "anthropic",
     endpoint: config.agents.anthropicApiEndpoint,
     apiKey: secrets.ANTHROPIC_API_KEY || "",
-    model: claudeModel,
+    model: resolveModelName(config.models.claude),
     systemPrompt: opts.systemPrompt,
   });
 }

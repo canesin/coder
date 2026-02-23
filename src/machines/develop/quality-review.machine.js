@@ -27,7 +27,7 @@ import {
  * Read REVIEW_FINDINGS.md and extract the last VERDICT line.
  * Takes the last match to avoid false positives from prompt examples.
  */
-function parseReviewVerdict(filePath) {
+export function parseReviewVerdict(filePath) {
   if (!existsSync(filePath)) return { verdict: null, findings: null };
   const content = readFileSync(filePath, "utf8");
   const matches = content.match(/^##\s+VERDICT:\s+(APPROVED|REVISE)\s*$/gm);
