@@ -50,3 +50,17 @@ test("host sandbox throwOnNonZero includes exit metadata", async () => {
     },
   );
 });
+
+test("host sandbox strips CLAUDECODE from subprocess environment", async () => {
+  const original = process.env.CLAUDECODE;
+  process.env.CLAUDECODE = "some_secret_value";
+  try {
+    const provider = new HostSandboxProvider();
+    const sandbox = await provider.create();
+    const result = await sandbox.commands.run("env", { timeoutMs: 5000 });
+    assert.doesNotMatch(result.stdout, /CLAUDECODE=some_secret_value/);
+  } finally {
+    if (original === undefined) delete process.env.CLAUDECODE;
+    else process.env.CLAUDECODE = original;
+  }
+});

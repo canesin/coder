@@ -46,20 +46,24 @@ export class HostSandboxProvider {
 
   async create(envs = {}, agentType = "default", workingDirectory) {
     const sandboxId = `host-${agentType}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const env = mergeEnv(mergeEnv(process.env, this.baseEnv), envs);
+    delete env.CLAUDECODE;
     return new HostSandboxInstance({
       sandboxId,
       cwd: workingDirectory || this.defaultCwd,
-      env: mergeEnv(mergeEnv(process.env, this.baseEnv), envs),
+      env,
       useSystemdRun: this.useSystemdRun,
     });
   }
 
   async resume(sandboxId) {
     // "Resume" is best-effort for host execution: return a fresh instance using current env/cwd.
+    const env = mergeEnv(process.env, this.baseEnv);
+    delete env.CLAUDECODE;
     return new HostSandboxInstance({
       sandboxId,
       cwd: this.defaultCwd,
-      env: mergeEnv(process.env, this.baseEnv),
+      env,
       useSystemdRun: this.useSystemdRun,
     });
   }
