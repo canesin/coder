@@ -50,3 +50,30 @@ test("host sandbox throwOnNonZero includes exit metadata", async () => {
     },
   );
 });
+
+test("host sandbox does not inherit sensitive env vars from process.env", async () => {
+  const sensitiveKey = "TEST_SENSITIVE_VAR_DO_NOT_INHERIT";
+  const originalValue = process.env[sensitiveKey];
+  process.env[sensitiveKey] = "secret_value";
+  try {
+    const provider = new HostSandboxProvider();
+    const sandbox = await provider.create();
+    const result = await sandbox.commands.run(`printenv || true`, {
+      timeoutMs: 5000,
+    });
+    assert.ok(
+      !result.stdout.includes("secret_value"),
+      "Sensitive env var must not appear in subprocess output",
+    );
+    assert.ok(
+      !result.stdout.includes(sensitiveKey),
+      "Sensitive env var key must not appear in subprocess output",
+    );
+  } finally {
+    if (originalValue === undefined) {
+      delete process.env[sensitiveKey];
+    } else {
+      process.env[sensitiveKey] = originalValue;
+    }
+  }
+});

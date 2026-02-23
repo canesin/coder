@@ -10,6 +10,14 @@ import {
 // Keep only the tail of stdout/stderr to avoid OOM on long agent runs.
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024; // 2 MB
 
+const SAFE_ENV_KEYS = [
+  "PATH", "HOME", "USER", "USERNAME", "LOGNAME",
+  "SHELL", "TERM", "TMPDIR", "TMP", "TEMP",
+  "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_TIME",
+  "LC_NUMERIC", "LC_MONETARY", "LC_COLLATE",
+  "XDG_RUNTIME_DIR",
+];
+
 export class CommandTimeoutError extends Error {
   constructor(command, timeoutMs) {
     super(`Command timeout after ${timeoutMs}ms: ${command.slice(0, 200)}`);
@@ -34,6 +42,14 @@ function mergeEnv(base, extra) {
   return { ...base, ...(extra || {}) };
 }
 
+function filterEnv(env) {
+  const out = {};
+  for (const key of SAFE_ENV_KEYS) {
+    if (env[key] !== undefined) out[key] = env[key];
+  }
+  return out;
+}
+
 export class HostSandboxProvider {
   /**
    * @param {{ defaultCwd?: string, baseEnv?: Record<string,string>, useSystemdRun?: boolean }} [config]
@@ -49,7 +65,7 @@ export class HostSandboxProvider {
     return new HostSandboxInstance({
       sandboxId,
       cwd: workingDirectory || this.defaultCwd,
-      env: mergeEnv(mergeEnv(process.env, this.baseEnv), envs),
+      env: mergeEnv(mergeEnv(filterEnv(process.env), this.baseEnv), envs),
       useSystemdRun: this.useSystemdRun,
     });
   }
@@ -59,7 +75,7 @@ export class HostSandboxProvider {
     return new HostSandboxInstance({
       sandboxId,
       cwd: this.defaultCwd,
-      env: mergeEnv(process.env, this.baseEnv),
+      env: mergeEnv(filterEnv(process.env), this.baseEnv),
       useSystemdRun: this.useSystemdRun,
     });
   }
