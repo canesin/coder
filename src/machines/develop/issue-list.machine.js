@@ -31,14 +31,30 @@ function loadLocalIssues(issuesDir) {
 
   if (!Array.isArray(manifest.issues)) return null;
 
+  // Detect workspace root from manifest if present (research pipeline writes filePath relative to workspace)
+  const workspaceRoot = manifest.repoRoot || manifest.repoPath || "";
+
   const issues = [];
   for (const entry of manifest.issues) {
-    if (!entry.id || !entry.file) continue;
+    if (!entry.id || (!entry.file && !entry.filePath)) continue;
+
+    // Resolve markdown path: entry.file is relative to parent of issuesDir,
+    // entry.filePath (from research pipeline) is relative to workspace root
+    let mdPath;
+    if (entry.file) {
+      mdPath = path.resolve(path.dirname(issuesDir), entry.file);
+    } else if (entry.filePath) {
+      mdPath = path.isAbsolute(entry.filePath)
+        ? entry.filePath
+        : path.resolve(
+            workspaceRoot || path.dirname(issuesDir),
+            entry.filePath,
+          );
+    }
 
     // Resolve title from manifest or markdown file
     let title = entry.title || "";
-    if (!title && entry.file) {
-      const mdPath = path.resolve(path.dirname(issuesDir), entry.file);
+    if (!title && mdPath) {
       if (existsSync(mdPath)) {
         try {
           const content = readFileSync(mdPath, "utf8");
