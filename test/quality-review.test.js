@@ -115,7 +115,7 @@ test("resolveModelName extracts .model from object", () => {
   );
 });
 
-test("resolveModelName returns undefined for null/undefined", () => {
+test("resolveModelName returns null/undefined passthrough", () => {
   assert.equal(resolveModelName(null), null);
   assert.equal(resolveModelName(undefined), undefined);
 });
