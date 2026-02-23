@@ -11,10 +11,24 @@ import {
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024; // 2 MB
 
 const SAFE_ENV_KEYS = [
-  "PATH", "HOME", "USER", "USERNAME", "LOGNAME",
-  "SHELL", "TERM", "TMPDIR", "TMP", "TEMP",
-  "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_TIME",
-  "LC_NUMERIC", "LC_MONETARY", "LC_COLLATE",
+  "PATH",
+  "HOME",
+  "USER",
+  "USERNAME",
+  "LOGNAME",
+  "SHELL",
+  "TERM",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LC_MESSAGES",
+  "LC_TIME",
+  "LC_NUMERIC",
+  "LC_MONETARY",
+  "LC_COLLATE",
   "XDG_RUNTIME_DIR",
 ];
 
