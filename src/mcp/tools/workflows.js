@@ -619,10 +619,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             startedAt: new Date().toISOString(),
           });
 
-          // Build workflow context
-          const config = resolveConfig(ws, {
-            agentRoles: params.agentRoles,
-          });
+          // Build workflow context — agentRoles must be nested under workflow
+          const overrides = {};
+          if (params.agentRoles) {
+            overrides.workflow = { agentRoles: params.agentRoles };
+          }
+          const config = resolveConfig(ws, overrides);
           const artifactsDir = path.join(ws, ".coder", "artifacts");
           const scratchpadDir = path.join(ws, ".coder", "scratchpad");
           mkdirSync(path.join(ws, ".coder"), { recursive: true });
