@@ -6,3 +6,5 @@
 !.coder/artifacts/PLANREVIEW.md
 !.coder/scratchpad/
 !.coder/scratchpad/**
+# coder workflow artifacts must remain readable
+!.coder/artifacts/REVIEW_FINDINGS.md
