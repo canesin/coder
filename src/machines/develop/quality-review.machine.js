@@ -7,6 +7,7 @@ import {
   detectDefaultBranch,
   runHostTests,
   runPpcommitScoped,
+  stripAgentNoise,
   upsertIssueCompletionBlock,
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
@@ -38,7 +39,32 @@ export function parseReviewVerdict(filePath) {
   return { verdict, findings: content };
 }
 
-function buildReviewerPrompt(paths, ppSection, round, priorFindings) {
+export function buildSpecDeltaPrompt(issuePath, planPath) {
+  return `Compare ${issuePath} (original requirements) with ${planPath} (technical plan).
+
+Write a concise "Spec Delta Summary" with these sections:
+
+## Spec Delta Summary
+
+### Additions
+(New technical constraints or approaches introduced in the plan)
+
+### Refinements
+(Changes in approach from the original issue)
+
+### Omissions
+(Requirements deferred or removed in the plan)
+
+Keep each section to 2-5 bullets max. Output only the summary, no other text.`;
+}
+
+export function buildReviewerPrompt(
+  paths,
+  ppSection,
+  round,
+  priorFindings,
+  specDeltaSummary = "",
+) {
   const roundContext =
     round === 1
       ? "This is the FIRST review pass. Evaluate the implementation from scratch."
@@ -52,16 +78,31 @@ ${priorFindings || "(no prior findings file found)"}
 
 Verify whether each critical/major finding has been addressed. If the programmer's fix is adequate, mark it resolved. If not, explain what remains wrong.`;
 
+  const deltaSection = specDeltaSummary
+    ? `## Spec Delta Context\nThe following summary compares the original issue with the technical plan. Use it when evaluating Plan Adherence.\n\n${specDeltaSummary}\n`
+    : "";
+
+  const planAdherenceItem = specDeltaSummary
+    ? `
+### 7. Plan Adherence
+- Does the implementation follow the technical structure defined in ${paths.plan}?
+- Are there deviations from the agreed approach? Flag them by severity.
+- If the spec delta identifies additions/omissions, verify they were addressed or intentionally skipped.
+`
+    : "";
+
   return `You are a code reviewer. Your role is to CRITIQUE only — do NOT modify any source code files.
 
 Read ${paths.issue} to understand what was originally requested.
+Read ${paths.plan} for the technical approach and constraints agreed upon.
 
 ${roundContext}
 
+${deltaSection}
 ## Review Checklist
 
 ### 1. Scope Conformance
-- Does the change ONLY implement what ${paths.issue} requested?
+- Does the change implement what ${paths.issue} requested and conform to the approach in ${paths.plan}?
 - Are there unrequested features? Flag them.
 - Are there unrelated refactors? Flag them.
 
@@ -89,7 +130,7 @@ Flag these patterns:
 - Edge cases handled appropriately?
 - Off-by-one errors?
 - Error handling only for errors that can actually occur?
-
+${planAdherenceItem}
 ## ppcommit (commit hygiene)
 ${ppSection}
 
@@ -214,6 +255,21 @@ export default defineMachine({
         : `ppcommit found issues — these should also be addressed:\n---\n${ppOutput}\n---`;
 
     // -----------------------------------------------------------------------
+    // Phase 1b: Spec delta generation
+    // -----------------------------------------------------------------------
+    if (!state.specDeltaSummary && existsSync(paths.plan)) {
+      ctx.log({ event: "spec_delta_start" });
+      const deltaPrompt = buildSpecDeltaPrompt(paths.issue, paths.plan);
+      const deltaRes = await reviewerAgent.execute(deltaPrompt, {
+        timeoutMs: ctx.config.workflow.timeouts.reviewRound,
+      });
+      requireExitZero(reviewerName, "spec delta generation", deltaRes);
+      state.specDeltaSummary = stripAgentNoise(deltaRes.stdout || "").trim();
+      saveState(ctx.workspaceDir, state);
+      ctx.log({ event: "spec_delta_done" });
+    }
+
+    // -----------------------------------------------------------------------
     // Phase 2: Iterative review loop (max 2 rounds)
     // -----------------------------------------------------------------------
     if (!state.steps.reviewerCompleted) {
@@ -268,6 +324,7 @@ export default defineMachine({
             ppSection,
             round,
             priorFindings,
+            state.specDeltaSummary || "",
           );
 
           // Round 1: new session; Round 2+: resume to retain review context
