@@ -69,7 +69,7 @@ export class ApiAgent extends AgentAdapter {
 
   async _callGemini(prompt) {
     const model = this.model || "gemini-3.1-pro-preview";
-    const url = `${this.endpoint}/models/${model}:generateContent?key=${this.apiKey}`;
+    const url = `${this.endpoint}/models/${model}:generateContent`;
 
     const body = {
       contents: [{ parts: [{ text: prompt }] }],
@@ -80,7 +80,7 @@ export class ApiAgent extends AgentAdapter {
 
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
       body: JSON.stringify(body),
       signal: this._abortController?.signal,
     });
