@@ -80,7 +80,6 @@ export default defineMachine({
 
     const revertTrackedDirty = (dirtyEntries) => {
       const filePaths = dirtyEntries.map((e) => e.path);
-      // Un-stage first (handles A/staged entries), then restore worktree
       spawnSync("git", ["restore", "--staged", "--", ...filePaths], {
         cwd: repoRoot,
         encoding: "utf8",
@@ -107,16 +106,16 @@ export default defineMachine({
       pre.filter((e) => e.status === "??").map((e) => e.path),
     );
 
-    // Generate session ID for reuse across steps (planning -> implementation -> fix).
-    // Note: --session-id creates a named session in Claude CLI. The session name stays
-    // registered after the process exits, so reusing the same UUID on a subsequent call
-    // fails with "Session ID already in use". Session IDs are therefore cleared whenever
-    // a new planning call should start fresh (REVISE rounds, retries after constraint violations).
-    if (!state.claudeSessionId) {
+    // Session strategy: the first planning call creates a named session with --session-id.
+    // All subsequent calls in this issue (REVISE rounds, implementation, fix, review) resume
+    // with --resume so the agent retains full conversation context across the workflow.
+    const creatingSession = !state.claudeSessionId;
+    if (creatingSession) {
       state.claudeSessionId = randomUUID();
       saveState(ctx.workspaceDir, state);
     }
 
+    // Full prompt used only when creating a fresh session.
     const planPrompt = `You are planning an implementation. Follow this structured approach:
 
 ## Phase 1: Research (MANDATORY)
@@ -171,24 +170,44 @@ Constraints:
 - Do NOT invent APIs - verify they exist in actual documentation
 - Do NOT ask questions; use repo conventions and ISSUE.md as ground truth`;
 
-    const priorCritiqueSection = input.priorCritique
-      ? `\n\n## Previous Review Critique (MUST ADDRESS)\n\nYour previous plan was rejected. You MUST address ALL issues below before writing the revised plan:\n\n${input.priorCritique}`
-      : "";
-
     // Allow one retry when the planner violates the no-source-edit constraint.
-    // On violation: revert dirty files, inject feedback into prompt, retry with a fresh session.
+    // Retries resume the existing session so the agent has the violation as context.
     let constraintNote = "";
 
     for (let attempt = 0; attempt <= 1; attempt++) {
+      // First call: full prompt to establish context. All subsequent calls (REVISE rounds,
+      // constraint retries) are follow-up messages in the same resumed session.
+      let prompt;
+      if (creatingSession && attempt === 0) {
+        prompt = planPrompt;
+        if (input.priorCritique) {
+          prompt +=
+            `\n\n## Previous Review Critique (MUST ADDRESS)\n\n` +
+            `Your previous plan was rejected. You MUST address ALL issues below before writing the revised plan:\n\n` +
+            input.priorCritique;
+        }
+      } else if (constraintNote) {
+        // Constraint retry: just the violation feedback as a follow-up
+        prompt = constraintNote;
+      } else {
+        // REVISE round: resume session with focused follow-up instead of full prompt
+        prompt =
+          `Your previous plan was rejected by the reviewer. Revise ${paths.plan} addressing ALL of the following:\n\n` +
+          input.priorCritique +
+          `\n\nRemember: only write ${paths.plan}. Do not modify any source files.`;
+      }
+
+      const sessionOpts =
+        creatingSession && attempt === 0
+          ? { sessionId: state.claudeSessionId }
+          : { resumeId: state.claudeSessionId };
+
       let res;
       try {
-        res = await plannerAgent.execute(
-          planPrompt + priorCritiqueSection + constraintNote,
-          {
-            sessionId: state.claudeSessionId || undefined,
-            timeoutMs: ctx.config.workflow.timeouts.planning,
-          },
-        );
+        res = await plannerAgent.execute(prompt, {
+          ...sessionOpts,
+          timeoutMs: ctx.config.workflow.timeouts.planning,
+        });
         requireExitZero(plannerName, "plan generation failed", res);
       } catch (err) {
         state.claudeSessionId = null;
@@ -222,7 +241,6 @@ Constraints:
 
       // Planner modified tracked source files — revert and either retry or fail
       revertTrackedDirty(trackedDirtyEntries);
-      // Also clean any new untracked files created during this failed attempt
       if (newUntracked.length > 0) cleanUntracked(newUntracked);
 
       const listed = trackedDirtyEntries
@@ -242,19 +260,13 @@ Constraints:
         );
       }
 
-      // Inject feedback and retry with a fresh session
+      // Build follow-up message for the constraint retry (resumed in the same session)
       constraintNote =
-        `\n\n## CONSTRAINT VIOLATION — YOUR PREVIOUS ATTEMPT FAILED\n\n` +
-        `You modified source files during planning, which is forbidden.\n` +
+        `CONSTRAINT VIOLATION: You modified source files during planning, which is forbidden.\n` +
         `Only ${paths.plan} may be written. All other files must remain unchanged.\n` +
         `Files you modified (they have been reverted — do not touch them again):\n` +
         `${listed}\n\n` +
         `Retry now: write ONLY ${paths.plan} and do not edit any source files.`;
-
-      // Clear session ID — the previous session's name is still registered in Claude CLI
-      // and cannot be reused with --session-id. A new UUID will be generated above.
-      state.claudeSessionId = null;
-      saveState(ctx.workspaceDir, state);
     }
 
     if (!existsSync(paths.plan))

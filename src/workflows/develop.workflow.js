@@ -117,11 +117,6 @@ export async function runPlanLoop(
     const state = loadState(ctx.workspaceDir);
     state.steps ||= {};
     state.steps.wroteCritique = false;
-    // Clear session ID before replanning. Claude CLI's --session-id registers a named
-    // session that persists after process exit, so reusing the same UUID on the next
-    // call fails with "Session ID already in use". A fresh UUID will be generated when
-    // the planning machine runs, starting a clean session with the critique in context.
-    state.claudeSessionId = null;
     saveState(ctx.workspaceDir, state);
   }
 
