@@ -511,18 +511,9 @@ export function computeGitWorktreeFingerprint(repoDir) {
 
   let untrackedHashes = "";
   if (untrackedPaths.length > 0) {
-    const input = untrackedPaths.join("\n") + "\n";
-    const ho = spawnSync("git", ["hash-object", "--stdin-paths"], {
-      cwd: repoDir,
-      encoding: "utf8",
-      input,
-    });
-    if (ho.status !== 0) {
-      const msg = (ho.stderr || ho.stdout || "").trim();
-      throw new Error(`git hash-object failed${msg ? `: ${msg}` : ""}`);
-    }
-    const hashes = (ho.stdout || "").trim().split("\n").filter(Boolean);
-    // `git hash-object --stdin-paths` returns hashes in the same order as input paths.
+    const hashes = untrackedPaths.map((p) =>
+      runGit(["hash-object", "--", p]).trim(),
+    );
     untrackedHashes = untrackedPaths
       .map((p, i) => `${p}\n${hashes[i] || ""}\n`)
       .join("");

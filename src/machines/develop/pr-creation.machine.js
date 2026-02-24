@@ -165,10 +165,14 @@ export default defineMachine({
     let prUrl;
     if (isGitLab) {
       const mrArgs = [
-        "mr", "create",
-        "--title", prTitle,
-        "--description", body,
-        "--source-branch", remoteBranch,
+        "mr",
+        "create",
+        "--title",
+        prTitle,
+        "--description",
+        body,
+        "--source-branch",
+        remoteBranch,
         "--yes",
       ];
       if (baseBranch) mrArgs.push("--target-branch", baseBranch);
@@ -185,10 +189,14 @@ export default defineMachine({
       }
     } else {
       const prArgs = [
-        "pr", "create",
-        "--head", remoteBranch,
-        "--title", prTitle,
-        "--body", body,
+        "pr",
+        "create",
+        "--head",
+        remoteBranch,
+        "--title",
+        prTitle,
+        "--body",
+        body,
       ];
       if (baseBranch) prArgs.push("--base", baseBranch);
       const pr = spawnSync("gh", prArgs, { cwd: repoRoot, encoding: "utf8" });
