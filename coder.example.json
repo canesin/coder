@@ -36,6 +36,7 @@
       "sqliteSync": true,
       "sqlitePath": ".coder/state.db"
     },
+    "issueSource": "github",
     "localIssuesDir": ""
   },
   "ppcommit": {

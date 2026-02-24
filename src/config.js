@@ -218,6 +218,9 @@ export const CoderConfigSchema = z.object({
       wip: WorkflowWipSchema.default({}),
       scratchpad: WorkflowScratchpadSchema.default({}),
       timeouts: WorkflowTimeoutsSchema.default({}),
+      issueSource: z
+        .enum(["github", "linear", "gitlab", "local"])
+        .default("github"),
       localIssuesDir: z.string().default(""),
       hooks: z.array(HookSchema).default([]),
     })

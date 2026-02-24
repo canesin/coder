@@ -12,7 +12,8 @@ Each pipeline step is an independent **machine** — callable as a standalone MC
 | `gemini` CLI | Default agent for issue selection, plan review, research |
 | `claude` (Claude Code) | Default agent for planning, implementation |
 | `codex` CLI | Default agent for code review, committing |
-| `gh` CLI | GitHub issue listing, PR creation |
+| `gh` CLI | GitHub issue listing and PR creation (`issueSource: "github"`) |
+| `glab` CLI | GitLab issue listing and MR creation (`issueSource: "gitlab"`) |
 
 Agent role assignments are configurable — any role can use any of the three backends.
 
@@ -81,7 +82,7 @@ coder serve               # start MCP server (delegates to coder-mcp)
 
 ### Develop
 
-Picks up GitHub/Linear issues, implements code, pushes PRs:
+Picks up issues from GitHub, GitLab, Linear, or a local manifest, implements code, and pushes PRs/MRs:
 
 ```
 issue-list → issue-draft → planning ⇄ plan-review → implementation → quality-review → pr-creation
@@ -198,6 +199,10 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
       "reviewer": "codex",
       "committer": "codex"
     },
+    // Issue source: "github" (default), "linear", "gitlab", or "local"
+    // github → gh CLI, gitlab → glab CLI, linear → Linear MCP, local → .coder/local-issues/
+    "issueSource": "github",
+    "localIssuesDir": ".coder/local-issues",
     "wip": { "push": true, "autoCommit": true },
     // Post-step hooks (shell commands triggered on workflow events)
     "hooks": [
@@ -282,7 +287,8 @@ Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATU
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI + ppcommit LLM checks (auto-aliased) |
 | `ANTHROPIC_API_KEY` | Claude Code |
 | `OPENAI_API_KEY` | Codex CLI |
-| `GITHUB_TOKEN` | GitHub API (issues, PRs) |
+| `GITHUB_TOKEN` | GitHub API (issues, PRs) — used by `gh` CLI |
+| `GITLAB_TOKEN` / `GITLAB_API_TOKEN` | GitLab API — used by `glab` CLI |
 | `LINEAR_API_KEY` | Linear issue tracking |
 | `GOOGLE_STITCH_API_KEY` | Design pipeline (Google Stitch) |
 

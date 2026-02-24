@@ -217,7 +217,7 @@ export function createWorkflowLifecycleMachine() {
 
 const LoopIssueResultSchema = z
   .object({
-    source: z.enum(["github", "linear", "local"]),
+    source: z.enum(["github", "linear", "gitlab", "local"]),
     id: z.string().min(1),
     title: z.string(),
     repoPath: z.string().default(""),
@@ -294,7 +294,7 @@ export function saveLoopState(
 // --- Per-issue state ---
 
 const SelectedIssueSchema = z.object({
-  source: z.enum(["github", "linear", "local"]),
+  source: z.enum(["github", "linear", "gitlab", "local"]),
   id: z.string().min(1),
   title: z.string().min(1),
   repo_path: z.string().default(""),

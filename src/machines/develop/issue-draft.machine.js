@@ -22,13 +22,80 @@ import {
   resolveRepoRoot,
 } from "./_shared.js";
 
+/**
+ * Fetch the issue body/description from its source so the agent has full context.
+ * Returns null if unavailable or source doesn't support pre-fetching (linear).
+ *
+ * @param {"github"|"gitlab"|"local"|"linear"} source
+ * @param {string} id - Issue ID (e.g. "#42", "!7", "GH-60")
+ * @param {string} repoRoot - Repo directory for CLI calls
+ * @param {string} localIssuesDir - Resolved path to local issues dir (for "local" source)
+ * @returns {string | null}
+ */
+function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
+  if (source === "github") {
+    const num = id.replace(/^#/, "");
+    const res = spawnSync("gh", ["issue", "view", num, "--json", "body"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 10000,
+    });
+    if (res.status !== 0 || !res.stdout) return null;
+    try {
+      return JSON.parse(res.stdout).body || null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (source === "gitlab") {
+    const iid = id.replace(/^[#!]/, "");
+    const res = spawnSync("glab", ["issue", "view", iid, "--output", "json"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 10000,
+    });
+    if (res.status !== 0 || !res.stdout) return null;
+    try {
+      return JSON.parse(res.stdout).description || null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (source === "local" && localIssuesDir) {
+    // Try manifest first to find the file entry for this id
+    const manifestPath = path.join(localIssuesDir, "manifest.json");
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        const entry = manifest.issues?.find((e) => e.id === id);
+        const file = entry?.file || entry?.filePath;
+        if (file) {
+          const mdPath = path.isAbsolute(file)
+            ? file
+            : path.join(localIssuesDir, file);
+          if (existsSync(mdPath)) return readFileSync(mdPath, "utf8");
+        }
+      } catch {
+        // fall through to filename heuristic
+      }
+    }
+    // Fallback: look for <id>.md directly
+    const mdPath = path.join(localIssuesDir, `${id}.md`);
+    if (existsSync(mdPath)) return readFileSync(mdPath, "utf8");
+  }
+
+  return null;
+}
+
 export default defineMachine({
   name: "develop.issue_draft",
   description:
     "Draft ISSUE.md for the selected issue: validate repo, create branch, research codebase, write structured issue spec.",
   inputSchema: z.object({
     issue: z.object({
-      source: z.enum(["github", "linear", "local"]),
+      source: z.enum(["github", "linear", "gitlab", "local"]),
       id: z.string().min(1),
       title: z.string().min(1),
     }),
@@ -154,6 +221,26 @@ export default defineMachine({
       scope: "workspace",
     });
 
+    const rawLocalIssuesDir = ctx.config.workflow.localIssuesDir;
+    const resolvedLocalIssuesDir = rawLocalIssuesDir
+      ? path.isAbsolute(rawLocalIssuesDir)
+        ? rawLocalIssuesDir
+        : path.resolve(ctx.workspaceDir, rawLocalIssuesDir)
+      : null;
+
+    const issueBody = fetchIssueBody(
+      input.issue.source,
+      input.issue.id,
+      repoRoot,
+      resolvedLocalIssuesDir,
+    );
+
+    const issueBodySection = issueBody
+      ? `\nIssue description (from ${input.issue.source}):\n${issueBody}\n`
+      : input.issue.source === "linear"
+        ? "\nFetch the full issue description via Linear MCP using the issue id above.\n"
+        : "";
+
     const issuePrompt = `Draft an ISSUE.md for the chosen issue. Use the local codebase in ${repoRoot} as ground truth.
 
 Chosen issue:
@@ -161,7 +248,7 @@ Chosen issue:
 - id: ${input.issue.id}
 - title: ${input.issue.title}
 - repo_root: ${repoRoot}
-
+${issueBodySection}
 Clarifications from user:
 ${input.clarifications || "(none provided)"}
 

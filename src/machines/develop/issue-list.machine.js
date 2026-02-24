@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -83,10 +84,61 @@ function loadLocalIssues(issuesDir) {
   return issues.length > 0 ? { issues, recommended_index: 0 } : null;
 }
 
+/**
+ * Fetch open GitHub issues via gh CLI.
+ *
+ * @param {string} cwd - Directory to run gh in (repo root)
+ * @returns {object[] | null}
+ */
+function fetchGithubIssues(cwd) {
+  const res = spawnSync(
+    "gh",
+    [
+      "issue",
+      "list",
+      "--json",
+      "number,title,body,labels,url,repository",
+      "--state",
+      "open",
+      "--limit",
+      "50",
+    ],
+    { cwd, encoding: "utf8", timeout: 15000 },
+  );
+  if (res.status !== 0 || !res.stdout) return null;
+  try {
+    const issues = JSON.parse(res.stdout);
+    return Array.isArray(issues) ? issues : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch open GitLab issues via glab CLI.
+ *
+ * @param {string} cwd - Directory to run glab in (repo root)
+ * @returns {object[] | null}
+ */
+function fetchGitlabIssues(cwd) {
+  const res = spawnSync(
+    "glab",
+    ["issue", "list", "--output", "json", "--state", "opened"],
+    { cwd, encoding: "utf8", timeout: 15000 },
+  );
+  if (res.status !== 0 || !res.stdout) return null;
+  try {
+    const issues = JSON.parse(res.stdout);
+    return Array.isArray(issues) ? issues : null;
+  } catch {
+    return null;
+  }
+}
+
 export default defineMachine({
   name: "develop.issue_list",
   description:
-    "List assigned GitHub and Linear issues, rate difficulty, return with recommended_index.",
+    "List open issues from the configured source (github, linear, gitlab, or local), rate difficulty, return with recommended_index.",
   inputSchema: z.object({
     projectFilter: z.string().optional(),
     localIssuesDir: z
@@ -104,33 +156,37 @@ export default defineMachine({
   },
 
   async execute(input, ctx) {
-    // Try local issues first if requested
-    if (input.localIssuesDir) {
-      const resolvedDir = path.isAbsolute(input.localIssuesDir)
-        ? input.localIssuesDir
-        : path.resolve(ctx.workspaceDir, input.localIssuesDir);
+    const issueSource = ctx.config.workflow.issueSource;
+
+    // Local issues — no agent needed
+    if (issueSource === "local") {
+      const rawDir =
+        input.localIssuesDir ||
+        ctx.config.workflow.localIssuesDir ||
+        ".coder/local-issues";
+      const resolvedDir = path.isAbsolute(rawDir)
+        ? rawDir
+        : path.resolve(ctx.workspaceDir, rawDir);
 
       const local = loadLocalIssues(resolvedDir);
-      if (local) {
-        ctx.log({
-          event: "step1_local_issues",
-          count: local.issues.length,
-          dir: resolvedDir,
-        });
-        return {
-          status: "ok",
-          data: {
-            issues: local.issues,
-            recommended_index: local.recommended_index,
-            source: "local",
-          },
-        };
+      if (!local) {
+        throw new Error(
+          `issueSource is "local" but no valid manifest found at ${resolvedDir}`,
+        );
       }
       ctx.log({
-        event: "step1_local_issues_fallback",
-        reason: "manifest not found or empty, falling back to remote",
+        event: "step1_local_issues",
+        count: local.issues.length,
         dir: resolvedDir,
       });
+      return {
+        status: "ok",
+        data: {
+          issues: local.issues,
+          recommended_index: local.recommended_index,
+          source: "local",
+        },
+      };
     }
 
     // Remote issue listing via agent
@@ -140,8 +196,9 @@ export default defineMachine({
     const state = loadState(ctx.workspaceDir);
     state.steps ||= {};
 
-    // Sub-step: list Linear teams if LINEAR_API_KEY is available
+    // Sub-step: list Linear teams when source is linear
     if (
+      issueSource === "linear" &&
       ctx.secrets.LINEAR_API_KEY &&
       (!state.steps.listedProjects || !state.linearProjects)
     ) {
@@ -197,17 +254,10 @@ Return ONLY valid JSON in this schema:
     }
 
     // Main issue listing
-    ctx.log({ event: "step1_list_issues" });
-    let projectFilterClause = "";
-    if (state.selectedProject) {
-      projectFilterClause = `\nOnly include Linear issues from the "${state.selectedProject.name}" team (key: ${state.selectedProject.key}).`;
-    } else if (input.projectFilter) {
-      projectFilterClause = `\nOnly include Linear issues from projects matching "${input.projectFilter}".`;
-    }
+    ctx.log({ event: "step1_list_issues", issueSource });
 
-    const listPrompt = `Use your GitHub MCP and Linear MCP to list the issues assigned to me.${projectFilterClause}
-
-Then estimate implementation difficulty and directness (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
+    const TAIL = `
+Estimate implementation difficulty and directness for each issue (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
 
 For each issue, also identify any dependency relationships — if an issue explicitly references or requires another issue to be completed first, include the dependency in "depends_on" as the issue ID string.
 
@@ -215,7 +265,7 @@ Return ONLY valid JSON in this schema:
 {
   "issues": [
     {
-      "source": "github" | "linear",
+      "source": "<source>",
       "id": "string",
       "title": "string",
       "repo_path": "string (relative path to repo subfolder in workspace, or empty if unknown)",
@@ -226,6 +276,51 @@ Return ONLY valid JSON in this schema:
   ],
   "recommended_index": number
 }`;
+
+    let listPrompt;
+    if (issueSource === "github") {
+      const issues = fetchGithubIssues(ctx.workspaceDir);
+      ctx.log({
+        event: "step1_fetch",
+        source: "github",
+        count: issues?.length ?? 0,
+      });
+      const issueList =
+        issues && issues.length > 0
+          ? `Here are the open GitHub issues for this repo (fetched via gh CLI):\n${JSON.stringify(issues, null, 2)}`
+          : "No open GitHub issues found (gh CLI returned empty).";
+      listPrompt = `${issueList}
+
+Use "github" as the source value and "#<number>" as the id (e.g. "#42").
+${TAIL}`;
+    } else if (issueSource === "gitlab") {
+      const issues = fetchGitlabIssues(ctx.workspaceDir);
+      ctx.log({
+        event: "step1_fetch",
+        source: "gitlab",
+        count: issues?.length ?? 0,
+      });
+      const issueList =
+        issues && issues.length > 0
+          ? `Here are the open GitLab issues for this repo (fetched via glab CLI):\n${JSON.stringify(issues, null, 2)}`
+          : "No open GitLab issues found (glab CLI returned empty).";
+      listPrompt = `${issueList}
+
+Use "gitlab" as the source value and "#<iid>" as the id (e.g. "#42").
+${TAIL}`;
+    } else {
+      // linear — agent fetches via MCP
+      let projectFilterClause = "";
+      if (state.selectedProject) {
+        projectFilterClause = `\nOnly include issues from the "${state.selectedProject.name}" team (key: ${state.selectedProject.key}).`;
+      } else if (input.projectFilter) {
+        projectFilterClause = `\nOnly include issues from projects matching "${input.projectFilter}".`;
+      }
+      listPrompt = `Use your Linear MCP to list open issues.${projectFilterClause}
+
+Use "linear" as the source value and the Linear issue identifier as the id (e.g. "ENG-42").
+${TAIL}`;
+    }
 
     const res = await agent.executeWithRetry(listPrompt, {
       structured: true,
