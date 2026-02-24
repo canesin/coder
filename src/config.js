@@ -81,10 +81,10 @@ export const AgentNameSchema = z.enum(["gemini", "claude", "codex"]);
 export const WorkflowAgentRolesSchema = z.object({
   issueSelector: AgentNameSchema.default("gemini"),
   planner: AgentNameSchema.default("claude"),
-  planReviewer: AgentNameSchema.default("gemini"),
+  planReviewer: AgentNameSchema.default("codex"),
   programmer: AgentNameSchema.default("claude"),
   reviewer: AgentNameSchema.default("codex"),
-  committer: AgentNameSchema.default("codex"),
+  committer: AgentNameSchema.default("gemini"),
 });
 
 export const WorkflowWipSchema = z.object({
@@ -150,7 +150,7 @@ export const CoderConfigSchema = z.object({
   models: z
     .object({
       gemini: ModelEntrySchema.default({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3-flash-preview",
         apiEndpoint: "https://generativelanguage.googleapis.com/v1beta",
         apiKeyEnv: "GEMINI_API_KEY",
       }),
