@@ -5,6 +5,7 @@ import {
   extractJson,
   geminiJsonPipeWithModel,
   heredocPipe,
+  isRateLimitError,
   resolveModelName,
   shellEscape,
 } from "../helpers.js";
@@ -185,15 +186,12 @@ export class CliAgent extends AgentAdapter {
     const backoffMs = opts.backoffMs ?? 5000;
     const retryOnRateLimit = opts.retryOnRateLimit ?? false;
 
-    const isRateLimited = (txt) =>
-      /rate limit|429|resource_exhausted|quota/i.test(String(txt || ""));
-
     return pRetry(
       async () => {
         const res = await this.execute(prompt, opts);
         if (retryOnRateLimit && res.exitCode !== 0) {
           const details = `${res.stderr || ""}\n${res.stdout || ""}`;
-          if (isRateLimited(details)) {
+          if (isRateLimitError(details)) {
             const rateErr = new Error(`Rate limited: ${details.slice(0, 300)}`);
             rateErr.name = "RateLimitError";
             throw rateErr;

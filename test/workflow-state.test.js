@@ -71,6 +71,35 @@ test("saveState + loadState round-trip", () => {
   rmSync(ws, { recursive: true, force: true });
 });
 
+test("saveState + loadState round-trip with gitlab source", () => {
+  const ws = makeTmpDir();
+  const state = {
+    selected: { source: "gitlab", id: "42", title: "Add health endpoint" },
+    selectedProject: null,
+    linearProjects: null,
+    repoPath: ".",
+    baseBranch: "main",
+    branch: "feat/add-health-endpoint_GL_42",
+    questions: null,
+    answers: null,
+    steps: {},
+    claudeSessionId: null,
+    lastError: null,
+    reviewFingerprint: null,
+    reviewedAt: null,
+    prUrl: null,
+    prBranch: null,
+    prBase: null,
+    scratchpadPath: null,
+    lastWipPushAt: null,
+  };
+  saveState(ws, state);
+  const loaded = loadState(ws);
+  assert.equal(loaded.selected.source, "gitlab");
+  assert.equal(loaded.selected.id, "42");
+  rmSync(ws, { recursive: true, force: true });
+});
+
 test("loadLoopState returns defaults for nonexistent workspace", () => {
   const state = loadLoopState("/nonexistent-path-" + Date.now());
   assert.equal(state.status, "idle");

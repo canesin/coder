@@ -1,4 +1,5 @@
-import { extractJson, resolveModelName } from "../helpers.js";
+import pRetry from "p-retry";
+import { extractJson, isRateLimitError, resolveModelName } from "../helpers.js";
 import { AgentAdapter } from "./_base.js";
 
 /**
@@ -58,6 +59,42 @@ export class ApiAgent extends AgentAdapter {
     const res = await this.execute(prompt, opts);
     const parsed = extractJson(res.stdout);
     return { ...res, parsed };
+  }
+
+  async executeWithRetry(prompt, opts = {}) {
+    const retries = opts.retries ?? 1;
+    const backoffMs = opts.backoffMs ?? 5000;
+    const retryOnRateLimit = opts.retryOnRateLimit ?? false;
+
+    return pRetry(
+      async () => {
+        const res = await this.execute(prompt, opts);
+        if (res.exitCode !== 0) {
+          const details = `${res.stderr || ""}\n${res.stdout || ""}`.trim();
+          if (retryOnRateLimit && isRateLimitError(details)) {
+            const rateErr = new Error(`Rate limited: ${details.slice(0, 300)}`);
+            rateErr.name = "RateLimitError";
+            throw rateErr;
+          }
+          throw new Error(details.slice(0, 300) || "API request failed");
+        }
+        return res;
+      },
+      {
+        retries,
+        minTimeout: backoffMs,
+        factor: 2,
+        shouldRetry: (ctx) => {
+          if (ctx.error.name === "AbortError") return false;
+          return true;
+        },
+        onFailedAttempt: (err) => {
+          process.stderr.write(
+            `[api-agent] retry attempt=${err.attemptNumber} left=${err.retriesLeft} error=${err.message?.slice(0, 200)}\n`,
+          );
+        },
+      },
+    );
   }
 
   async kill() {
@@ -156,7 +193,7 @@ export function createApiAgent(opts) {
   if (provider === "gemini") {
     return new ApiAgent({
       provider: "gemini",
-      endpoint: config.agents.geminiApiEndpoint,
+      endpoint: config.models.gemini.apiEndpoint,
       apiKey: secrets.GEMINI_API_KEY || secrets.GOOGLE_API_KEY || "",
       model: resolveModelName(config.models.gemini),
       systemPrompt: opts.systemPrompt,
@@ -165,7 +202,7 @@ export function createApiAgent(opts) {
 
   return new ApiAgent({
     provider: "anthropic",
-    endpoint: config.agents.anthropicApiEndpoint,
+    endpoint: config.models.claude.apiEndpoint,
     apiKey: secrets.ANTHROPIC_API_KEY || "",
     model: resolveModelName(config.models.claude),
     systemPrompt: opts.systemPrompt,

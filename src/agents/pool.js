@@ -1,7 +1,102 @@
-import { buildSecrets, DEFAULT_PASS_ENV } from "../helpers.js";
+import pRetry from "p-retry";
+import {
+  buildSecrets,
+  DEFAULT_PASS_ENV,
+  isRateLimitError,
+} from "../helpers.js";
+import { AgentAdapter } from "./_base.js";
 import { createApiAgent } from "./api-agent.js";
 import { CliAgent, resolveAgentName } from "./cli-agent.js";
 import { McpAgent } from "./mcp-agent.js";
+
+/**
+ * Wraps a primary agent with configurable retry and optional fallback agent.
+ * If the primary exhausts retries, the fallback (if provided) is tried.
+ */
+class RetryFallbackWrapper extends AgentAdapter {
+  constructor(primary, { fallback, retries, backoffMs, retryOnRateLimit }) {
+    super();
+    this._primary = primary;
+    this._fallback = fallback ?? null;
+    this._retries = retries;
+    this._backoffMs = backoffMs;
+    this._retryOnRateLimit = retryOnRateLimit;
+  }
+
+  async execute(prompt, opts) {
+    return this._runWithFallback("execute", prompt, opts);
+  }
+
+  async executeStructured(prompt, opts) {
+    return this._runWithFallback("executeStructured", prompt, opts);
+  }
+
+  async executeWithRetry(prompt, opts) {
+    return this.execute(prompt, opts);
+  }
+
+  async _runWithFallback(method, prompt, opts) {
+    try {
+      return await this._callWithRetry(() =>
+        this._primary[method](prompt, opts),
+      );
+    } catch (err) {
+      if (this._fallback) {
+        return await this._callWithRetry(() =>
+          this._fallback[method](prompt, opts),
+        );
+      }
+      throw err;
+    }
+  }
+
+  async _callWithRetry(fn) {
+    const retryOnRateLimit = this._retryOnRateLimit;
+    return pRetry(
+      async () => {
+        const res = await fn();
+        if (res.exitCode !== 0) {
+          const details = `${res.stderr || ""}\n${res.stdout || ""}`.trim();
+          if (retryOnRateLimit && isRateLimitError(details)) {
+            const rateErr = new Error(`Rate limited: ${details.slice(0, 300)}`);
+            rateErr.name = "RateLimitError";
+            throw rateErr;
+          }
+          const err = new Error(
+            details.slice(0, 300) || "Agent execution failed",
+          );
+          err.exitCode = res.exitCode;
+          throw err;
+        }
+        return res;
+      },
+      {
+        retries: this._retries,
+        minTimeout: this._backoffMs,
+        factor: 2,
+        shouldRetry: (ctx) => {
+          const name = ctx.error.name;
+          if (name === "CommandTimeoutError") return false;
+          if (name === "CommandAuthError") return false;
+          if (name === "McpStartupError") return false;
+          return true;
+        },
+        onFailedAttempt: (err) => {
+          process.stderr.write(
+            `[retry-wrapper] attempt=${err.attemptNumber} left=${err.retriesLeft} error=${err.message?.slice(0, 200)}\n`,
+          );
+        },
+      },
+    );
+  }
+
+  async kill() {
+    await Promise.allSettled([
+      this._primary.kill(),
+      this._fallback?.kill() ?? Promise.resolve(),
+    ]);
+  }
+}
 
 /**
  * AgentPool — manages agent instances by (name, scope) key.
@@ -42,33 +137,58 @@ export class AgentPool {
     const agentName = this._roleAgentName(role);
     const cwd = scope === "workspace" ? this.workspaceDir : this.repoRoot;
 
-    if (mode === "cli") {
-      const key = `cli:${agentName}:${cwd}`;
-      if (!this._agents.has(key)) {
-        this._agents.set(
-          key,
-          new CliAgent(agentName, {
+    if (mode === "api") {
+      return this._getApiAgent(role, { scope });
+    }
+
+    if (mode === "mcp") {
+      return this._getMcpAgent(role, { scope });
+    }
+
+    if (mode !== "cli") {
+      throw new Error(`Agent mode "${mode}" is not supported`);
+    }
+
+    const key = `cli:${agentName}:${cwd}`;
+    if (!this._agents.has(key)) {
+      this._agents.set(
+        key,
+        new CliAgent(agentName, {
+          cwd,
+          secrets: this.secrets,
+          config: this.config,
+          workspaceDir: this.workspaceDir,
+          verbose: this.verbose,
+          steeringContext: this.steeringContext,
+        }),
+      );
+    }
+    const rawAgent = this._agents.get(key);
+
+    const retryCfg = this.config.agents?.retry;
+    const fallbackName = this.config.agents?.fallback?.[role];
+    if ((retryCfg?.retries ?? 0) > 0 || fallbackName) {
+      const fallbackAgent = fallbackName
+        ? new CliAgent(resolveAgentName(fallbackName), {
             cwd,
             secrets: this.secrets,
             config: this.config,
             workspaceDir: this.workspaceDir,
             verbose: this.verbose,
-            steeringContext: this.steeringContext,
-          }),
-        );
-      }
-      return { agentName, agent: this._agents.get(key) };
+          })
+        : null;
+      return {
+        agentName,
+        agent: new RetryFallbackWrapper(rawAgent, {
+          fallback: fallbackAgent,
+          retries: retryCfg?.retries ?? 1,
+          backoffMs: retryCfg?.backoffMs ?? 5000,
+          retryOnRateLimit: retryCfg?.retryOnRateLimit ?? true,
+        }),
+      };
     }
 
-    if (mode === "api") {
-      return this._getApiAgent(role, opts);
-    }
-
-    if (mode === "mcp") {
-      return this._getMcpAgent(role, opts);
-    }
-
-    throw new Error(`Agent mode "${mode}" is not supported`);
+    return { agentName, agent: rawAgent };
   }
 
   /**
