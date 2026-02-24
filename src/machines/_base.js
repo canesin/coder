@@ -20,6 +20,7 @@ export const WorkflowContextSchema = z.object({
   secrets: z.record(z.string()).default({}),
   artifactsDir: z.string(),
   scratchpadDir: z.string(),
+  steeringContext: z.string().optional(),
 });
 
 /**

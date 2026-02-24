@@ -44,6 +44,7 @@ import { registerPrompts } from "../src/mcp/prompts.js";
 import { registerResources } from "../src/mcp/resources.js";
 import { registerMachineTools } from "../src/mcp/tools/machines.js";
 import { registerStatusTools } from "../src/mcp/tools/status.js";
+import { registerSteeringTools } from "../src/mcp/tools/steering.js";
 import { registerWorkflowTools } from "../src/mcp/tools/workflows.js";
 import { registerDesignMachines } from "../src/workflows/design.workflow.js";
 import { registerDevelopMachines } from "../src/workflows/develop.workflow.js";
@@ -119,6 +120,7 @@ function buildServer(defaultWorkspace) {
   registerMachineTools(server, defaultWorkspace);
   registerWorkflowTools(server, defaultWorkspace);
   registerStatusTools(server, defaultWorkspace);
+  registerSteeringTools(server, defaultWorkspace);
   registerResources(server, defaultWorkspace);
   registerPrompts(server);
   return server;

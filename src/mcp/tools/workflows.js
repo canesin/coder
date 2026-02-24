@@ -8,6 +8,7 @@ import { AgentPool } from "../../agents/pool.js";
 import { AgentRolesInputSchema, resolveConfig } from "../../config.js";
 import { buildSecrets, DEFAULT_PASS_ENV } from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
+import { loadSteeringContext } from "../../steering.js";
 import {
   createWorkflowLifecycleMachine,
   loadLoopState,
@@ -616,16 +617,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
 
           const log = makeJsonlLogger(ws, workflow, { runId: nextRunId });
           const secrets = buildSecrets(DEFAULT_PASS_ENV);
-          const steeringPath = path.join(ws, ".coder", "steering.md");
-          let steeringContext;
-          if (existsSync(steeringPath)) {
-            try {
-              const raw = readFileSync(steeringPath, "utf8").trim();
-              if (raw) steeringContext = raw;
-            } catch {
-              /* best-effort — proceed without steering */
-            }
-          }
+          const steeringContext = loadSteeringContext(ws);
           const agentPool = new AgentPool({
             config,
             workspaceDir: ws,

@@ -25,6 +25,7 @@ export class AgentPool {
     this.repoRoot = opts.repoRoot || opts.workspaceDir;
     this.secrets = buildSecrets(opts.passEnv || DEFAULT_PASS_ENV);
     this.verbose = opts.verbose ?? opts.config.verbose;
+    this.steeringContext = opts.steeringContext;
 
     /** @type {Map<string, import("./cli-agent.js").CliAgent>} */
     this._agents = new Map();
@@ -52,6 +53,7 @@ export class AgentPool {
             config: this.config,
             workspaceDir: this.workspaceDir,
             verbose: this.verbose,
+            steeringContext: this.steeringContext,
           }),
         );
       }

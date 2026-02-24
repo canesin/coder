@@ -59,6 +59,7 @@ export class CliAgent extends AgentAdapter {
     this._sandbox = null;
     this._log = makeJsonlLogger(opts.workspaceDir, this.name);
 
+    this.steeringContext = opts.steeringContext;
     this._mcpHealthParsed = false;
     this._strictMcpStartup = opts.config.mcp.strictStartup;
   }
@@ -113,6 +114,9 @@ export class CliAgent extends AgentAdapter {
   }
 
   _buildCommand(prompt, { structured = false, sessionId, resumeId } = {}) {
+    if (this.steeringContext) {
+      prompt = `<steering_context>\n${this.steeringContext}\n</steering_context>\n\n${prompt}`;
+    }
     if (this.name === "gemini") {
       const modelName = resolveModelName(this.config.models.gemini);
       if (structured) {
