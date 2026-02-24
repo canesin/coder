@@ -117,6 +117,9 @@ export async function runPlanLoop(
     const state = loadState(ctx.workspaceDir);
     state.steps ||= {};
     state.steps.wroteCritique = false;
+    // Clear session ID so replanning starts a fresh agent session rather than
+    // reusing the one that just produced a rejected plan (avoids "session already in use").
+    state.claudeSessionId = null;
     saveState(ctx.workspaceDir, state);
   }
 

@@ -171,12 +171,27 @@ Constraints:
       (p) => !preUntracked.has(p) && !isArtifact(p),
     );
 
-    const trackedDirty = post
-      .filter((e) => e.status !== "??" && !isArtifact(e.path))
-      .map((e) => `${e.status} ${e.path}`);
-    if (trackedDirty.length > 0) {
+    const trackedDirtyEntries = post.filter(
+      (e) => e.status !== "??" && !isArtifact(e.path),
+    );
+    if (trackedDirtyEntries.length > 0) {
+      const filePaths = trackedDirtyEntries.map((e) => e.path);
+      // Best-effort revert: un-stage then restore working tree (A files become untracked)
+      spawnSync("git", ["restore", "--staged", "--", ...filePaths], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      spawnSync("git", ["restore", "--", ...filePaths], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      const listed = trackedDirtyEntries
+        .map((e) => `  ${e.status} ${e.path}`)
+        .join("\n");
       throw new Error(
-        `Planning step modified tracked files. Aborting.\n${trackedDirty.join("\n")}`,
+        `Planning agent violated constraint: must not modify source files.\n` +
+          `During planning, only ${paths.plan} should be written.\n` +
+          `The following tracked files were modified (reverted):\n${listed}`,
       );
     }
 
