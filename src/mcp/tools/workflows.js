@@ -384,6 +384,12 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           .string()
           .default("")
           .describe("Start-only: path to test config JSON"),
+        issueSource: z
+          .enum(["github", "linear", "gitlab", "local"])
+          .optional()
+          .describe(
+            "Develop start-only: issue source override (github | linear | gitlab | local); defaults to config.workflow.issueSource",
+          ),
         localIssuesDir: z
           .string()
           .default("")
@@ -661,6 +667,8 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                     testCmd: params.testCmd,
                     testConfigPath: params.testConfigPath,
                     allowNoTests: params.allowNoTests,
+                    issueSource:
+                      params.issueSource || config.workflow.issueSource,
                     localIssuesDir:
                       params.localIssuesDir || config.workflow.localIssuesDir,
                     ppcommitPreset: params.ppcommitPreset,

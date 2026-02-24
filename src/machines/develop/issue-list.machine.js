@@ -141,6 +141,10 @@ export default defineMachine({
     "List open issues from the configured source (github, linear, gitlab, or local), rate difficulty, return with recommended_index.",
   inputSchema: z.object({
     projectFilter: z.string().optional(),
+    issueSource: z
+      .enum(["github", "linear", "gitlab", "local"])
+      .optional()
+      .describe("Override config.workflow.issueSource for this run"),
     localIssuesDir: z
       .string()
       .default("")
@@ -156,7 +160,7 @@ export default defineMachine({
   },
 
   async execute(input, ctx) {
-    const issueSource = ctx.config.workflow.issueSource;
+    const issueSource = input.issueSource || ctx.config.workflow.issueSource;
 
     // Local issues — no agent needed
     if (issueSource === "local") {

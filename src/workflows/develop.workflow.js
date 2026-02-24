@@ -353,13 +353,14 @@ export async function runDevelopLoop(opts, ctx) {
     testCmd,
     testConfigPath,
     allowNoTests = false,
+    issueSource = "",
     localIssuesDir = "",
     ppcommitPreset = "",
   } = opts;
 
   // List issues (local or remote)
   const listResult = await issueListMachine.run(
-    { projectFilter, localIssuesDir },
+    { projectFilter, issueSource: issueSource || undefined, localIssuesDir },
     ctx,
   );
   if (listResult.status !== "ok") {
