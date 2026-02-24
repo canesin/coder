@@ -52,7 +52,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.27.0",
     "cli-table3": "^0.6.5",
     "deepmerge": "^4.3.1",
     "jsonrepair": "^3.12.0",
