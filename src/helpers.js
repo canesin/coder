@@ -97,7 +97,7 @@ export function requireEnvOneOf(names) {
 export function requireCommandOnPath(name) {
   const res = spawnSync(
     "bash",
-    ["-lc", `command -v ${JSON.stringify(name)} >/dev/null 2>&1`],
+    ["-lc", `command -v ${shellEscape(name)} >/dev/null 2>&1`],
     {
       encoding: "utf8",
     },
