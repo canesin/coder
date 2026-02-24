@@ -141,9 +141,11 @@ export function runShellSync(
     };
   }
 
+  const fallbackEnv = { ...(env || process.env) };
+  delete fallbackEnv.CLAUDECODE;
   const res = spawnSync("bash", ["-lc", command], {
     cwd,
-    env,
+    env: fallbackEnv,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: timeoutMs > 0 ? timeoutMs : undefined,
