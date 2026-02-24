@@ -80,7 +80,10 @@ export class ApiAgent extends AgentAdapter {
 
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": this.apiKey,
+      },
       body: JSON.stringify(body),
       signal: this._abortController?.signal,
     });

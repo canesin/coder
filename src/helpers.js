@@ -260,10 +260,14 @@ export function resolveModelName(entry) {
   return entry;
 }
 
+export function shellEscape(arg) {
+  return "'" + String(arg).replace(/'/g, "'\\''") + "'";
+}
+
 export function geminiJsonPipeWithModel(prompt, model) {
   const modelArg = String(resolveModelName(model) || "").trim();
   const cmd = modelArg
-    ? `gemini --yolo -m ${modelArg} -o json`
+    ? `gemini --yolo -m ${shellEscape(modelArg)} -o json`
     : "gemini --yolo -o json";
   return heredocPipe(prompt, cmd);
 }

@@ -6,6 +6,7 @@ import {
   geminiJsonPipeWithModel,
   heredocPipe,
   resolveModelName,
+  shellEscape,
 } from "../helpers.js";
 import { HostSandboxProvider } from "../host-sandbox.js";
 import { makeJsonlLogger, sanitizeLogEvent } from "../logging.js";
@@ -122,9 +123,11 @@ export class CliAgent extends AgentAdapter {
       if (structured) {
         return geminiJsonPipeWithModel(prompt, modelName);
       }
-      let cmd = modelName ? `gemini --yolo -m ${modelName}` : "gemini --yolo";
-      if (sessionId) cmd += ` --sandbox-id ${sessionId}`;
-      if (resumeId) cmd += ` --sandbox-id ${resumeId}`;
+      let cmd = modelName
+        ? `gemini --yolo -m ${shellEscape(modelName)}`
+        : "gemini --yolo";
+      if (sessionId) cmd += ` --sandbox-id ${shellEscape(sessionId)}`;
+      if (resumeId) cmd += ` --sandbox-id ${shellEscape(resumeId)}`;
       return heredocPipe(prompt, cmd);
     }
 
@@ -132,21 +135,21 @@ export class CliAgent extends AgentAdapter {
       let flags = "claude -p";
       const claudeModel = resolveModelName(this.config.models.claude);
       if (claudeModel) {
-        flags += ` --model ${claudeModel}`;
+        flags += ` --model ${shellEscape(claudeModel)}`;
       }
       if (this.config.claude.skipPermissions) {
         flags += " --dangerously-skip-permissions";
       }
-      if (sessionId) flags += ` --session-id ${sessionId}`;
-      if (resumeId) flags += ` --resume ${resumeId}`;
+      if (sessionId) flags += ` --session-id ${shellEscape(sessionId)}`;
+      if (resumeId) flags += ` --resume ${shellEscape(resumeId)}`;
       return heredocPipe(prompt, flags);
     }
 
     // codex: resume is a subcommand, not a flag
     if (resumeId) {
-      return `codex exec resume ${resumeId} --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
+      return `codex exec resume ${shellEscape(resumeId)} --full-auto --skip-git-repo-check ${shellEscape(prompt)}`;
     }
-    return `codex exec --full-auto --skip-git-repo-check ${JSON.stringify(prompt)}`;
+    return `codex exec --full-auto --skip-git-repo-check ${shellEscape(prompt)}`;
   }
 
   async execute(prompt, opts = {}) {
