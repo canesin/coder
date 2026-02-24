@@ -114,7 +114,8 @@ export function runShellSync(
 ) {
   if (preferSystemd && canUseSystemdRun()) {
     const unitName = makeSystemdUnitName(unitPrefix);
-    const resolvedEnv = env || process.env;
+    const resolvedEnv = { ...(env || process.env) };
+    delete resolvedEnv.CLAUDECODE;
     const args = buildSystemdRunArgs(command, {
       unitName,
       cwd,
