@@ -78,12 +78,40 @@ export default defineMachine({
       return entries;
     };
 
+    const revertTrackedDirty = (dirtyEntries) => {
+      const filePaths = dirtyEntries.map((e) => e.path);
+      // Un-stage first (handles A/staged entries), then restore worktree
+      spawnSync("git", ["restore", "--staged", "--", ...filePaths], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      spawnSync("git", ["restore", "--", ...filePaths], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+    };
+
+    const cleanUntracked = (untrackedPaths) => {
+      const chunkSize = 100;
+      for (let i = 0; i < untrackedPaths.length; i += chunkSize) {
+        const chunk = untrackedPaths.slice(i, i + chunkSize);
+        spawnSync("git", ["clean", "-fd", "--", ...chunk], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+      }
+    };
+
     const pre = gitPorcelain();
     const preUntracked = new Set(
       pre.filter((e) => e.status === "??").map((e) => e.path),
     );
 
-    // Generate session ID for reuse across steps (planning -> implementation -> fix)
+    // Generate session ID for reuse across steps (planning -> implementation -> fix).
+    // Note: --session-id creates a named session in Claude CLI. The session name stays
+    // registered after the process exits, so reusing the same UUID on a subsequent call
+    // fails with "Session ID already in use". Session IDs are therefore cleared whenever
+    // a new planning call should start fresh (REVISE rounds, retries after constraint violations).
     if (!state.claudeSessionId) {
       state.claudeSessionId = randomUUID();
       saveState(ctx.workspaceDir, state);
@@ -147,69 +175,86 @@ Constraints:
       ? `\n\n## Previous Review Critique (MUST ADDRESS)\n\nYour previous plan was rejected. You MUST address ALL issues below before writing the revised plan:\n\n${input.priorCritique}`
       : "";
 
-    let res;
-    try {
-      res = await plannerAgent.execute(planPrompt + priorCritiqueSection, {
-        sessionId: state.claudeSessionId || undefined,
-        timeoutMs: ctx.config.workflow.timeouts.planning,
-      });
-      requireExitZero(plannerName, "plan generation failed", res);
-    } catch (err) {
-      if (state.claudeSessionId) {
+    // Allow one retry when the planner violates the no-source-edit constraint.
+    // On violation: revert dirty files, inject feedback into prompt, retry with a fresh session.
+    let constraintNote = "";
+
+    for (let attempt = 0; attempt <= 1; attempt++) {
+      let res;
+      try {
+        res = await plannerAgent.execute(
+          planPrompt + priorCritiqueSection + constraintNote,
+          {
+            sessionId: state.claudeSessionId || undefined,
+            timeoutMs: ctx.config.workflow.timeouts.planning,
+          },
+        );
+        requireExitZero(plannerName, "plan generation failed", res);
+      } catch (err) {
         state.claudeSessionId = null;
         saveState(ctx.workspaceDir, state);
+        throw err;
       }
-      throw err;
-    }
 
-    // Hard gate: planner must not change tracked files
-    const post = gitPorcelain();
-    const postUntracked = post
-      .filter((e) => e.status === "??")
-      .map((e) => e.path);
-    const newUntracked = postUntracked.filter(
-      (p) => !preUntracked.has(p) && !isArtifact(p),
-    );
+      const post = gitPorcelain();
+      const postUntracked = post
+        .filter((e) => e.status === "??")
+        .map((e) => e.path);
+      const newUntracked = postUntracked.filter(
+        (p) => !preUntracked.has(p) && !isArtifact(p),
+      );
+      const trackedDirtyEntries = post.filter(
+        (e) => e.status !== "??" && !isArtifact(e.path),
+      );
 
-    const trackedDirtyEntries = post.filter(
-      (e) => e.status !== "??" && !isArtifact(e.path),
-    );
-    if (trackedDirtyEntries.length > 0) {
-      const filePaths = trackedDirtyEntries.map((e) => e.path);
-      // Best-effort revert: un-stage then restore working tree (A files become untracked)
-      spawnSync("git", ["restore", "--staged", "--", ...filePaths], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
-      spawnSync("git", ["restore", "--", ...filePaths], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
+      if (trackedDirtyEntries.length === 0) {
+        // Clean run — remove any untracked scratch files and finish
+        if (newUntracked.length > 0) {
+          ctx.log({
+            event: "plan_untracked_cleanup",
+            count: newUntracked.length,
+            paths: newUntracked.slice(0, 50),
+          });
+          cleanUntracked(newUntracked);
+        }
+        break;
+      }
+
+      // Planner modified tracked source files — revert and either retry or fail
+      revertTrackedDirty(trackedDirtyEntries);
+      // Also clean any new untracked files created during this failed attempt
+      if (newUntracked.length > 0) cleanUntracked(newUntracked);
+
       const listed = trackedDirtyEntries
         .map((e) => `  ${e.status} ${e.path}`)
         .join("\n");
-      throw new Error(
-        `Planning agent violated constraint: must not modify source files.\n` +
-          `During planning, only ${paths.plan} should be written.\n` +
-          `The following tracked files were modified (reverted):\n${listed}`,
-      );
-    }
-
-    // Clean up new untracked files from planning exploration
-    if (newUntracked.length > 0) {
       ctx.log({
-        event: "plan_untracked_cleanup",
-        count: newUntracked.length,
-        paths: newUntracked.slice(0, 50),
+        event: "plan_constraint_violation",
+        attempt,
+        reverted: trackedDirtyEntries.map((e) => e.path),
       });
-      const chunkSize = 100;
-      for (let i = 0; i < newUntracked.length; i += chunkSize) {
-        const chunk = newUntracked.slice(i, i + chunkSize);
-        spawnSync("git", ["clean", "-fd", "--", ...chunk], {
-          cwd: repoRoot,
-          encoding: "utf8",
-        });
+
+      if (attempt === 1) {
+        throw new Error(
+          `Planning agent repeatedly violated constraint: must not modify source files.\n` +
+            `Only ${paths.plan} should be written during planning.\n` +
+            `Modified files (reverted):\n${listed}`,
+        );
       }
+
+      // Inject feedback and retry with a fresh session
+      constraintNote =
+        `\n\n## CONSTRAINT VIOLATION — YOUR PREVIOUS ATTEMPT FAILED\n\n` +
+        `You modified source files during planning, which is forbidden.\n` +
+        `Only ${paths.plan} may be written. All other files must remain unchanged.\n` +
+        `Files you modified (they have been reverted — do not touch them again):\n` +
+        `${listed}\n\n` +
+        `Retry now: write ONLY ${paths.plan} and do not edit any source files.`;
+
+      // Clear session ID — the previous session's name is still registered in Claude CLI
+      // and cannot be reused with --session-id. A new UUID will be generated above.
+      state.claudeSessionId = null;
+      saveState(ctx.workspaceDir, state);
     }
 
     if (!existsSync(paths.plan))
