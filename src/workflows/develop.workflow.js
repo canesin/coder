@@ -5,6 +5,7 @@ import { buildDependencyGraph } from "../github/dependencies.js";
 import { detectDefaultBranch } from "../helpers.js";
 import { registerMachine } from "../machines/_registry.js";
 import {
+  artifactPaths,
   normalizeRepoPath,
   resolveRepoRoot,
 } from "../machines/develop/_shared.js";
@@ -17,7 +18,9 @@ import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
 import {
   loadLoopState,
+  loadState,
   saveLoopState,
+  saveState,
   statePathFor,
 } from "../state/workflow-state.js";
 import { buildIssueBranchName } from "../worktrees.js";
@@ -54,6 +57,72 @@ export function registerDevelopMachines() {
 }
 
 /**
+ * Run the planning + plan-review loop (up to maxRounds) using an existing WorkflowRunner.
+ * Between revision rounds, stale PLAN.md and PLANREVIEW.md are deleted so agents cannot
+ * silently reuse old artifacts via file-existence fallback paths.
+ *
+ * @param {import("./_base.js").WorkflowRunner} runner
+ * @param {import("../machines/_base.js").WorkflowContext} ctx
+ * @param {{ planningMachine: object, planReviewMachine: object, maxRounds?: number }} opts
+ */
+export async function runPlanLoop(
+  runner,
+  ctx,
+  { planningMachine: pm, planReviewMachine: prm, maxRounds = 3 } = {},
+) {
+  const allResults = [];
+  let priorCritique = "";
+
+  for (let round = 0; round < maxRounds; round++) {
+    if (round > 0) {
+      const paths = artifactPaths(ctx.artifactsDir);
+      rmSync(paths.plan, { force: true });
+      rmSync(paths.critique, { force: true });
+    }
+
+    const planRound = await runner.run(
+      [{ machine: pm, inputMapper: () => ({ priorCritique }) }],
+      {},
+    );
+    allResults.push(...planRound.results);
+    if (planRound.status !== "completed") {
+      return {
+        status: planRound.status,
+        error: planRound.error,
+        results: allResults,
+      };
+    }
+
+    const reviewRound = await runner.run(
+      [{ machine: prm, inputMapper: () => ({ round }) }],
+      {},
+    );
+    allResults.push(...reviewRound.results);
+    if (reviewRound.status !== "completed") {
+      return {
+        status: reviewRound.status,
+        error: reviewRound.error,
+        results: allResults,
+      };
+    }
+
+    const verdict = reviewRound.results[0]?.data?.verdict;
+    ctx.log({ event: "plan_review_verdict", verdict, round });
+
+    const needsRevision = verdict === "REVISE" || verdict === "REJECT";
+    if (!needsRevision || round === maxRounds - 1) break;
+
+    priorCritique = reviewRound.results[0]?.data?.critiqueMd || "";
+    const state = loadState(ctx.workspaceDir);
+    state.steps ||= {};
+    state.steps.wroteCritique = false;
+    saveState(ctx.workspaceDir, state);
+  }
+
+  return { status: "completed", results: allResults };
+}
+
+/**
  * Run the full develop pipeline for a single issue.
  *
  * @param {{
@@ -75,6 +144,9 @@ export function registerDevelopMachines() {
  * @param {import("../machines/_base.js").WorkflowContext} ctx
  */
 export async function runDevelopPipeline(opts, ctx) {
+  const start = Date.now();
+  const allResults = [];
+
   const runner = new WorkflowRunner({
     name: "develop",
     workflowContext: ctx,
@@ -83,7 +155,8 @@ export async function runDevelopPipeline(opts, ctx) {
     },
   });
 
-  return runner.run(
+  // Phase 1: issue draft
+  const phase1 = await runner.run(
     [
       {
         machine: issueDraftMachine,
@@ -95,14 +168,51 @@ export async function runDevelopPipeline(opts, ctx) {
           force: opts.force ?? false,
         }),
       },
-      {
-        machine: planningMachine,
-        inputMapper: () => ({}),
-      },
-      {
-        machine: planReviewMachine,
-        inputMapper: () => ({}),
-      },
+    ],
+    {},
+  );
+  allResults.push(...phase1.results);
+  if (phase1.status !== "completed") {
+    return { ...phase1, results: allResults, durationMs: Date.now() - start };
+  }
+
+  if (ctx.cancelToken.cancelled) {
+    return {
+      status: "cancelled",
+      results: allResults,
+      runId: runner.runId,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // Phase 2: planning + review loop
+  const loopResult = await runPlanLoop(runner, ctx, {
+    planningMachine,
+    planReviewMachine,
+  });
+  allResults.push(...loopResult.results);
+  if (loopResult.status !== "completed") {
+    return {
+      status: loopResult.status,
+      error: loopResult.error,
+      results: allResults,
+      runId: runner.runId,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  if (ctx.cancelToken.cancelled) {
+    return {
+      status: "cancelled",
+      results: allResults,
+      runId: runner.runId,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // Phase 3: implementation → quality-review → PR creation
+  const phase3 = await runner.run(
+    [
       {
         machine: implementationMachine,
         inputMapper: () => ({}),
@@ -129,6 +239,8 @@ export async function runDevelopPipeline(opts, ctx) {
     ],
     {},
   );
+  allResults.push(...phase3.results);
+  return { ...phase3, results: allResults, durationMs: Date.now() - start };
 }
 
 /**
@@ -244,7 +356,7 @@ export async function runDevelopLoop(opts, ctx) {
     ppcommitPreset = "",
   } = opts;
 
-  // Step 1: List issues (local or remote)
+  // List issues (local or remote)
   const listResult = await issueListMachine.run(
     { projectFilter, localIssuesDir },
     ctx,
@@ -268,7 +380,7 @@ export async function runDevelopLoop(opts, ctx) {
     };
   }
 
-  // Step 2: Build dependency-aware queue
+  // Build dependency-aware queue
   const { queue: issues, rationale } = buildIssueQueue(rawIssues);
 
   ctx.log({

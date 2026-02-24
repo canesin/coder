@@ -10,13 +10,52 @@ import {
   resolveRepoRoot,
 } from "./_shared.js";
 
+/**
+ * Parse the Verdict section from a plan critique markdown string.
+ * Takes the last match to avoid false positives from prompt examples in the header.
+ * Returns one of: "APPROVED", "REJECT", "REVISE", "PROCEED_WITH_CAUTION", "UNKNOWN".
+ */
+export function parsePlanVerdict(critiqueMd) {
+  if (!critiqueMd) return "UNKNOWN";
+
+  const verdictLines = [];
+  // Match heading-based verdict sections: "## [N.] Verdict" then value on next non-empty line
+  for (const match of critiqueMd.matchAll(
+    /^#{1,6}\s+(?:\d+\.\s+)?Verdict\b[^\n]*\n\s*([^\n]+)/gim,
+  )) {
+    verdictLines.push(match[1]);
+  }
+
+  // Fallback: inline "**Verdict**: VALUE" or "Verdict: VALUE"
+  if (verdictLines.length === 0) {
+    for (const match of critiqueMd.matchAll(
+      /\*{0,2}Verdict\*{0,2}\s*[:-]\s*([^\n]+)/gi,
+    )) {
+      verdictLines.push(match[1]);
+    }
+  }
+
+  if (verdictLines.length === 0) return "UNKNOWN";
+
+  const raw = verdictLines[verdictLines.length - 1]
+    .trim()
+    .toUpperCase()
+    .replace(/[*_`[\]()]/g, "");
+  if (/\bAPPROVED\b/.test(raw)) return "APPROVED";
+  if (/\bREJECT\b/.test(raw)) return "REJECT";
+  if (/\bREVISE\b/.test(raw)) return "REVISE";
+  if (/\bPROCEED\b/.test(raw) || /\bCAUTION\b/.test(raw))
+    return "PROCEED_WITH_CAUTION";
+  return "UNKNOWN";
+}
+
 export default defineMachine({
   name: "develop.plan_review",
   description:
     "Review PLAN.md and write PLANREVIEW.md with critique and verdict.",
-  inputSchema: z.object({}),
+  inputSchema: z.object({ round: z.number().int().nonnegative().default(0) }),
 
-  async execute(_input, ctx) {
+  async execute(input, ctx) {
     const state = loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
@@ -28,10 +67,16 @@ export default defineMachine({
     }
 
     if (state.steps.wroteCritique) {
+      const planMd = existsSync(paths.plan)
+        ? readFileSync(paths.plan, "utf8")
+        : "";
       const critiqueMd = existsSync(paths.critique)
         ? readFileSync(paths.critique, "utf8")
         : "";
-      return { status: "ok", data: { critiqueMd } };
+      return {
+        status: "ok",
+        data: { planMd, critiqueMd, verdict: parsePlanVerdict(critiqueMd) },
+      };
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
@@ -51,7 +96,12 @@ export default defineMachine({
         }
       }
     } else {
-      const reviewPrompt = `Review ${paths.plan} and write a critical plan critique to ${paths.critique}.
+      const roundNote =
+        input.round > 0
+          ? `\n\nNote: This is revision round ${input.round + 1}. The prior plan was rejected. Focus on whether the issues from the prior critique have been addressed.`
+          : "";
+
+      const reviewPrompt = `Review ${paths.plan} and write a critical plan critique to ${paths.critique}.${roundNote}
 
 Required sections (in order):
 1. Critical Issues (Must Fix)
@@ -99,6 +149,9 @@ Constraints:
       ctx.config.workflow.wip,
       ctx.log,
     );
-    return { status: "ok", data: { planMd, critiqueMd } };
+    return {
+      status: "ok",
+      data: { planMd, critiqueMd, verdict: parsePlanVerdict(critiqueMd) },
+    };
   },
 });

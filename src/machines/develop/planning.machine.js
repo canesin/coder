@@ -15,9 +15,11 @@ export default defineMachine({
   name: "develop.planning",
   description:
     "Create PLAN.md: research codebase, evaluate approaches, write structured implementation plan.",
-  inputSchema: z.object({}),
+  inputSchema: z.object({
+    priorCritique: z.string().optional().default(""),
+  }),
 
-  async execute(_input, ctx) {
+  async execute(input, ctx) {
     const state = loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
@@ -30,7 +32,7 @@ export default defineMachine({
       );
     }
 
-    if (state.steps.wrotePlan) {
+    if (state.steps.wrotePlan && !input.priorCritique) {
       return { status: "ok", data: { planMd: "(cached)" } };
     }
 
@@ -141,9 +143,13 @@ Constraints:
 - Do NOT invent APIs - verify they exist in actual documentation
 - Do NOT ask questions; use repo conventions and ISSUE.md as ground truth`;
 
+    const priorCritiqueSection = input.priorCritique
+      ? `\n\n## Previous Review Critique (MUST ADDRESS)\n\nYour previous plan was rejected. You MUST address ALL issues below before writing the revised plan:\n\n${input.priorCritique}`
+      : "";
+
     let res;
     try {
-      res = await plannerAgent.execute(planPrompt, {
+      res = await plannerAgent.execute(planPrompt + priorCritiqueSection, {
         sessionId: state.claudeSessionId || undefined,
         timeoutMs: ctx.config.workflow.timeouts.planning,
       });

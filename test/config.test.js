@@ -37,7 +37,6 @@ test("deepMerge: undefined values are skipped", () => {
 test("loadConfig: no files returns all defaults", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
   const xdg = mkdtempSync(path.join(os.tmpdir(), "coder-xdg-"));
-
   const origXdg = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = xdg;
   try {
