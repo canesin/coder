@@ -168,15 +168,25 @@ export class AgentPool {
     const retryCfg = this.config.agents?.retry;
     const fallbackName = this.config.agents?.fallback?.[role];
     if ((retryCfg?.retries ?? 0) > 0 || fallbackName) {
-      const fallbackAgent = fallbackName
-        ? new CliAgent(resolveAgentName(fallbackName), {
-            cwd,
-            secrets: this.secrets,
-            config: this.config,
-            workspaceDir: this.workspaceDir,
-            verbose: this.verbose,
-          })
-        : null;
+      let fallbackAgent = null;
+      if (fallbackName) {
+        const resolvedFallback = resolveAgentName(fallbackName);
+        const fallbackKey = `cli:${resolvedFallback}:${cwd}`;
+        if (!this._agents.has(fallbackKey)) {
+          this._agents.set(
+            fallbackKey,
+            new CliAgent(resolvedFallback, {
+              cwd,
+              secrets: this.secrets,
+              config: this.config,
+              workspaceDir: this.workspaceDir,
+              verbose: this.verbose,
+              steeringContext: this.steeringContext,
+            }),
+          );
+        }
+        fallbackAgent = this._agents.get(fallbackKey);
+      }
       return {
         agentName,
         agent: new RetryFallbackWrapper(rawAgent, {

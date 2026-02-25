@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -185,6 +185,7 @@ export default defineMachine({
         "Use this file for iterative issue research notes and feedback loops.",
         "",
       ].join("\n");
+      mkdirSync(path.dirname(scratchpadPath), { recursive: true });
       writeFileSync(scratchpadPath, header, "utf8");
     }
     scratchpad.appendSection(scratchpadPath, "Input", [

@@ -409,7 +409,9 @@ export async function runDevelopLoop(opts, ctx) {
   }));
   loopState.currentIndex = 0;
   loopState.startedAt = new Date().toISOString();
-  saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
+  const prevLoopRunId = loopState.runId;
+  loopState.runId = ctx.runId || loopState.runId;
+  saveLoopState(ctx.workspaceDir, loopState, { guardRunId: prevLoopRunId });
 
   const loopRunId = randomUUID().slice(0, 8);
   runHooks(ctx, loopRunId, "loop_start", "", {
@@ -757,7 +759,7 @@ Analyze and produce a markdown report with these sections:
 
 Be concrete: reference file paths, line ranges, and function names. If no issues exist for a section, say "None detected."`;
 
-      const { agent } = ctx.agentPool.getAgent("reviewer", {
+      const { agent } = ctx.agentPool.getAgent("coalesce", {
         scope: "repo",
       });
       const res = await agent.execute(prompt, {

@@ -85,6 +85,7 @@ export const WorkflowAgentRolesSchema = z.object({
   programmer: AgentNameSchema.default("claude"),
   reviewer: AgentNameSchema.default("codex"),
   committer: AgentNameSchema.default("gemini"),
+  coalesce: AgentNameSchema.default("codex"),
 });
 
 export const WorkflowWipSchema = z.object({
@@ -124,6 +125,7 @@ export const AgentRolesInputSchema = z.object({
   programmer: AgentNameSchema.optional(),
   reviewer: AgentNameSchema.optional(),
   committer: AgentNameSchema.optional(),
+  coalesce: AgentNameSchema.optional(),
 });
 
 export const DesignConfigSchema = z.object({
