@@ -644,7 +644,7 @@ export async function runHostTests(
     const res = runShellSync(testCmd, { cwd: repoDir });
     return {
       cmd: res.cmd,
-      exitCode: res.exitCode ?? 0,
+      exitCode: res.exitCode,
       stdout: res.stdout || "",
       stderr: res.stderr || "",
     };

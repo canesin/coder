@@ -30,10 +30,11 @@ export function runTestCommand(repoDir, argv) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const stderr = res.stderr || "";
   return {
-    exitCode: res.status ?? 0,
+    exitCode: typeof res.status === "number" ? res.status : 1,
     stdout: res.stdout || "",
-    stderr: res.stderr || "",
+    stderr: res.error ? `${stderr}\n${res.error.message}`.trim() : stderr,
   };
 }
 
@@ -145,11 +146,11 @@ export async function runTestConfig(repoDir, config) {
         cwd: repoDir,
         timeoutMs: config.timeoutMs,
       });
-      details.setup.push({ cmd, exitCode: res.exitCode ?? 0 });
-      if ((res.exitCode ?? 0) !== 0) {
+      details.setup.push({ cmd, exitCode: res.exitCode });
+      if (res.exitCode !== 0) {
         return {
           cmd,
-          exitCode: res.exitCode ?? 1,
+          exitCode: res.exitCode,
           stdout: res.stdout || "",
           stderr: res.stderr || `Setup command failed: ${cmd}`,
           details,
@@ -187,7 +188,7 @@ export async function runTestConfig(repoDir, config) {
 
     return {
       cmd: config.test,
-      exitCode: testRes.exitCode ?? 0,
+      exitCode: testRes.exitCode,
       stdout: testRes.stdout || "",
       stderr: testRes.stderr || "",
       details,
@@ -199,7 +200,7 @@ export async function runTestConfig(repoDir, config) {
         cwd: repoDir,
         timeoutMs: 120000,
       });
-      details.teardown.push({ cmd, exitCode: res.exitCode ?? 0 });
+      details.teardown.push({ cmd, exitCode: res.exitCode });
     }
   }
 }
