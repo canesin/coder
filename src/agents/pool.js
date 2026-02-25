@@ -239,8 +239,8 @@ export class AgentPool {
           authHeader: opts.authHeader || "",
           env: opts.env || {},
           serverName,
-          retries: retryCfg?.retries ?? 1,
-          backoffMs: retryCfg?.backoffMs ?? 5000,
+          retries: retryCfg?.retries ?? 3,
+          backoffMs: retryCfg?.backoffMs ?? 1000,
         }),
       );
     }
