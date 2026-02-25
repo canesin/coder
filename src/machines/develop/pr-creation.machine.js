@@ -77,8 +77,8 @@ export default defineMachine({
       );
     }
 
-    // Commit uncommitted changes
-    const status = spawnSync("git", ["status", "--porcelain"], {
+    // Commit uncommitted changes (scope status to repoRoot so it matches git add .)
+    const status = spawnSync("git", ["status", "--porcelain", "."], {
       cwd: repoRoot,
       encoding: "utf8",
     });
@@ -90,15 +90,24 @@ export default defineMachine({
       });
       if (add.status !== 0) throw new Error(`git add failed: ${add.stderr}`);
 
-      const issueTitle = state.selected?.title || "coder workflow changes";
-      const commitMsg = `${normalizedType}: ${issueTitle}`;
-      const commit = spawnSync("git", ["commit", "-m", commitMsg], {
+      // Only commit if something was actually staged
+      const staged = spawnSync("git", ["diff", "--cached", "--quiet"], {
         cwd: repoRoot,
         encoding: "utf8",
       });
-      if (commit.status !== 0)
-        throw new Error(`git commit failed: ${commit.stderr}`);
-      ctx.log({ event: "committed", message: commitMsg });
+      if (staged.status !== 0) {
+        const issueTitle = state.selected?.title || "coder workflow changes";
+        const commitMsg = `${normalizedType}: ${issueTitle}`;
+        const commit = spawnSync("git", ["commit", "-m", commitMsg], {
+          cwd: repoRoot,
+          encoding: "utf8",
+        });
+        if (commit.status !== 0)
+          throw new Error(
+            `git commit failed: ${commit.stderr || commit.stdout}`,
+          );
+        ctx.log({ event: "committed", message: commitMsg });
+      }
     }
 
     // Determine remote branch

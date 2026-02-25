@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  AgentNameSchema,
   CoderConfigSchema,
   deepMerge,
   HookSchema,
@@ -312,4 +313,40 @@ test("HookSchema: rejects unknown event type", () => {
     () => HookSchema.parse({ on: "bad_event", run: "echo x" }),
     /Invalid/,
   );
+});
+
+test("AgentNameSchema: accepts custom agent names", () => {
+  assert.equal(AgentNameSchema.parse("aider"), "aider");
+  assert.equal(AgentNameSchema.parse("cursor"), "cursor");
+  assert.equal(AgentNameSchema.parse("my-agent.v2"), "my-agent.v2");
+});
+
+test("AgentNameSchema: rejects empty string", () => {
+  assert.throws(() => AgentNameSchema.parse(""), /Invalid/);
+});
+
+test("AgentNameSchema: rejects path separators", () => {
+  assert.throws(() => AgentNameSchema.parse("foo/bar"), /Invalid/);
+});
+
+test("AgentNameSchema: rejects shell metacharacters", () => {
+  assert.throws(() => AgentNameSchema.parse("x;rm -rf"), /Invalid/);
+  assert.throws(() => AgentNameSchema.parse("$(whoami)"), /Invalid/);
+});
+
+test("resolveConfig: custom agent names in agentRoles", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir, {
+    workflow: { agentRoles: { planner: "aider", reviewer: "cursor" } },
+  });
+  assert.equal(config.workflow.agentRoles.planner, "aider");
+  assert.equal(config.workflow.agentRoles.reviewer, "cursor");
+  assert.equal(config.workflow.agentRoles.issueSelector, "gemini");
+});
+
+test("CoderConfigSchema: custom agent names in fallback", () => {
+  const parsed = CoderConfigSchema.parse({
+    agents: { fallback: { planner: "cursor" } },
+  });
+  assert.equal(parsed.agents.fallback.planner, "cursor");
 });

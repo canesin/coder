@@ -76,7 +76,15 @@ export const TestSectionSchema = z.object({
   allowNoTests: z.boolean().default(false),
 });
 
-export const AgentNameSchema = z.enum(["gemini", "claude", "codex"]);
+const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
+export const AgentNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(
+    agentNameRegex,
+    "Invalid agent name: only alphanumerics, dots, hyphens, underscores allowed",
+  );
 
 export const WorkflowAgentRolesSchema = z.object({
   issueSelector: AgentNameSchema.default("gemini"),

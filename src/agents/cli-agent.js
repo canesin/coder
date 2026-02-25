@@ -17,15 +17,15 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
   "rejected stored OAuth token",
   "Please re-authenticate using: /mcp auth",
 ];
-const SUPPORTED_AGENTS = new Set(["gemini", "claude", "codex"]);
+const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
 
 export function resolveAgentName(name) {
   const normalized = String(name || "")
     .trim()
     .toLowerCase();
-  if (!SUPPORTED_AGENTS.has(normalized)) {
+  if (!normalized || !agentNameRegex.test(normalized)) {
     throw new Error(
-      `Unsupported agent: ${name}. Expected one of: gemini, claude, codex.`,
+      `Invalid agent name: "${name}". Must be non-empty and contain only alphanumerics, dots, hyphens, underscores.`,
     );
   }
   return normalized;
