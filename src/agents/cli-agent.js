@@ -59,7 +59,9 @@ export class CliAgent extends AgentAdapter {
       baseEnv: opts.secrets,
     });
     this._sandbox = null;
-    this._log = makeJsonlLogger(opts.workspaceDir, this.name);
+    this._log = makeJsonlLogger(opts.workspaceDir, this.name, {
+      runId: opts.runId,
+    });
 
     this.steeringContext = opts.steeringContext;
     this._mcpHealthParsed = false;

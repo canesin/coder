@@ -121,6 +121,7 @@ export class AgentPool {
     this.secrets = buildSecrets(opts.passEnv || DEFAULT_PASS_ENV);
     this.verbose = opts.verbose ?? opts.config.verbose;
     this.steeringContext = opts.steeringContext;
+    this.runId = opts.runId || "";
 
     /** @type {Map<string, import("./cli-agent.js").CliAgent>} */
     this._agents = new Map();
@@ -160,6 +161,7 @@ export class AgentPool {
           workspaceDir: this.workspaceDir,
           verbose: this.verbose,
           steeringContext: this.steeringContext,
+          runId: this.runId,
         }),
       );
     }
@@ -182,6 +184,7 @@ export class AgentPool {
               workspaceDir: this.workspaceDir,
               verbose: this.verbose,
               steeringContext: this.steeringContext,
+              runId: this.runId,
             }),
           );
         }

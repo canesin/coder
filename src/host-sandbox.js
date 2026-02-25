@@ -337,13 +337,27 @@ class HostSandboxInstance extends EventEmitter {
     this.currentChild = null;
     this.currentCommand = null;
 
-    // SIGTERM to process group
+    // Always SIGTERM the process group — descendants may outlive the leader
     try {
       if (child.pid) process.kill(-child.pid, "SIGTERM");
     } catch {
       try {
         child.kill("SIGTERM");
       } catch {}
+    }
+
+    // Leader already exited: close/exit won't fire again.
+    // Grace period for SIGTERM, then SIGKILL the group.
+    if (child.exitCode !== null) {
+      await new Promise((resolve) => {
+        setTimeout(() => {
+          try {
+            if (child.pid) process.kill(-child.pid, "SIGKILL");
+          } catch {}
+          resolve();
+        }, 500);
+      });
+      return;
     }
 
     // Wait for exit with SIGKILL escalation
@@ -357,6 +371,7 @@ class HostSandboxInstance extends EventEmitter {
       };
       child.once("close", finish);
       child.once("exit", finish);
+      child.once("error", finish);
       setTimeout(() => {
         if (done) return;
         try {

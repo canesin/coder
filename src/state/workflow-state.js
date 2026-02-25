@@ -74,9 +74,25 @@ export function saveWorkflowSnapshot(
 
 export function saveWorkflowTerminalState(
   workspaceDir,
-  { runId, workflow = "develop", state, context = {}, sqlitePath = "" },
+  {
+    runId,
+    workflow = "develop",
+    state,
+    context = {},
+    sqlitePath = "",
+    guardRunId = "",
+  },
 ) {
   if (!runId || !state) return null;
+  if (guardRunId) {
+    const statePath = workflowStatePathFor(workspaceDir);
+    if (existsSync(statePath)) {
+      try {
+        const existing = JSON.parse(readFileSync(statePath, "utf8"));
+        if (existing.runId && existing.runId !== guardRunId) return null;
+      } catch {}
+    }
+  }
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,

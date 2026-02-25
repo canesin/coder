@@ -159,6 +159,7 @@ function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
         completedAt: diskState.completedAt,
       },
       sqlitePath: workflowSqlitePath(workspaceDir),
+      guardRunId: runId,
     });
   }
   return true;
@@ -541,7 +542,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             }
             // Force-cancel the old run: set flag, kill agents, await exit
             run.cancelToken.cancelled = true;
-            run.agentPool?.killAll().catch(() => {});
+            try {
+              await run.agentPool?.killAll();
+            } catch {}
             const actorEntry = workflowActors.get(id);
             if (actorEntry?.workspace === ws) {
               actorEntry.actor.send({
@@ -629,6 +632,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             workspaceDir: ws,
             verbose: config.verbose,
             steeringContext,
+            runId: nextRunId,
           });
 
           // Store run entry with agentPool so cancel can kill agents
@@ -780,7 +784,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           const run = activeRuns.get(runId);
           if (run) {
             run.cancelToken.cancelled = true;
-            run.agentPool?.killAll().catch(() => {});
+            try {
+              await run.agentPool?.killAll();
+            } catch {}
             const actorEntry = workflowActors.get(runId);
             if (actorEntry?.workspace === ws) {
               actorEntry.actor.send({
