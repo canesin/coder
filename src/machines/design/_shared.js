@@ -1,13 +1,12 @@
 import { McpAgent } from "../../agents/mcp-agent.js";
 
 /**
- * Resolve a Stitch MCP agent from config.
- * Shared by ui-generation and ui-refinement machines.
+ * Validate that Stitch config is present and well-formed.
+ * Throws immediately if disabled or missing required fields.
  *
  * @param {object} ctx - Workflow context
- * @returns {{ agentName: string, agent: McpAgent }}
  */
-export function resolveStitchAgent(ctx) {
+export function validateStitchConfig(ctx) {
   const stitchConfig = ctx.config.design?.stitch;
   if (!stitchConfig?.enabled) {
     throw new Error(
@@ -26,7 +25,20 @@ export function resolveStitchAgent(ctx) {
       "Stitch server URL not configured. Set design.stitch.serverUrl in coder.json.",
     );
   }
+}
 
+/**
+ * Resolve a Stitch MCP agent from config.
+ * Shared by ui-generation and ui-refinement machines.
+ *
+ * @param {object} ctx - Workflow context
+ * @returns {{ agentName: string, agent: McpAgent }}
+ */
+export function resolveStitchAgent(ctx) {
+  validateStitchConfig(ctx);
+
+  const stitchConfig = ctx.config.design.stitch;
+  const transport = stitchConfig.transport || "stdio";
   const apiKeyEnv = stitchConfig.apiKeyEnv || "GOOGLE_STITCH_API_KEY";
   const apiKey = process.env[apiKeyEnv] || "";
   const env = apiKey ? { [apiKeyEnv]: apiKey } : {};

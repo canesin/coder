@@ -1,4 +1,5 @@
 import { registerMachine } from "../machines/_registry.js";
+import { validateStitchConfig } from "../machines/design/_shared.js";
 import intentCaptureMachine from "../machines/design/intent-capture.machine.js";
 import specExportMachine from "../machines/design/spec-export.machine.js";
 import uiGenerationMachine from "../machines/design/ui-generation.machine.js";
@@ -40,6 +41,8 @@ export function registerDesignMachines() {
  * @param {import("../machines/_base.js").WorkflowContext} ctx
  */
 export async function runDesignPipeline(opts, ctx) {
+  validateStitchConfig(ctx);
+
   const runner = new WorkflowRunner({
     name: "design",
     workflowContext: ctx,
