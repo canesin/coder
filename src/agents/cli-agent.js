@@ -174,6 +174,7 @@ export class CliAgent extends AgentAdapter {
 
   async executeStructured(prompt, opts = {}) {
     const res = await this.execute(prompt, { ...opts, structured: true });
+    if (res.exitCode !== 0) return { ...res, parsed: undefined };
     const parsed =
       this.name === "gemini"
         ? extractGeminiPayloadJson(res.stdout)
