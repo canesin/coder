@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { formatCommandFailure } from "../../helpers.js";
 import {
   IssueItemSchema,
   IssuesPayloadSchema,
@@ -88,9 +89,9 @@ function loadLocalIssues(issuesDir) {
  * Fetch open GitHub issues via gh CLI.
  *
  * @param {string} cwd - Directory to run gh in (repo root)
- * @returns {object[] | null}
+ * @returns {object[]}
  */
-function fetchGithubIssues(cwd) {
+export function fetchGithubIssues(cwd) {
   const res = spawnSync(
     "gh",
     [
@@ -105,34 +106,50 @@ function fetchGithubIssues(cwd) {
     ],
     { cwd, encoding: "utf8", timeout: 15000 },
   );
-  if (res.status !== 0 || !res.stdout) return null;
-  try {
-    const issues = JSON.parse(res.stdout);
-    return Array.isArray(issues) ? issues : null;
-  } catch {
-    return null;
+  if (res.error) {
+    throw new Error(`gh: ${res.error.message}`);
   }
+  if (res.status !== 0) {
+    throw new Error(
+      formatCommandFailure("gh issue list failed", {
+        exitCode: res.status ?? 1,
+        stderr: res.stderr || "",
+        stdout: res.stdout || "",
+      }),
+    );
+  }
+  if (!res.stdout) return [];
+  const issues = JSON.parse(res.stdout);
+  return Array.isArray(issues) ? issues : [];
 }
 
 /**
  * Fetch open GitLab issues via glab CLI.
  *
  * @param {string} cwd - Directory to run glab in (repo root)
- * @returns {object[] | null}
+ * @returns {object[]}
  */
-function fetchGitlabIssues(cwd) {
+export function fetchGitlabIssues(cwd) {
   const res = spawnSync(
     "glab",
     ["issue", "list", "--output", "json", "--state", "opened"],
     { cwd, encoding: "utf8", timeout: 15000 },
   );
-  if (res.status !== 0 || !res.stdout) return null;
-  try {
-    const issues = JSON.parse(res.stdout);
-    return Array.isArray(issues) ? issues : null;
-  } catch {
-    return null;
+  if (res.error) {
+    throw new Error(`glab: ${res.error.message}`);
   }
+  if (res.status !== 0) {
+    throw new Error(
+      formatCommandFailure("glab issue list failed", {
+        exitCode: res.status ?? 1,
+        stderr: res.stderr || "",
+        stdout: res.stdout || "",
+      }),
+    );
+  }
+  if (!res.stdout) return [];
+  const issues = JSON.parse(res.stdout);
+  return Array.isArray(issues) ? issues : [];
 }
 
 export default defineMachine({
@@ -287,12 +304,12 @@ Return ONLY valid JSON in this schema:
       ctx.log({
         event: "step1_fetch",
         source: "github",
-        count: issues?.length ?? 0,
+        count: issues.length,
       });
       const issueList =
-        issues && issues.length > 0
+        issues.length > 0
           ? `Here are the open GitHub issues for this repo (fetched via gh CLI):\n${JSON.stringify(issues, null, 2)}`
-          : "No open GitHub issues found (gh CLI returned empty).";
+          : "No open GitHub issues found.";
       listPrompt = `${issueList}
 
 Use "github" as the source value and "#<number>" as the id (e.g. "#42").
@@ -302,12 +319,12 @@ ${TAIL}`;
       ctx.log({
         event: "step1_fetch",
         source: "gitlab",
-        count: issues?.length ?? 0,
+        count: issues.length,
       });
       const issueList =
-        issues && issues.length > 0
+        issues.length > 0
           ? `Here are the open GitLab issues for this repo (fetched via glab CLI):\n${JSON.stringify(issues, null, 2)}`
-          : "No open GitLab issues found (glab CLI returned empty).";
+          : "No open GitLab issues found.";
       listPrompt = `${issueList}
 
 Use "gitlab" as the source value and "#<iid>" as the id (e.g. "#42").
