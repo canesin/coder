@@ -52,11 +52,12 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.27.0",
     "cli-table3": "^0.6.5",
     "deepmerge": "^4.3.1",
     "jsonrepair": "^3.12.0",
     "p-retry": "^7.1.1",
+    "qs": "^6.15.0",
     "tree-sitter": "^0.25.0",
     "tree-sitter-bash": "^0.25.1",
     "tree-sitter-go": "^0.25.0",
@@ -80,6 +81,6 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.15"
+    "@biomejs/biome": "^2.4.4"
   }
 }
