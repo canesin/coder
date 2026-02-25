@@ -19,6 +19,11 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
 ];
 const CLAUDE_RESUME_FAILURE_PATTERNS = [
   "No conversation found with session ID",
+  "Conversation not found",
+  "Session not found",
+  "Invalid session ID",
+  "Conversation has expired",
+  "Session has expired",
 ];
 const SUPPORTED_AGENTS = new Set(["gemini", "claude", "codex"]);
 
@@ -166,7 +171,7 @@ export class CliAgent extends AgentAdapter {
     const isClaude = this.name === "claude";
     const defaultPatterns = isGemini
       ? GEMINI_AUTH_FAILURE_PATTERNS
-      : isClaude && opts.resumeId
+      : isClaude && (opts.resumeId || opts.sessionId)
         ? CLAUDE_RESUME_FAILURE_PATTERNS
         : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;

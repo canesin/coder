@@ -46,7 +46,77 @@ test("CliAgent wires CLAUDE_RESUME_FAILURE_PATTERNS when claude + resumeId", asy
   );
 });
 
-test("CliAgent does NOT add resume patterns for claude without resumeId", async () => {
+test("CliAgent wires CLAUDE_RESUME_FAILURE_PATTERNS when claude + sessionId", async () => {
+  const config = makeConfig();
+  const agent = new CliAgent("claude", {
+    cwd: "/tmp",
+    secrets: {},
+    config,
+    workspaceDir: "/tmp",
+  });
+
+  let capturedOpts;
+  agent._ensureSandbox = async () => ({
+    commands: {
+      run(_cmd, opts) {
+        capturedOpts = opts;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    },
+  });
+
+  await agent.execute("test prompt", { sessionId: "fake-uuid" });
+  assert.ok(
+    capturedOpts.killOnStderrPatterns.length > 0,
+    "should include Claude resume failure patterns when sessionId is provided",
+  );
+  assert.ok(
+    capturedOpts.killOnStderrPatterns.some((p) =>
+      p.includes("No conversation found with session ID"),
+    ),
+    "should include Claude resume failure pattern",
+  );
+});
+
+test("All expected Claude resume failure patterns are present", async () => {
+  const config = makeConfig();
+  const agent = new CliAgent("claude", {
+    cwd: "/tmp",
+    secrets: {},
+    config,
+    workspaceDir: "/tmp",
+  });
+
+  let capturedOpts;
+  agent._ensureSandbox = async () => ({
+    commands: {
+      run(_cmd, opts) {
+        capturedOpts = opts;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    },
+  });
+
+  await agent.execute("test prompt", { resumeId: "fake-uuid" });
+
+  const expected = [
+    "No conversation found with session ID",
+    "Conversation not found",
+    "Session not found",
+    "Invalid session ID",
+    "Conversation has expired",
+    "Session has expired",
+  ];
+  assert.equal(capturedOpts.killOnStderrPatterns.length, expected.length);
+  for (const pattern of expected) {
+    assert.ok(
+      capturedOpts.killOnStderrPatterns.some((p) => p.includes(pattern)),
+      `should include pattern: "${pattern}"`,
+    );
+  }
+});
+
+test("CliAgent does NOT add resume patterns for claude without resumeId or sessionId", async () => {
   const config = makeConfig();
   const agent = new CliAgent("claude", {
     cwd: "/tmp",
