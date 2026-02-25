@@ -91,7 +91,7 @@ function loadLocalIssues(issuesDir) {
  * @param {string} cwd - Directory to run gh in (repo root)
  * @returns {object[]}
  */
-export function fetchGithubIssues(cwd) {
+function fetchGithubIssues(cwd) {
   const res = spawnSync(
     "gh",
     [
@@ -119,8 +119,20 @@ export function fetchGithubIssues(cwd) {
     );
   }
   if (!res.stdout) return [];
-  const issues = JSON.parse(res.stdout);
-  return Array.isArray(issues) ? issues : [];
+  let parsed;
+  try {
+    parsed = JSON.parse(res.stdout);
+  } catch {
+    throw new Error(
+      `gh returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `gh returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+    );
+  }
+  return parsed;
 }
 
 /**
@@ -129,7 +141,7 @@ export function fetchGithubIssues(cwd) {
  * @param {string} cwd - Directory to run glab in (repo root)
  * @returns {object[]}
  */
-export function fetchGitlabIssues(cwd) {
+function fetchGitlabIssues(cwd) {
   const res = spawnSync(
     "glab",
     ["issue", "list", "--output", "json", "--state", "opened"],
@@ -148,8 +160,20 @@ export function fetchGitlabIssues(cwd) {
     );
   }
   if (!res.stdout) return [];
-  const issues = JSON.parse(res.stdout);
-  return Array.isArray(issues) ? issues : [];
+  let parsed;
+  try {
+    parsed = JSON.parse(res.stdout);
+  } catch {
+    throw new Error(
+      `glab returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `glab returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+    );
+  }
+  return parsed;
 }
 
 export default defineMachine({
