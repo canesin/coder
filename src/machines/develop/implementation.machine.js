@@ -129,10 +129,28 @@ FORBIDDEN patterns:
 - Do not bypass tests
 - Use the repo's normal commands (lint, format, test)`;
 
-    const res = await programmerAgent.execute(implPrompt, {
-      resumeId: state.claudeSessionId || undefined,
-      timeoutMs: ctx.config.workflow.timeouts.implementation,
-    });
+    let res;
+    try {
+      res = await programmerAgent.execute(implPrompt, {
+        resumeId: state.claudeSessionId || undefined,
+        timeoutMs: ctx.config.workflow.timeouts.implementation,
+      });
+    } catch (err) {
+      if (err.name === "CommandAuthError" && state.claudeSessionId) {
+        ctx.log({
+          event: "session_resume_failed",
+          sessionId: state.claudeSessionId,
+        });
+        state.claudeSessionId = null;
+        saveState(ctx.workspaceDir, state);
+        // Fresh session loses prior planning context — acceptable per GH-89
+        res = await programmerAgent.execute(implPrompt, {
+          timeoutMs: ctx.config.workflow.timeouts.implementation,
+        });
+      } else {
+        throw err;
+      }
+    }
     requireExitZero(programmerName, "implementation failed", res);
 
     state.steps.implemented = true;

@@ -204,10 +204,32 @@ Constraints:
 
       let res;
       try {
-        res = await plannerAgent.execute(prompt, {
-          ...sessionOpts,
-          timeoutMs: ctx.config.workflow.timeouts.planning,
-        });
+        try {
+          res = await plannerAgent.execute(prompt, {
+            ...sessionOpts,
+            timeoutMs: ctx.config.workflow.timeouts.planning,
+          });
+        } catch (err) {
+          if (err.name === "CommandAuthError" && sessionOpts.resumeId) {
+            ctx.log({
+              event: "session_resume_failed",
+              sessionId: state.claudeSessionId,
+            });
+            state.claudeSessionId = randomUUID();
+            saveState(ctx.workspaceDir, state);
+            // Fresh session needs full planPrompt even during REVISE/constraint rounds
+            const retryPrompt =
+              prompt === planPrompt || prompt.startsWith(planPrompt)
+                ? prompt
+                : `${planPrompt}\n\n${prompt}`;
+            res = await plannerAgent.execute(retryPrompt, {
+              sessionId: state.claudeSessionId,
+              timeoutMs: ctx.config.workflow.timeouts.planning,
+            });
+          } else {
+            throw err;
+          }
+        }
         requireExitZero(plannerName, "plan generation failed", res);
       } catch (err) {
         state.claudeSessionId = null;

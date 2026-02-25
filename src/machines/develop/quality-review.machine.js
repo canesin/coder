@@ -333,10 +333,29 @@ export default defineMachine({
               ? { sessionId: state.reviewerSessionId }
               : { resumeId: state.reviewerSessionId };
 
-          const reviewRes = await reviewerAgent.execute(reviewPrompt, {
-            ...reviewSessionOpts,
-            timeoutMs: ctx.config.workflow.timeouts.reviewRound,
-          });
+          let reviewRes;
+          try {
+            reviewRes = await reviewerAgent.execute(reviewPrompt, {
+              ...reviewSessionOpts,
+              timeoutMs: ctx.config.workflow.timeouts.reviewRound,
+            });
+          } catch (err) {
+            if (err.name === "CommandAuthError" && reviewSessionOpts.resumeId) {
+              ctx.log({
+                event: "session_resume_failed",
+                sessionId: state.reviewerSessionId,
+              });
+              state.reviewerSessionId = randomUUID();
+              saveState(ctx.workspaceDir, state);
+              // Fresh session loses prior review context — acceptable per GH-89
+              reviewRes = await reviewerAgent.execute(reviewPrompt, {
+                sessionId: state.reviewerSessionId,
+                timeoutMs: ctx.config.workflow.timeouts.reviewRound,
+              });
+            } else {
+              throw err;
+            }
+          }
           requireExitZero(reviewerName, `review round ${round}`, reviewRes);
 
           // Parse verdict from file
@@ -372,10 +391,28 @@ export default defineMachine({
         ctx.log({ event: "programmer_fix", round, agent: programmerName });
 
         const fixPrompt = buildProgrammerFixPrompt(paths, round);
-        const fixRes = await programmerAgent.execute(fixPrompt, {
-          resumeId: state.claudeSessionId || undefined,
-          timeoutMs: ctx.config.workflow.timeouts.programmerFix,
-        });
+        let fixRes;
+        try {
+          fixRes = await programmerAgent.execute(fixPrompt, {
+            resumeId: state.claudeSessionId || undefined,
+            timeoutMs: ctx.config.workflow.timeouts.programmerFix,
+          });
+        } catch (err) {
+          if (err.name === "CommandAuthError" && state.claudeSessionId) {
+            ctx.log({
+              event: "session_resume_failed",
+              sessionId: state.claudeSessionId,
+            });
+            state.claudeSessionId = null;
+            saveState(ctx.workspaceDir, state);
+            // Fresh session loses prior context — acceptable per GH-89
+            fixRes = await programmerAgent.execute(fixPrompt, {
+              timeoutMs: ctx.config.workflow.timeouts.programmerFix,
+            });
+          } else {
+            throw err;
+          }
+        }
         requireExitZero(programmerName, `fix round ${round}`, fixRes);
 
         state.steps.programmerFixedRound = round;
