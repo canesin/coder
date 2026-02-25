@@ -14,6 +14,7 @@ import {
   gitCleanOrThrow,
   runHostTests,
   sanitizeIssueMarkdown,
+  shellEscape,
   stripAgentNoise,
   TestInfrastructureError,
 } from "../src/helpers.js";
@@ -213,6 +214,26 @@ test("runHostTests does not throw TestInfrastructureError when cargo is run afte
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tests-"));
   const res = await runHostTests(dir, { testCmd: "cd rust && cargo test" });
   assert.notEqual(res.exitCode, 0);
+});
+
+test("shellEscape wraps plain string in single quotes", () => {
+  assert.equal(shellEscape("gemini-pro"), "'gemini-pro'");
+});
+
+test("shellEscape escapes embedded single quote", () => {
+  assert.equal(shellEscape("it's"), "'it'\\''s'");
+});
+
+test("shellEscape escapes shell metacharacters via quoting", () => {
+  assert.equal(shellEscape("'; touch /tmp/x; #"), "''\\''; touch /tmp/x; #'");
+});
+
+test("shellEscape handles empty string", () => {
+  assert.equal(shellEscape(""), "''");
+});
+
+test("shellEscape coerces number to string", () => {
+  assert.equal(shellEscape(42), "'42'");
 });
 
 test("buildPrBodyFromIssue returns a sanitized top section", () => {
