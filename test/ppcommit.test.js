@@ -218,3 +218,33 @@ test("ppcommit all: clean repo passes", async () => {
   const r = await runPpcommitAll(repo);
   assert.equal(r.exitCode, 0);
 });
+
+// --- gitleaks ENOENT tests (spawned subprocess for fresh module state) ---
+
+test("ppcommit: gitleaks missing from PATH produces actionable error", async () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
+  const srcPath = path.resolve(import.meta.dirname, "..", "src", "ppcommit.js");
+  const script = `
+    import { runPpcommitNative } from ${JSON.stringify("file://" + srcPath)};
+    try {
+      await runPpcommitNative(${JSON.stringify(repo)}, { blockSecrets: true });
+      process.stdout.write("NO_ERROR");
+    } catch (e) {
+      process.stdout.write(e.message);
+    }
+  `;
+  // Include node + git dirs but exclude gitleaks
+  const nodeBin = path.dirname(process.execPath);
+  const restrictedPath = `${nodeBin}:/usr/bin:/bin`;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    timeout: 15000,
+    env: { ...process.env, PATH: restrictedPath, NODE_ENV: "test" },
+  });
+  const out = r.stdout || "";
+  assert.doesNotMatch(out, /NO_ERROR/, "should have thrown an error");
+  assert.match(out, /gitleaks binary not found in PATH/);
+  assert.match(out, /gitleaks\/gitleaks/);
+  assert.match(out, /blockSecrets/);
+});

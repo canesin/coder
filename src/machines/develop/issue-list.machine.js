@@ -105,7 +105,22 @@ function fetchGithubIssues(cwd) {
     ],
     { cwd, encoding: "utf8", timeout: 15000 },
   );
-  if (res.status !== 0 || !res.stdout) return null;
+  if (res.error?.code === "ENOENT") {
+    throw new Error(
+      `gh CLI not found in PATH.\n` +
+        `  PATH searched: ${process.env.PATH}\n` +
+        `  Install: https://cli.github.com/`,
+    );
+  }
+  if (res.error) {
+    throw new Error(`gh issue list failed: ${res.error.message}`);
+  }
+  if (res.status !== 0) {
+    throw new Error(
+      `gh issue list failed (exit ${res.status}): ${(res.stderr || "").trim()}`,
+    );
+  }
+  if (!res.stdout) return null;
   try {
     const issues = JSON.parse(res.stdout);
     return Array.isArray(issues) ? issues : null;
@@ -126,7 +141,22 @@ function fetchGitlabIssues(cwd) {
     ["issue", "list", "--output", "json", "--state", "opened"],
     { cwd, encoding: "utf8", timeout: 15000 },
   );
-  if (res.status !== 0 || !res.stdout) return null;
+  if (res.error?.code === "ENOENT") {
+    throw new Error(
+      `glab CLI not found in PATH.\n` +
+        `  PATH searched: ${process.env.PATH}\n` +
+        `  Install: https://gitlab.com/gitlab-org/cli#installation`,
+    );
+  }
+  if (res.error) {
+    throw new Error(`glab issue list failed: ${res.error.message}`);
+  }
+  if (res.status !== 0) {
+    throw new Error(
+      `glab issue list failed (exit ${res.status}): ${(res.stderr || "").trim()}`,
+    );
+  }
+  if (!res.stdout) return null;
   try {
     const issues = JSON.parse(res.stdout);
     return Array.isArray(issues) ? issues : null;
