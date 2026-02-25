@@ -32,11 +32,11 @@ export function resolveAgentName(name) {
 }
 
 /**
- * CLI-based agent — wraps HostSandboxProvider for gemini/claude/codex.
+ * CLI-based agent — wraps HostSandboxProvider for shell-based LLM tools.
  */
 export class CliAgent extends AgentAdapter {
   /**
-   * @param {string} agentName - "gemini" | "claude" | "codex"
+   * @param {string} agentName - Agent identifier (alphanumerics, dots, hyphens, underscores)
    * @param {{
    *   cwd: string,
    *   secrets: Record<string, string>,
