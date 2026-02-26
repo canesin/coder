@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { assign, setup } from "xstate";
 import { z } from "zod";
@@ -12,6 +18,24 @@ const WORKFLOW_STATE_SCHEMA_VERSION = 2;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function atomicWriteJson(filePath, data) {
+  const dir = path.dirname(filePath);
+  const tmpPath = filePath + ".tmp";
+  let op = "mkdir";
+  try {
+    mkdirSync(dir, { recursive: true });
+    op = "write";
+    writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf8");
+    op = "rename";
+    renameSync(tmpPath, filePath);
+  } catch (err) {
+    const code = err.code ? ` (${err.code})` : "";
+    throw new Error(
+      `Failed to write state ${filePath} [${op}]${code}: ${err.message}`,
+    );
+  }
 }
 
 function persistSnapshotToSqlite(sqlitePath, payload) {
@@ -66,17 +90,32 @@ export function saveWorkflowSnapshot(
     updatedAt: nowIso(),
   };
   const statePath = workflowStatePathFor(workspaceDir);
-  mkdirSync(path.dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  atomicWriteJson(statePath, payload);
   persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
 export function saveWorkflowTerminalState(
   workspaceDir,
-  { runId, workflow = "develop", state, context = {}, sqlitePath = "" },
+  {
+    runId,
+    workflow = "develop",
+    state,
+    context = {},
+    sqlitePath = "",
+    guardRunId = "",
+  },
 ) {
   if (!runId || !state) return null;
+  if (guardRunId) {
+    const statePath = workflowStatePathFor(workspaceDir);
+    if (existsSync(statePath)) {
+      try {
+        const existing = JSON.parse(readFileSync(statePath, "utf8"));
+        if (existing.runId && existing.runId !== guardRunId) return null;
+      } catch {}
+    }
+  }
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,
@@ -86,8 +125,7 @@ export function saveWorkflowTerminalState(
     updatedAt: nowIso(),
   };
   const statePath = workflowStatePathFor(workspaceDir);
-  mkdirSync(path.dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  atomicWriteJson(statePath, payload);
   persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
@@ -97,7 +135,8 @@ export function loadWorkflowSnapshot(workspaceDir) {
   if (!existsSync(p)) return null;
   try {
     return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
+  } catch (err) {
+    console.error(`[coder] corrupt workflow state ${p}: ${err.message}`);
     return null;
   }
 }
@@ -287,8 +326,7 @@ export function saveLoopState(
       } catch {}
     }
   }
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(loopState, null, 2) + "\n");
+  atomicWriteJson(p, loopState);
 }
 
 // --- Per-issue state ---
@@ -391,6 +429,5 @@ export function loadState(workspaceDir) {
 
 export function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(state, null, 2) + "\n");
+  atomicWriteJson(p, state);
 }
