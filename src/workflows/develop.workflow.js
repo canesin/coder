@@ -27,6 +27,19 @@ import {
 import { buildIssueBranchName } from "../worktrees.js";
 import { runHooks, WorkflowRunner } from "./_base.js";
 
+/**
+ * Update the loop state heartbeat timestamp.
+ */
+function updateHeartbeat(ctx) {
+  try {
+    const ls = loadLoopState(ctx.workspaceDir);
+    ls.lastHeartbeatAt = new Date().toISOString();
+    saveLoopState(ctx.workspaceDir, ls, { guardRunId: ls.runId });
+  } catch {
+    // Best-effort — don't fail the pipeline over a heartbeat update
+  }
+}
+
 // Re-export machines for direct use
 export {
   issueListMachine,
@@ -69,8 +82,9 @@ export function registerDevelopMachines() {
 export async function runPlanLoop(
   runner,
   ctx,
-  { planningMachine: pm, planReviewMachine: prm, maxRounds = 3 } = {},
+  { planningMachine: pm, planReviewMachine: prm, maxRounds } = {},
 ) {
+  maxRounds = maxRounds ?? ctx.config?.workflow?.maxPlanRevisions ?? 3;
   const allResults = [];
   let priorCritique = "";
 
@@ -108,10 +122,20 @@ export async function runPlanLoop(
     }
 
     const verdict = reviewRound.results[0]?.data?.verdict;
-    ctx.log({ event: "plan_review_verdict", verdict, round });
+    ctx.log({ event: "plan_review_verdict", verdict, round, maxRounds });
 
     const needsRevision = verdict === "REVISE" || verdict === "REJECT";
-    if (!needsRevision || round === maxRounds - 1) break;
+    if (!needsRevision || round === maxRounds - 1) {
+      if (needsRevision && round === maxRounds - 1) {
+        ctx.log({
+          event: "plan_review_exhausted",
+          lastVerdict: verdict,
+          roundsUsed: round + 1,
+          maxRounds,
+        });
+      }
+      break;
+    }
 
     priorCritique = reviewRound.results[0]?.data?.critiqueMd || "";
     const state = loadState(ctx.workspaceDir);
@@ -177,6 +201,9 @@ export async function runDevelopPipeline(opts, ctx) {
     return { ...phase1, results: allResults, durationMs: Date.now() - start };
   }
 
+  // Heartbeat after phase 1 (issue draft)
+  updateHeartbeat(ctx);
+
   if (ctx.cancelToken.cancelled) {
     return {
       status: "cancelled",
@@ -201,6 +228,9 @@ export async function runDevelopPipeline(opts, ctx) {
       durationMs: Date.now() - start,
     };
   }
+
+  // Heartbeat after phase 2 (planning + review)
+  updateHeartbeat(ctx);
 
   if (ctx.cancelToken.cancelled) {
     return {
@@ -241,6 +271,10 @@ export async function runDevelopPipeline(opts, ctx) {
     {},
   );
   allResults.push(...phase3.results);
+
+  // Heartbeat after phase 3 (implementation + review + PR)
+  updateHeartbeat(ctx);
+
   return { ...phase3, results: allResults, durationMs: Date.now() - start };
 }
 
@@ -438,6 +472,9 @@ export async function runDevelopLoop(opts, ctx) {
     loopState.currentIndex = i;
     loopState.currentStage = isRetry ? "retry" : "processing";
     loopState.lastHeartbeatAt = new Date().toISOString();
+    loopState.issueQueue[i].status = "in_progress";
+    loopState.issueQueue[i].branch = buildIssueBranchName(issue);
+    loopState.issueQueue[i].startedAt = new Date().toISOString();
     saveLoopState(ctx.workspaceDir, loopState, { guardRunId: loopState.runId });
 
     const issueEnv = {

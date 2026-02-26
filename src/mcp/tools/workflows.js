@@ -22,7 +22,7 @@ import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
 
-const HEARTBEAT_STALE_MS = 30_000;
+const HEARTBEAT_STALE_MS = 900_000;
 
 /** @type {Map<string, { actor: ReturnType<typeof createActor>, workspace: string, sqlitePath: string }>} */
 const workflowActors = new Map();
@@ -88,6 +88,8 @@ function isPidAlive(pid) {
   }
 }
 
+const HEARTBEAT_TRULY_STUCK_MS = 1_800_000; // 30 minutes
+
 function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
   const heartbeatTs = lastHeartbeatAt ? Date.parse(lastHeartbeatAt) : NaN;
   const heartbeatAgeMs = Number.isFinite(heartbeatTs)
@@ -99,12 +101,24 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
   const shouldCheckStale =
     status === "running" || status === "paused" || status === "cancelling";
   const pidStale = shouldCheckStale && runnerAlive === false;
-  const isStale = shouldCheckStale && (heartbeatStale || pidStale);
-  const staleReason = isStale
-    ? pidStale
-      ? "runner_process_not_alive"
-      : "heartbeat_stale"
-    : null;
+
+  // Trust PID over heartbeat: if the runner process is alive but heartbeat is
+  // stale, don't mark as stale unless heartbeat exceeds the truly-stuck threshold
+  const heartbeatTrulyStuck =
+    heartbeatAgeMs !== null && heartbeatAgeMs > HEARTBEAT_TRULY_STUCK_MS;
+  const isStale =
+    shouldCheckStale &&
+    (pidStale || (heartbeatStale && (!runnerAlive || heartbeatTrulyStuck)));
+
+  let staleReason = null;
+  if (isStale) {
+    if (pidStale) staleReason = "runner_process_not_alive";
+    else if (heartbeatTrulyStuck) staleReason = "heartbeat_truly_stuck";
+    else staleReason = "heartbeat_stale";
+  } else if (shouldCheckStale && heartbeatStale && runnerAlive) {
+    staleReason = "heartbeat_stale_runner_alive";
+  }
+
   return {
     heartbeatAgeMs,
     runnerPid: runnerPid ?? null,

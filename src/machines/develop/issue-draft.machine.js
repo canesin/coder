@@ -194,6 +194,15 @@ export default defineMachine({
     state.scratchpadPath = path.relative(ctx.workspaceDir, scratchpadPath);
     saveState(ctx.workspaceDir, state);
 
+    // When force=true (re-run), reset dirty state before branch operations
+    if (input.force) {
+      spawnSync("git", ["checkout", "--", "."], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      spawnSync("git", ["clean", "-fd"], { cwd: repoRoot, encoding: "utf8" });
+    }
+
     // Verify clean repo, then set up ignore files
     gitCleanOrThrow(repoRoot);
     ensureGitignore(ctx.workspaceDir);
@@ -202,18 +211,34 @@ export default defineMachine({
 
     // Optional base branch checkout for stacked PRs
     if (state.baseBranch) {
+      // Fetch the branch in case it only exists on the remote (#108)
+      spawnSync("git", ["fetch", "origin", state.baseBranch], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
       const baseCheckout = spawnSync("git", ["checkout", state.baseBranch], {
         cwd: repoRoot,
         encoding: "utf8",
       });
       if (baseCheckout.status !== 0) {
-        throw new Error(
-          `Failed to checkout base branch ${state.baseBranch}: ${baseCheckout.stderr || baseCheckout.stdout}`,
+        // Try creating a local tracking branch from the remote
+        const trackCheckout = spawnSync(
+          "git",
+          ["checkout", "-b", state.baseBranch, `origin/${state.baseBranch}`],
+          { cwd: repoRoot, encoding: "utf8" },
         );
+        if (trackCheckout.status !== 0) {
+          throw new Error(
+            `Failed to checkout base branch ${state.baseBranch}: ${baseCheckout.stderr || baseCheckout.stdout}`,
+          );
+        }
       }
     }
 
-    ensureBranch(repoRoot, state.branch);
+    ensureBranch(repoRoot, state.branch, {
+      baseBranch: state.baseBranch || undefined,
+      forceRecreate: input.force,
+    });
 
     // Draft ISSUE.md
     ctx.log({ event: "step2_draft_issue", issue: input.issue });
@@ -259,6 +284,7 @@ Scratchpad for iterative notes:
 - keep temporary notes in this scratchpad (not in \`issues/\`)
 
 Output ONLY markdown suitable for writing directly to ISSUE.md.
+If you wrote ISSUE.md to disk via a tool, also output its full contents to stdout.
 
 ## Required Sections (in order)
 1. **Metadata**: Source, Issue ID, Repo Root (relative path)
@@ -297,15 +323,26 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
           dropLeadingOnly: true,
         }).trim();
         if (!fallback.startsWith("#")) {
-          const rawPreview = (res.stdout || "")
-            .slice(0, 300)
-            .replace(/\n/g, "\\n");
-          throw new Error(
-            `${agentName} draft output did not contain valid ISSUE.md markdown. ` +
-              `Raw output preview: "${rawPreview}"`,
-          );
+          // Try extracting markdown that starts after a preamble (find first `# ` line)
+          const lines = (res.stdout || "").split("\n");
+          const mdStart = lines.findIndex((l) => /^#\s/.test(l));
+          if (mdStart >= 0) {
+            issueMd =
+              sanitizeIssueMarkdown(lines.slice(mdStart).join("\n").trimEnd()) +
+              "\n";
+          } else {
+            const rawPreview = (res.stdout || "")
+              .slice(0, 300)
+              .replace(/\n/g, "\\n");
+            throw new Error(
+              `${agentName} draft output did not contain valid ISSUE.md markdown. ` +
+                `Check .coder/artifacts/ISSUE.md — the agent may have written it to disk ` +
+                `without outputting it. Raw output preview: "${rawPreview}"`,
+            );
+          }
+        } else {
+          issueMd = fallback + "\n";
         }
-        issueMd = fallback + "\n";
       }
       writeFileSync(paths.issue, issueMd);
     }
