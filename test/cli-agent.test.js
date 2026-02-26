@@ -27,18 +27,19 @@ function makeAgent(agentName, modelOverride) {
 const MALICIOUS = "'; touch /tmp/pwned; #";
 const ESCAPED_MALICIOUS = "''\\''; touch /tmp/pwned; #'";
 
-test("gemini: malicious sessionId is shell-escaped", () => {
+test("gemini: sessionId is ignored (no Gemini equivalent)", () => {
   const agent = makeAgent("gemini");
-  const cmd = agent._buildCommand("prompt", { sessionId: MALICIOUS });
-  assert.ok(cmd.includes(`--sandbox-id ${ESCAPED_MALICIOUS}`));
-  assert.ok(!cmd.includes(`--sandbox-id '; touch`));
+  const cmd = agent._buildCommand("prompt", { sessionId: "some-id" });
+  assert.ok(!cmd.includes("--sandbox-id"));
+  assert.ok(!cmd.includes("--session-id"));
+  assert.ok(!cmd.includes("--resume"));
 });
 
-test("gemini: malicious resumeId is shell-escaped", () => {
+test("gemini: resumeId maps to --resume latest", () => {
   const agent = makeAgent("gemini");
-  const cmd = agent._buildCommand("prompt", { resumeId: MALICIOUS });
-  assert.ok(cmd.includes(`--sandbox-id ${ESCAPED_MALICIOUS}`));
-  assert.ok(!cmd.includes(`--sandbox-id '; touch`));
+  const cmd = agent._buildCommand("prompt", { resumeId: "some-id" });
+  assert.ok(cmd.includes("--resume latest"));
+  assert.ok(!cmd.includes("--sandbox-id"));
 });
 
 test("gemini: malicious modelName is shell-escaped", () => {
