@@ -194,6 +194,9 @@ export default defineMachine({
     state.scratchpadPath = path.relative(ctx.workspaceDir, scratchpadPath);
     saveState(ctx.workspaceDir, state);
 
+    // Ensure .gitignore rules exist BEFORE any cleanup so .coder/ is protected
+    ensureGitignore(ctx.workspaceDir);
+
     // When force=true (re-run), reset dirty state before branch operations
     if (input.force) {
       spawnSync("git", ["checkout", "--", "."], {
@@ -203,9 +206,8 @@ export default defineMachine({
       spawnSync("git", ["clean", "-fd"], { cwd: repoRoot, encoding: "utf8" });
     }
 
-    // Verify clean repo, then set up ignore files
+    // Verify clean repo
     gitCleanOrThrow(repoRoot);
-    ensureGitignore(ctx.workspaceDir);
     state.steps.verifiedCleanRepo = true;
     saveState(ctx.workspaceDir, state);
 
