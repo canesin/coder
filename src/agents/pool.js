@@ -228,6 +228,7 @@ export class AgentPool {
     const keyId = transport === "http" ? serverUrl : serverCommand;
     const key = `mcp:${serverName}:${keyId}`;
     if (!this._agents.has(key)) {
+      const retryCfg = this.config.agents?.retry;
       this._agents.set(
         key,
         new McpAgent({
@@ -238,6 +239,8 @@ export class AgentPool {
           authHeader: opts.authHeader || "",
           env: opts.env || {},
           serverName,
+          retries: retryCfg?.retries ?? 3,
+          backoffMs: retryCfg?.backoffMs ?? 1000,
         }),
       );
     }

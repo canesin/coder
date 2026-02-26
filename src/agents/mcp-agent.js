@@ -1,7 +1,27 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import pRetry, { AbortError } from "p-retry";
 import { AgentAdapter } from "./_base.js";
+
+const TRANSIENT_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function isTransientError(err) {
+  if (TRANSIENT_CODES.has(err.code)) return true;
+  if (err instanceof TypeError && /fetch failed/i.test(err.message))
+    return true;
+  // Duck-type StreamableHTTPError (numeric .code = HTTP status)
+  if (typeof err.code === "number") return err.code >= 500;
+  return false;
+}
 
 /**
  * McpAgent — connects to an external MCP server and calls tools programmatically.
@@ -24,6 +44,8 @@ export class McpAgent extends AgentAdapter {
    *   authHeader?: string,
    *   env?: Record<string, string>,
    *   serverName?: string,
+   *   retries?: number,
+   *   backoffMs?: number,
    * }} opts
    */
   constructor(opts) {
@@ -35,6 +57,8 @@ export class McpAgent extends AgentAdapter {
     this.authHeader = opts.authHeader || "";
     this.env = opts.env || {};
     this.serverName = opts.serverName || "mcp-server";
+    this._retries = opts.retries ?? 3;
+    this._backoffMs = opts.backoffMs ?? 1000;
 
     /** @type {Client|null} */
     this._client = null;
@@ -44,48 +68,78 @@ export class McpAgent extends AgentAdapter {
     this._toolsCache = null;
   }
 
+  _withRetry(fn, label) {
+    if (this.transportType !== "http" || this._retries === 0) return fn();
+    return pRetry(
+      async () => {
+        try {
+          return await fn();
+        } catch (err) {
+          if (!isTransientError(err)) throw new AbortError(err);
+          throw err;
+        }
+      },
+      {
+        retries: this._retries,
+        minTimeout: this._backoffMs,
+        factor: 2,
+        onFailedAttempt: (err) => {
+          process.stderr.write(
+            `[mcp-agent] ${label} attempt=${err.attemptNumber} left=${err.retriesLeft} error=${err.message?.slice(0, 200)}\n`,
+          );
+        },
+      },
+    );
+  }
+
   async _ensureClient() {
     if (this._client) return this._client;
 
-    if (this.transportType === "http") {
-      if (!this.serverUrl) {
-        throw new Error("McpAgent: serverUrl is required for HTTP transport.");
-      }
-      const url = new URL(this.serverUrl);
-      const requestInit = {};
+    return this._withRetry(async () => {
+      // Reset stale state from a prior failed attempt
+      this._client = null;
+      this._transport = null;
 
-      // Set auth header if API key is available
-      if (this.authHeader) {
-        // Look for the API key in env (passed from config resolution)
-        const apiKey = Object.values(this.env)[0] || "";
-        if (apiKey) {
-          requestInit.headers = { [this.authHeader]: apiKey };
+      if (this.transportType === "http") {
+        if (!this.serverUrl) {
+          throw new Error(
+            "McpAgent: serverUrl is required for HTTP transport.",
+          );
         }
+        const url = new URL(this.serverUrl);
+        const requestInit = {};
+
+        if (this.authHeader) {
+          const apiKey = Object.values(this.env)[0] || "";
+          if (apiKey) {
+            requestInit.headers = { [this.authHeader]: apiKey };
+          }
+        }
+
+        this._transport = new StreamableHTTPClientTransport(url, {
+          requestInit,
+        });
+      } else {
+        if (!this.serverCommand) {
+          throw new Error(
+            "McpAgent: serverCommand is required for stdio transport.",
+          );
+        }
+        this._transport = new StdioClientTransport({
+          command: this.serverCommand,
+          args: this.serverArgs,
+          env: { ...process.env, ...this.env },
+        });
       }
 
-      this._transport = new StreamableHTTPClientTransport(url, {
-        requestInit,
-      });
-    } else {
-      if (!this.serverCommand) {
-        throw new Error(
-          "McpAgent: serverCommand is required for stdio transport.",
-        );
-      }
-      this._transport = new StdioClientTransport({
-        command: this.serverCommand,
-        args: this.serverArgs,
-        env: { ...process.env, ...this.env },
-      });
-    }
+      this._client = new Client(
+        { name: "coder-mcp-agent", version: "1.0.0" },
+        { capabilities: {} },
+      );
 
-    this._client = new Client(
-      { name: "coder-mcp-agent", version: "1.0.0" },
-      { capabilities: {} },
-    );
-
-    await this._client.connect(this._transport);
-    return this._client;
+      await this._client.connect(this._transport);
+      return this._client;
+    }, "connect");
   }
 
   /**
@@ -94,7 +148,7 @@ export class McpAgent extends AgentAdapter {
    */
   async listTools() {
     const client = await this._ensureClient();
-    const result = await client.listTools();
+    const result = await this._withRetry(() => client.listTools(), "listTools");
     const tools = result.tools || [];
     this._toolsCache = new Map(tools.map((t) => [t.name, t]));
     return tools;
@@ -108,7 +162,10 @@ export class McpAgent extends AgentAdapter {
    */
   async callTool(toolName, args = {}) {
     const client = await this._ensureClient();
-    return client.callTool({ name: toolName, arguments: args });
+    return this._withRetry(
+      () => client.callTool({ name: toolName, arguments: args }),
+      "callTool",
+    );
   }
 
   /**
