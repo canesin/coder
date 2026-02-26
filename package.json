@@ -1,5 +1,5 @@
 {
-  "name": "@canesin/coder-mcp",
+  "name": "@canesin/coder",
   "version": "1.0.0-rc.0",
   "description": "Multi-agent coding workflow orchestrator (gemini-cli + claude-code + codex-cli)",
   "license": "MIT",
