@@ -109,9 +109,20 @@ export default defineMachine({
     // Session strategy: the first planning call creates a named session with --session-id.
     // All subsequent calls in this issue (REVISE rounds, implementation, fix, review) resume
     // with --resume so the agent retains full conversation context across the workflow.
-    const creatingSession = !state.claudeSessionId;
+    const agentChanged =
+      state.plannerAgentName && state.plannerAgentName !== plannerName;
+    if (agentChanged) {
+      ctx.log({
+        event: "planner_agent_changed",
+        previous: state.plannerAgentName,
+        current: plannerName,
+        action: "creating_fresh_session",
+      });
+    }
+    const creatingSession = !state.claudeSessionId || agentChanged;
     if (creatingSession) {
       state.claudeSessionId = randomUUID();
+      state.plannerAgentName = plannerName;
       saveState(ctx.workspaceDir, state);
     }
 
