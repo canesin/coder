@@ -75,3 +75,16 @@ test("claude: malicious model name is shell-escaped", () => {
   assert.ok(cmd.includes(`--model ${ESCAPED_MALICIOUS}`));
   assert.ok(!cmd.includes(`--model '; touch`));
 });
+
+test("GH-81: executeStructured skips JSON parse on non-zero exitCode", async () => {
+  const agent = makeAgent("gemini");
+  agent.execute = async () => ({
+    exitCode: 1,
+    stdout: "",
+    stderr: "timeout",
+  });
+
+  const res = await agent.executeStructured("test prompt");
+  assert.equal(res.exitCode, 1);
+  assert.equal(res.parsed, undefined);
+});

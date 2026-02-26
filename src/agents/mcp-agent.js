@@ -183,7 +183,7 @@ export class McpAgent extends AgentAdapter {
     const res = await this.execute(prompt, opts);
     return {
       ...res,
-      parsed: res.exitCode === 0 ? JSON.parse(res.stdout) : null,
+      parsed: res.exitCode === 0 ? JSON.parse(res.stdout) : undefined,
     };
   }
 

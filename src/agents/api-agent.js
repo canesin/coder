@@ -57,6 +57,7 @@ export class ApiAgent extends AgentAdapter {
 
   async executeStructured(prompt, opts = {}) {
     const res = await this.execute(prompt, opts);
+    if (res.exitCode !== 0) return { ...res, parsed: undefined };
     const parsed = extractJson(res.stdout);
     return { ...res, parsed };
   }
