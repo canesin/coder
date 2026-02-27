@@ -73,7 +73,11 @@ class RetryFallbackWrapper extends AgentAdapter {
         shouldRetry: (ctx) => {
           const name = ctx.error.name;
           if (name === "CommandTimeoutError") return false;
-          if (name === "CommandAuthError") return false;
+          if (
+            name === "CommandFatalStderrError" &&
+            ctx.error.category === "auth"
+          )
+            return false;
           if (name === "McpStartupError") return false;
           return true;
         },

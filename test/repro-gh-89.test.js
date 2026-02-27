@@ -4,9 +4,10 @@ import test from "node:test";
 import { CliAgent } from "../src/agents/cli-agent.js";
 import { CoderConfigSchema } from "../src/config.js";
 
-function makeCommandAuthError(message) {
+function makeCommandFatalStderrError(message, category = "auth") {
   const err = new Error(message);
-  err.name = "CommandAuthError";
+  err.name = "CommandFatalStderrError";
+  err.category = category;
   return err;
 }
 
@@ -40,7 +41,7 @@ test("CliAgent wires CLAUDE_RESUME_FAILURE_PATTERNS when claude + resumeId", asy
   await agent.execute("test prompt", { resumeId: "fake-uuid" });
   assert.ok(
     capturedOpts.killOnStderrPatterns.some((p) =>
-      p.includes("No conversation found with session ID"),
+      p.pattern.includes("No conversation found with session ID"),
     ),
     "should include Claude resume failure pattern",
   );
@@ -72,7 +73,7 @@ test("CliAgent wires CLAUDE_RESUME_FAILURE_PATTERNS when claude + sessionId", as
   );
   assert.ok(
     capturedOpts.killOnStderrPatterns.some((p) =>
-      p.includes("No conversation found with session ID"),
+      p.pattern.includes("No conversation found with session ID"),
     ),
     "should include Claude resume failure pattern",
   );
@@ -110,7 +111,9 @@ test("All expected Claude resume failure patterns are present", async () => {
   assert.equal(capturedOpts.killOnStderrPatterns.length, expected.length);
   for (const pattern of expected) {
     assert.ok(
-      capturedOpts.killOnStderrPatterns.some((p) => p.includes(pattern)),
+      capturedOpts.killOnStderrPatterns.some((p) =>
+        p.pattern.includes(pattern),
+      ),
       `should include pattern: "${pattern}"`,
     );
   }
@@ -162,24 +165,31 @@ test("CliAgent does NOT add resume patterns for gemini with resumeId", async () 
   // Gemini should get its own auth patterns, not Claude resume patterns
   assert.ok(
     !capturedOpts.killOnStderrPatterns.some((p) =>
-      p.includes("No conversation found with session ID"),
+      p.pattern.includes("No conversation found with session ID"),
     ),
     "should NOT include Claude resume failure pattern for gemini",
   );
+  assert.ok(
+    capturedOpts.killOnStderrPatterns.some((p) =>
+      p.pattern.includes("rejected stored OAuth token"),
+    ),
+    "should include Gemini auth failure pattern",
+  );
+  assert.equal(capturedOpts.killOnStderrPatterns.length, 5);
 });
 
 // ---------------------------------------------------------------------------
 // Machine-level session retry pattern
 // ---------------------------------------------------------------------------
 
-test("CommandAuthError with resumeId triggers session retry", async () => {
+test("CommandFatalStderrError with category auth and resumeId triggers session retry", async () => {
   const calls = [];
   const mockAgent = {
     async execute(prompt, opts) {
       calls.push({ prompt, opts });
       if (calls.length === 1) {
-        throw makeCommandAuthError(
-          "Command aborted after stderr auth failure: No conversation found with session ID",
+        throw makeCommandFatalStderrError(
+          "Command aborted after fatal stderr match [auth]: No conversation found with session ID",
         );
       }
       return { exitCode: 0, stdout: "ok", stderr: "" };
@@ -197,7 +207,11 @@ test("CommandAuthError with resumeId triggers session retry", async () => {
       timeoutMs: 60_000,
     });
   } catch (err) {
-    if (err.name === "CommandAuthError" && currentSessionId) {
+    if (
+      err.name === "CommandFatalStderrError" &&
+      err.category === "auth" &&
+      currentSessionId
+    ) {
       currentSessionId = null;
       res = await mockAgent.execute("do stuff", { timeoutMs: 60_000 });
     } else {
@@ -212,11 +226,11 @@ test("CommandAuthError with resumeId triggers session retry", async () => {
   assert.equal(calls[1].opts.resumeId, undefined);
 });
 
-test("CommandAuthError without resumeId is not caught as session failure", async () => {
+test("CommandFatalStderrError with category auth without resumeId is not caught as session failure", async () => {
   const mockAgent = {
     async execute() {
-      throw makeCommandAuthError(
-        "Command aborted after stderr auth failure: some other auth issue",
+      throw makeCommandFatalStderrError(
+        "Command aborted after fatal stderr match [auth]: some other auth issue",
       );
     },
   };
@@ -228,13 +242,21 @@ test("CommandAuthError without resumeId is not caught as session failure", async
       try {
         await mockAgent.execute("do stuff", sessionOpts);
       } catch (err) {
-        if (err.name === "CommandAuthError" && sessionOpts.resumeId) {
+        if (
+          err.name === "CommandFatalStderrError" &&
+          err.category === "auth" &&
+          sessionOpts.resumeId
+        ) {
           // Would retry — but resumeId is falsy so this branch is skipped
           return;
         }
         throw err;
       }
     },
-    { name: "CommandAuthError" },
+    (err) => {
+      assert.equal(err.name, "CommandFatalStderrError");
+      assert.equal(err.category, "auth");
+      return true;
+    },
   );
 });

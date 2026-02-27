@@ -221,7 +221,11 @@ Constraints:
             timeoutMs: ctx.config.workflow.timeouts.planning,
           });
         } catch (err) {
-          if (err.name === "CommandAuthError" && sessionOpts.resumeId) {
+          if (
+            err.name === "CommandFatalStderrError" &&
+            err.category === "auth" &&
+            sessionOpts.resumeId
+          ) {
             ctx.log({
               event: "session_resume_failed",
               sessionId: state.claudeSessionId,
