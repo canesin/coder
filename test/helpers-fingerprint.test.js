@@ -59,10 +59,12 @@ test(
     const repo = makeRepo();
     const filePath = path.join(repo, "secret.txt");
     writeFileSync(filePath, "cannot read me\n", "utf8");
+    const fpReadable = computeGitWorktreeFingerprint(repo);
     chmodSync(filePath, 0o000);
     const fp1 = computeGitWorktreeFingerprint(repo);
     const fp2 = computeGitWorktreeFingerprint(repo);
-    assert.equal(fp1, fp2);
+    assert.equal(fp1, fp2); // sentinel is deterministic
+    assert.notEqual(fp1, fpReadable); // sentinel differs from content hash
     chmodSync(filePath, 0o644);
   },
 );
