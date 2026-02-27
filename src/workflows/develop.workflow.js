@@ -149,7 +149,7 @@ export async function runPlanLoop(
 
 /**
  * Run a function with retries suitable for machine execution.
- * Checks for "failed" status in the result.
+ * Checks for "failed" status in the result. Respects cancellation between attempts.
  */
 export async function runWithMachineRetry(
   fn,
@@ -157,6 +157,9 @@ export async function runWithMachineRetry(
 ) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
+      if (ctx.cancelToken?.cancelled) {
+        return { status: "cancelled", results: [] };
+      }
       ctx.log({ event: "machine_retry_attempt", attempt, maxRetries });
       if (backoffMs > 0) await new Promise((r) => setTimeout(r, backoffMs));
     }
@@ -267,7 +270,8 @@ export async function runDevelopPipeline(opts, ctx) {
   }
 
   // Phase 3: implementation → quality-review → PR creation
-  const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 3;
+  const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 2;
+  const retryBackoffMs = ctx.config?.workflow?.retryBackoffMs ?? 5000;
   const phase3 = await runWithMachineRetry(
     () =>
       runner.run(
@@ -298,7 +302,7 @@ export async function runDevelopPipeline(opts, ctx) {
         ],
         {},
       ),
-    { maxRetries: maxMachineRetries, backoffMs: 5000, ctx },
+    { maxRetries: maxMachineRetries, backoffMs: retryBackoffMs, ctx },
   );
   allResults.push(...phase3.results);
 
