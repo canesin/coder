@@ -6,7 +6,7 @@ import {
   runWithMachineRetry,
 } from "../src/workflows/develop.workflow.js";
 
-const DEFAULT_MACHINE_RETRIES = 3;
+const DEFAULT_MACHINE_RETRIES = 2;
 
 function makeCtx(overrides = {}) {
   const logEvents = [];
@@ -15,7 +15,12 @@ function makeCtx(overrides = {}) {
     artifactsDir: "/tmp/test/.coder/artifacts",
     cancelToken: { cancelled: false, paused: false },
     log: (e) => logEvents.push(e),
-    config: { workflow: { maxMachineRetries: DEFAULT_MACHINE_RETRIES } },
+    config: {
+      workflow: {
+        maxMachineRetries: DEFAULT_MACHINE_RETRIES,
+        retryBackoffMs: 0,
+      },
+    },
     agentPool: null,
     secrets: {},
     scratchpadDir: "/tmp/test/.coder/scratchpad",
@@ -129,16 +134,37 @@ test("runWithMachineRetry: respects cancellation (returns whatever status)", asy
   assert.equal(calls, 1);
 });
 
+test("runWithMachineRetry: stops retrying when cancelled between attempts", async () => {
+  const ctx = makeCtx();
+  let calls = 0;
+  const fn = async () => {
+    calls++;
+    // Cancel after first attempt
+    if (calls === 1) ctx.cancelToken.cancelled = true;
+    return { status: "failed", error: "should not retry" };
+  };
+
+  const result = await runWithMachineRetry(fn, {
+    maxRetries: DEFAULT_MACHINE_RETRIES,
+    backoffMs: 0,
+    ctx,
+  });
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(calls, 1);
+});
+
 test("runDevelopPipeline: retries failed phase-3 machine sequence and succeeds", async () => {
   const ctx = makeCtx({
-    config: { workflow: { maxMachineRetries: 2 } },
+    config: {
+      workflow: { maxMachineRetries: 2, retryBackoffMs: 0 },
+    },
   });
   const opts = {
     issue: { source: "local", id: "ISSUE-1", title: "Retry test" },
     repoPath: "/tmp/repo",
   };
   const originalRun = WorkflowRunner.prototype.run;
-  const originalSetTimeout = globalThis.setTimeout;
   let phase3Calls = 0;
 
   WorkflowRunner.prototype.run = async function runStub(steps) {
@@ -200,10 +226,6 @@ test("runDevelopPipeline: retries failed phase-3 machine sequence and succeeds",
   };
 
   try {
-    globalThis.setTimeout = (fn, _ms, ...args) => {
-      fn(...args);
-      return 0;
-    };
     const result = await runDevelopPipeline(opts, ctx);
 
     assert.equal(result.status, "completed");
@@ -218,6 +240,5 @@ test("runDevelopPipeline: retries failed phase-3 machine sequence and succeeds",
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    globalThis.setTimeout = originalSetTimeout;
   }
 });
