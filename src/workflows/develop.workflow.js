@@ -948,7 +948,7 @@ async function resetForNextIssue(
           cwd: repoRoot,
           encoding: "utf8",
         });
-        spawnSync("git", ["clean", "-fd"], {
+        spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
           cwd: repoRoot,
           encoding: "utf8",
         });

@@ -98,7 +98,7 @@ function fetchGithubIssues(cwd) {
       "issue",
       "list",
       "--json",
-      "number,title,body,labels,url",
+      "number,title,body,labels,url,comments",
       "--state",
       "open",
       "--limit",
