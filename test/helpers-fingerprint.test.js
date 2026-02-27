@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
@@ -59,12 +60,25 @@ test(
     const repo = makeRepo();
     const filePath = path.join(repo, "secret.txt");
     writeFileSync(filePath, "cannot read me\n", "utf8");
-    const fpReadable = computeGitWorktreeFingerprint(repo);
     chmodSync(filePath, 0o000);
     const fp1 = computeGitWorktreeFingerprint(repo);
     const fp2 = computeGitWorktreeFingerprint(repo);
-    assert.equal(fp1, fp2); // sentinel is deterministic
-    assert.notEqual(fp1, fpReadable); // sentinel differs from content hash
+    assert.equal(fp1, fp2);
+
+    // Reconstruct expected digest with ERR:EACCES sentinel
+    const gitOut = (args) =>
+      spawnSync("git", args, { cwd: repo, encoding: "utf8" }).stdout || "";
+    const h = createHash("sha256");
+    h.update("status\0");
+    h.update(gitOut(["status", "--porcelain=v1", "-z"]));
+    h.update("\0diff\0");
+    h.update(gitOut(["diff", "--no-ext-diff"]));
+    h.update("\0diff_cached\0");
+    h.update(gitOut(["diff", "--cached", "--no-ext-diff"]));
+    h.update("\0untracked\0");
+    h.update("secret.txt\nERR:EACCES\n");
+    assert.equal(fp1, h.digest("hex"));
+
     chmodSync(filePath, 0o644);
   },
 );
