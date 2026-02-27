@@ -23,6 +23,29 @@ import {
 } from "./_shared.js";
 
 /**
+ * Format an issue body with its comments into a single string.
+ *
+ * @param {string | null | undefined} body - Issue body/description
+ * @param {Array<{author?: {login?: string, name?: string}, body?: string, createdAt?: string}> | null | undefined} comments
+ * @returns {string | null}
+ */
+function formatBodyWithComments(body, comments) {
+  const parts = [];
+  if (body) parts.push(body);
+  if (Array.isArray(comments) && comments.length > 0) {
+    if (parts.length > 0) parts.push("\n---\n");
+    parts.push("## Comments\n");
+    for (const c of comments) {
+      const author = c.author?.login || c.author?.name || "unknown";
+      const date = c.createdAt ? ` (${c.createdAt})` : "";
+      const text = c.body || "";
+      parts.push(`**${author}**${date}:\n${text}\n`);
+    }
+  }
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+/**
  * Fetch the issue body/description from its source so the agent has full context.
  * Returns null if unavailable or source doesn't support pre-fetching (linear).
  *
@@ -35,14 +58,15 @@ import {
 function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
   if (source === "github") {
     const num = id.replace(/^#/, "");
-    const res = spawnSync("gh", ["issue", "view", num, "--json", "body"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 10000,
-    });
+    const res = spawnSync(
+      "gh",
+      ["issue", "view", num, "--json", "body,comments"],
+      { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+    );
     if (res.status !== 0 || !res.stdout) return null;
     try {
-      return JSON.parse(res.stdout).body || null;
+      const data = JSON.parse(res.stdout);
+      return formatBodyWithComments(data.body, data.comments);
     } catch {
       return null;
     }
@@ -57,7 +81,8 @@ function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
     });
     if (res.status !== 0 || !res.stdout) return null;
     try {
-      return JSON.parse(res.stdout).description || null;
+      const data = JSON.parse(res.stdout);
+      return formatBodyWithComments(data.description, data.notes);
     } catch {
       return null;
     }
@@ -194,17 +219,23 @@ export default defineMachine({
     state.scratchpadPath = path.relative(ctx.workspaceDir, scratchpadPath);
     saveState(ctx.workspaceDir, state);
 
-    // Ensure .gitignore rules exist BEFORE any cleanup so .coder/ is protected
-    ensureGitignore(ctx.workspaceDir);
-
-    // When force=true (re-run), reset dirty state before branch operations
+    // When force=true (re-run), reset dirty state before branch operations.
+    // Exclude .coder/ from cleanup to preserve workflow state and artifacts dir.
     if (input.force) {
       spawnSync("git", ["checkout", "--", "."], {
         cwd: repoRoot,
         encoding: "utf8",
       });
-      spawnSync("git", ["clean", "-fd"], { cwd: repoRoot, encoding: "utf8" });
+      spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
     }
+
+    // Ensure .gitignore rules exist AFTER cleanup (checkout -- . reverts .gitignore
+    // to committed version, which may lack .coder/ rules).
+    ensureGitignore(ctx.workspaceDir);
+    mkdirSync(ctx.artifactsDir, { recursive: true });
 
     // Verify clean repo
     gitCleanOrThrow(repoRoot);

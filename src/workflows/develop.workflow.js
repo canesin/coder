@@ -148,6 +148,34 @@ export async function runPlanLoop(
 }
 
 /**
+ * Run a function with retries suitable for machine execution.
+ * Checks for "failed" status in the result. Respects cancellation between attempts.
+ */
+export async function runWithMachineRetry(
+  fn,
+  { maxRetries, backoffMs = 5000, ctx },
+) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      if (ctx.cancelToken?.cancelled) {
+        return { status: "cancelled", results: [] };
+      }
+      ctx.log({ event: "machine_retry_attempt", attempt, maxRetries });
+      if (backoffMs > 0) await new Promise((r) => setTimeout(r, backoffMs));
+    }
+    const result = await fn();
+    if (result.status !== "failed") return result;
+    ctx.log({
+      event: "machine_retry_failed",
+      attempt,
+      maxRetries,
+      error: result.error,
+    });
+    if (attempt === maxRetries) return result;
+  }
+}
+
+/**
  * Run the full develop pipeline for a single issue.
  *
  * @param {{
@@ -242,33 +270,39 @@ export async function runDevelopPipeline(opts, ctx) {
   }
 
   // Phase 3: implementation → quality-review → PR creation
-  const phase3 = await runner.run(
-    [
-      {
-        machine: implementationMachine,
-        inputMapper: () => ({}),
-      },
-      {
-        machine: qualityReviewMachine,
-        inputMapper: () => ({
-          testCmd: opts.testCmd || "",
-          testConfigPath: opts.testConfigPath || "",
-          allowNoTests: opts.allowNoTests ?? false,
-          ppcommitPreset: opts.ppcommitPreset || "strict",
-        }),
-      },
-      {
-        machine: prCreationMachine,
-        inputMapper: () => ({
-          type: opts.prType || "feat",
-          semanticName: opts.prSemanticName || "",
-          title: opts.prTitle || "",
-          description: opts.prDescription || "",
-          base: opts.prBase || "",
-        }),
-      },
-    ],
-    {},
+  const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 2;
+  const retryBackoffMs = ctx.config?.workflow?.retryBackoffMs ?? 5000;
+  const phase3 = await runWithMachineRetry(
+    () =>
+      runner.run(
+        [
+          {
+            machine: implementationMachine,
+            inputMapper: () => ({}),
+          },
+          {
+            machine: qualityReviewMachine,
+            inputMapper: () => ({
+              testCmd: opts.testCmd || "",
+              testConfigPath: opts.testConfigPath || "",
+              allowNoTests: opts.allowNoTests ?? false,
+              ppcommitPreset: opts.ppcommitPreset || "strict",
+            }),
+          },
+          {
+            machine: prCreationMachine,
+            inputMapper: () => ({
+              type: opts.prType || "feat",
+              semanticName: opts.prSemanticName || "",
+              title: opts.prTitle || "",
+              description: opts.prDescription || "",
+              base: opts.prBase || "",
+            }),
+          },
+        ],
+        {},
+      ),
+    { maxRetries: maxMachineRetries, backoffMs: retryBackoffMs, ctx },
   );
   allResults.push(...phase3.results);
 
@@ -914,7 +948,7 @@ async function resetForNextIssue(
           cwd: repoRoot,
           encoding: "utf8",
         });
-        spawnSync("git", ["clean", "-fd"], {
+        spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
           cwd: repoRoot,
           encoding: "utf8",
         });
