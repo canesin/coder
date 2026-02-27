@@ -159,6 +159,100 @@ test("GH-117: concurrent execute() calls don't interfere", async () => {
   }
 });
 
+test("GH-117: one call's timeout does not abort a concurrent call", async () => {
+  const origFetch = global.fetch;
+  const resolvers = [];
+  global.fetch = async (_url, opts) => {
+    return new Promise((resolve, reject) => {
+      opts.signal?.addEventListener("abort", () => {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        reject(err);
+      });
+      resolvers.push(resolve);
+    });
+  };
+
+  try {
+    const agent = new ApiAgent({
+      provider: "gemini",
+      endpoint: "https://test",
+      apiKey: "test-key",
+    });
+
+    // Call A: very short timeout → will abort
+    const pA = agent.execute("a", { timeoutMs: 10 });
+    // Call B: long timeout → should survive A's timeout
+    const pB = agent.execute("b", { timeoutMs: 60_000 });
+
+    const resA = await pA;
+    assert.equal(resA.exitCode, 124, "short-timeout call should abort");
+
+    // Resolve B's fetch after A has timed out
+    resolvers[1]({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "ok-b" }] } }],
+      }),
+    });
+    const resB = await pB;
+    assert.equal(resB.exitCode, 0, "long-timeout call must not be aborted");
+    assert.equal(resB.stdout, "ok-b");
+    assert.equal(agent.activeControllers.size, 0);
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
+test("GH-117: new request after kill() is not pre-aborted", async () => {
+  const origFetch = global.fetch;
+  let fetchCount = 0;
+  global.fetch = async (_url, opts) => {
+    fetchCount++;
+    return new Promise((resolve, reject) => {
+      if (opts.signal?.aborted) {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        return reject(err);
+      }
+      opts.signal?.addEventListener("abort", () => {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        reject(err);
+      });
+      resolve({
+        ok: true,
+        json: async () => ({
+          candidates: [{ content: { parts: [{ text: "fresh" }] } }],
+        }),
+      });
+    });
+  };
+
+  try {
+    const agent = new ApiAgent({
+      provider: "gemini",
+      endpoint: "https://test",
+      apiKey: "test-key",
+    });
+
+    // Start and immediately kill
+    const p1 = agent.execute("a");
+    await agent.kill();
+    await p1;
+
+    // New request after kill must succeed
+    fetchCount = 0;
+    const res = await agent.execute("b");
+    assert.equal(res.exitCode, 0, "post-kill request must not be pre-aborted");
+    assert.equal(res.stdout, "fresh");
+    assert.equal(fetchCount, 1);
+    assert.equal(agent.activeControllers.size, 0);
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
 test("GH-81: McpAgent executeStructured returns undefined on failure", async () => {
   const agent = new McpAgent({ serverCommand: "true" });
   agent.execute = async () => ({
