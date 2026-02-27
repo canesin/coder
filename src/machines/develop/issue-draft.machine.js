@@ -23,6 +23,28 @@ import {
 } from "./_shared.js";
 
 /**
+ * Format an issue body with its comments into a single string.
+ *
+ * @param {string | null | undefined} body - Issue body/description
+ * @param {Array<{author?: {login?: string, name?: string}, body?: string, createdAt?: string}> | null | undefined} comments
+ * @returns {string | null}
+ */
+function formatBodyWithComments(body, comments) {
+  const parts = [];
+  if (body) parts.push(body);
+  if (Array.isArray(comments) && comments.length > 0) {
+    parts.push("\n---\n\n## Comments\n");
+    for (const c of comments) {
+      const author = c.author?.login || c.author?.name || "unknown";
+      const date = c.createdAt ? ` (${c.createdAt})` : "";
+      const text = c.body || "";
+      parts.push(`**${author}**${date}:\n${text}\n`);
+    }
+  }
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+/**
  * Fetch the issue body/description from its source so the agent has full context.
  * Returns null if unavailable or source doesn't support pre-fetching (linear).
  *
@@ -35,14 +57,15 @@ import {
 function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
   if (source === "github") {
     const num = id.replace(/^#/, "");
-    const res = spawnSync("gh", ["issue", "view", num, "--json", "body"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 10000,
-    });
+    const res = spawnSync(
+      "gh",
+      ["issue", "view", num, "--json", "body,comments"],
+      { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+    );
     if (res.status !== 0 || !res.stdout) return null;
     try {
-      return JSON.parse(res.stdout).body || null;
+      const data = JSON.parse(res.stdout);
+      return formatBodyWithComments(data.body, data.comments);
     } catch {
       return null;
     }
@@ -57,7 +80,8 @@ function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
     });
     if (res.status !== 0 || !res.stdout) return null;
     try {
-      return JSON.parse(res.stdout).description || null;
+      const data = JSON.parse(res.stdout);
+      return formatBodyWithComments(data.description, data.notes);
     } catch {
       return null;
     }
@@ -106,6 +130,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
+    mkdirSync(ctx.artifactsDir, { recursive: true });
     checkArtifactCollisions(ctx.artifactsDir, { force: input.force });
 
     const state = loadState(ctx.workspaceDir);
