@@ -670,9 +670,11 @@ export async function runHostTests(
       }
     }
     const res = runShellSync(testCmd, { cwd: repoDir });
+    // pytest exits 5 when no tests collected; treat as success when allowNoTests
+    const exitCode = allowNoTests && res.exitCode === 5 ? 0 : res.exitCode;
     return {
       cmd: res.cmd,
-      exitCode: res.exitCode,
+      exitCode,
       stdout: res.stdout || "",
       stderr: res.stderr || "",
     };
