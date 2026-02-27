@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -44,6 +50,49 @@ test("computeGitWorktreeFingerprint changes when untracked file content changes"
   const fp3 = computeGitWorktreeFingerprint(repo);
   assert.notEqual(fp1, fp2);
   assert.notEqual(fp2, fp3);
+});
+
+test(
+  "computeGitWorktreeFingerprint handles unreadable untracked file without throwing",
+  { skip: process.platform === "win32" || process.getuid?.() === 0 },
+  () => {
+    const repo = makeRepo();
+    const filePath = path.join(repo, "secret.txt");
+    writeFileSync(filePath, "cannot read me\n", "utf8");
+    chmodSync(filePath, 0o000);
+    const fp1 = computeGitWorktreeFingerprint(repo);
+    const fp2 = computeGitWorktreeFingerprint(repo);
+    assert.equal(fp1, fp2);
+    chmodSync(filePath, 0o644);
+  },
+);
+
+test("computeGitWorktreeFingerprint handles special characters and spaces in paths", () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, "hello world.txt"), "sp1\n", "utf8");
+  writeFileSync(path.join(repo, "special!@#chars.txt"), "sp2\n", "utf8");
+  mkdirSync(path.join(repo, "path with spaces"));
+  writeFileSync(
+    path.join(repo, "path with spaces", "nested.txt"),
+    "sp3\n",
+    "utf8",
+  );
+  const fp1 = computeGitWorktreeFingerprint(repo);
+  const fp2 = computeGitWorktreeFingerprint(repo);
+  assert.equal(fp1, fp2);
+});
+
+test("computeGitWorktreeFingerprint is stable across repeated runs", () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, "tracked.txt"), "t\n", "utf8");
+  run("git", ["add", "tracked.txt"], repo);
+  run("git", ["commit", "-m", "init"], repo);
+  writeFileSync(path.join(repo, "untracked.txt"), "u\n", "utf8");
+  const fp1 = computeGitWorktreeFingerprint(repo);
+  const fp2 = computeGitWorktreeFingerprint(repo);
+  const fp3 = computeGitWorktreeFingerprint(repo);
+  assert.equal(fp1, fp2);
+  assert.equal(fp2, fp3);
 });
 
 test("upsertIssueCompletionBlock is idempotent (replaces existing block)", () => {
