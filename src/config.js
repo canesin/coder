@@ -200,6 +200,21 @@ export const AgentFallbackSchema = z
   .record(z.string(), AgentNameSchema)
   .prefault({});
 
+export const SandboxConfigSchema = z.object({
+  passEnv: z
+    .array(z.string())
+    .default([
+      "GOOGLE_API_KEY",
+      "GEMINI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "OPENAI_API_KEY",
+      "GITHUB_TOKEN",
+      "LINEAR_API_KEY",
+    ]),
+  passEnvPatterns: z.array(z.string()).default([]),
+});
+
 export const CoderConfigSchema = z.object({
   models: z
     .object({
@@ -220,6 +235,7 @@ export const CoderConfigSchema = z.object({
       }),
     })
     .prefault({}),
+  sandbox: SandboxConfigSchema.prefault({}),
   ppcommit: PpcommitConfigSchema.prefault({}),
   test: TestSectionSchema.prefault({}),
   claude: z

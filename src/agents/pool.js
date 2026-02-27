@@ -1,9 +1,5 @@
 import pRetry from "p-retry";
-import {
-  buildSecrets,
-  DEFAULT_PASS_ENV,
-  isRateLimitError,
-} from "../helpers.js";
+import { buildSecrets, isRateLimitError, resolvePassEnv } from "../helpers.js";
 import { AgentAdapter } from "./_base.js";
 import { createApiAgent } from "./api-agent.js";
 import { CliAgent, resolveAgentName } from "./cli-agent.js";
@@ -118,7 +114,7 @@ export class AgentPool {
     this.config = opts.config;
     this.workspaceDir = opts.workspaceDir;
     this.repoRoot = opts.repoRoot || opts.workspaceDir;
-    this.secrets = buildSecrets(opts.passEnv || DEFAULT_PASS_ENV);
+    this.secrets = buildSecrets(opts.passEnv || resolvePassEnv(opts.config));
     this.verbose = opts.verbose ?? opts.config.verbose;
     this.steeringContext = opts.steeringContext;
 

@@ -43,7 +43,7 @@ export function detectDefaultBranch(repoDir) {
   return mainCheck.status === 0 ? "main" : "master";
 }
 
-export const DEFAULT_PASS_ENV = [
+const DEFAULT_PASS_ENV = [
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
   "ANTHROPIC_API_KEY",
@@ -52,6 +52,34 @@ export const DEFAULT_PASS_ENV = [
   "GITHUB_TOKEN",
   "LINEAR_API_KEY",
 ];
+
+/**
+ * Build the effective passEnv list from config.
+ * Merges `sandbox.passEnv` (explicit names) with any env var names
+ * matching `sandbox.passEnvPatterns` (glob-style, e.g. "AWS_*").
+ *
+ * @param {object} config - Parsed CoderConfigSchema
+ * @param {object} [env] - Environment to scan for pattern matches (defaults to process.env)
+ * @returns {string[]} Deduplicated list of env var names to pass through
+ */
+export function resolvePassEnv(config, env = process.env) {
+  const explicit = config.sandbox?.passEnv ?? DEFAULT_PASS_ENV;
+  const patterns = config.sandbox?.passEnvPatterns ?? [];
+
+  if (patterns.length === 0) return explicit;
+
+  const regexes = patterns.map((p) => {
+    // Convert simple glob pattern to regex (only * wildcards supported)
+    const escaped = p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    return new RegExp(`^${escaped}$`);
+  });
+
+  const matched = Object.keys(env).filter((key) =>
+    regexes.some((re) => re.test(key)),
+  );
+
+  return [...new Set([...explicit, ...matched])];
+}
 
 const AGENT_NOISE_LINE_PATTERNS = [
   /^Warning:/i,

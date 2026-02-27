@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AgentPool } from "../../agents/pool.js";
 import { resolveConfig } from "../../config.js";
-import { buildSecrets, DEFAULT_PASS_ENV } from "../../helpers.js";
+import { buildSecrets, resolvePassEnv } from "../../helpers.js";
 import {
   buildSteeringGenerationPrompt,
   loadSteeringContext,
@@ -57,7 +57,7 @@ export function registerSteeringTools(server, defaultWorkspace) {
         }
 
         // Use gemini agent for generation (fast, cheap)
-        const secrets = buildSecrets(DEFAULT_PASS_ENV);
+        const secrets = buildSecrets(resolvePassEnv(config));
         const pool = new AgentPool({
           config,
           workspaceDir: ws,
@@ -147,7 +147,7 @@ export function registerSteeringTools(server, defaultWorkspace) {
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
         const config = resolveConfig(ws);
-        const secrets = buildSecrets(DEFAULT_PASS_ENV);
+        const secrets = buildSecrets(resolvePassEnv(config));
         const pool = new AgentPool({
           config,
           workspaceDir: ws,
