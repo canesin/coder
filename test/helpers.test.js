@@ -4,11 +4,10 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-
+import { SandboxConfigSchema } from "../src/config.js";
 import {
   buildPrBodyFromIssue,
   buildSecretsWithFallback,
-  DEFAULT_PASS_ENV,
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
@@ -96,9 +95,10 @@ test("buildSecretsWithFallback uses shell fallback when process env is missing",
   assert.equal(secrets.OPENAI_API_KEY, undefined);
 });
 
-test("resolvePassEnv returns DEFAULT_PASS_ENV when config has no sandbox", () => {
+test("resolvePassEnv returns schema defaults when config has no sandbox", () => {
+  const defaults = SandboxConfigSchema.parse({});
   const result = resolvePassEnv({});
-  assert.deepEqual(result, DEFAULT_PASS_ENV);
+  assert.deepEqual(result, defaults.passEnv);
 });
 
 test("resolvePassEnv returns config sandbox.passEnv when set", () => {

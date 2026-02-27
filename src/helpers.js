@@ -43,7 +43,7 @@ export function detectDefaultBranch(repoDir) {
   return mainCheck.status === 0 ? "main" : "master";
 }
 
-export const DEFAULT_PASS_ENV = [
+const DEFAULT_PASS_ENV = [
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
   "ANTHROPIC_API_KEY",
@@ -63,13 +63,13 @@ export const DEFAULT_PASS_ENV = [
  * @returns {string[]} Deduplicated list of env var names to pass through
  */
 export function resolvePassEnv(config, env = process.env) {
-  const explicit = config?.sandbox?.passEnv ?? DEFAULT_PASS_ENV;
-  const patterns = config?.sandbox?.passEnvPatterns ?? [];
+  const explicit = config.sandbox?.passEnv ?? DEFAULT_PASS_ENV;
+  const patterns = config.sandbox?.passEnvPatterns ?? [];
 
   if (patterns.length === 0) return explicit;
 
   const regexes = patterns.map((p) => {
-    // Convert simple glob pattern (only * supported) to regex
+    // Convert simple glob pattern to regex (only * wildcards supported)
     const escaped = p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
     return new RegExp(`^${escaped}$`);
   });
