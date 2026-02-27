@@ -8,10 +8,12 @@ import test from "node:test";
 import {
   buildPrBodyFromIssue,
   buildSecretsWithFallback,
+  DEFAULT_PASS_ENV,
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
   gitCleanOrThrow,
+  resolvePassEnv,
   runHostTests,
   sanitizeIssueMarkdown,
   shellEscape,
@@ -92,6 +94,66 @@ test("buildSecretsWithFallback uses shell fallback when process env is missing",
   assert.equal(secrets.GEMINI_API_KEY, "shell-gemini-key");
   assert.equal(secrets.GOOGLE_API_KEY, "shell-gemini-key");
   assert.equal(secrets.OPENAI_API_KEY, undefined);
+});
+
+test("resolvePassEnv returns DEFAULT_PASS_ENV when config has no sandbox", () => {
+  const result = resolvePassEnv({});
+  assert.deepEqual(result, DEFAULT_PASS_ENV);
+});
+
+test("resolvePassEnv returns config sandbox.passEnv when set", () => {
+  const config = {
+    sandbox: { passEnv: ["MY_KEY", "OTHER_KEY"], passEnvPatterns: [] },
+  };
+  assert.deepEqual(resolvePassEnv(config), ["MY_KEY", "OTHER_KEY"]);
+});
+
+test("resolvePassEnv merges passEnvPatterns matches from env", () => {
+  const config = {
+    sandbox: {
+      passEnv: ["GITHUB_TOKEN"],
+      passEnvPatterns: ["AWS_*", "EOS_*"],
+    },
+  };
+  const env = {
+    GITHUB_TOKEN: "tok",
+    AWS_ACCESS_KEY_ID: "ak",
+    AWS_SECRET_ACCESS_KEY: "sk",
+    EOS_DB_URL: "pg://",
+    UNRELATED_VAR: "nope",
+  };
+  const result = resolvePassEnv(config, env);
+  assert.ok(result.includes("GITHUB_TOKEN"));
+  assert.ok(result.includes("AWS_ACCESS_KEY_ID"));
+  assert.ok(result.includes("AWS_SECRET_ACCESS_KEY"));
+  assert.ok(result.includes("EOS_DB_URL"));
+  assert.ok(!result.includes("UNRELATED_VAR"));
+});
+
+test("resolvePassEnv deduplicates explicit and pattern-matched keys", () => {
+  const config = {
+    sandbox: {
+      passEnv: ["AWS_REGION"],
+      passEnvPatterns: ["AWS_*"],
+    },
+  };
+  const env = { AWS_REGION: "us-east-1", AWS_PROFILE: "dev" };
+  const result = resolvePassEnv(config, env);
+  const regionCount = result.filter((k) => k === "AWS_REGION").length;
+  assert.equal(regionCount, 1, "AWS_REGION should appear exactly once");
+  assert.ok(result.includes("AWS_PROFILE"));
+});
+
+test("resolvePassEnv with empty patterns returns only explicit keys", () => {
+  const config = {
+    sandbox: {
+      passEnv: ["ONLY_THIS"],
+      passEnvPatterns: [],
+    },
+  };
+  const env = { ONLY_THIS: "yes", OTHER: "no" };
+  const result = resolvePassEnv(config, env);
+  assert.deepEqual(result, ["ONLY_THIS"]);
 });
 
 test("formatCommandFailure extracts nested gemini JSON error and includes hint", () => {

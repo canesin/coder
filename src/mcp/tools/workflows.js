@@ -6,7 +6,7 @@ import { createActor } from "xstate";
 import { z } from "zod";
 import { AgentPool } from "../../agents/pool.js";
 import { AgentRolesInputSchema, resolveConfig } from "../../config.js";
-import { buildSecrets, DEFAULT_PASS_ENV } from "../../helpers.js";
+import { buildSecrets, resolvePassEnv } from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
 import {
   createWorkflowLifecycleMachine,
@@ -645,7 +645,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           ensureLogsDir(ws);
 
           const log = makeJsonlLogger(ws, workflow, { runId: nextRunId });
-          const secrets = buildSecrets(DEFAULT_PASS_ENV);
+          const secrets = buildSecrets(resolvePassEnv(config));
           const steeringContext = loadSteeringContext(ws);
           const agentPool = new AgentPool({
             config,

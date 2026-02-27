@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { AgentPool } from "../../agents/pool.js";
 import { resolveConfig } from "../../config.js";
-import { buildSecrets, DEFAULT_PASS_ENV } from "../../helpers.js";
+import { buildSecrets, resolvePassEnv } from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
 import { listMachines } from "../../machines/_registry.js";
 import { resolveWorkspaceForMcp } from "../workspace.js";
@@ -22,7 +22,7 @@ function buildStandaloneContext(workspaceDir, overrides = {}) {
   ensureLogsDir(workspaceDir);
 
   const log = makeJsonlLogger(workspaceDir, "machines");
-  const secrets = buildSecrets(DEFAULT_PASS_ENV);
+  const secrets = buildSecrets(resolvePassEnv(config));
 
   const repoRoot = path.resolve(workspaceDir, overrides.repoPath || ".");
   const agentPool = new AgentPool({

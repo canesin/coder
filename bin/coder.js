@@ -15,7 +15,7 @@ import process from "node:process";
 import { parseArgs as nodeParseArgs } from "node:util";
 
 import { loadConfig, resolveConfig } from "../src/config.js";
-import { buildSecrets, DEFAULT_PASS_ENV } from "../src/helpers.js";
+import { buildSecrets, resolvePassEnv } from "../src/helpers.js";
 import { logsDir } from "../src/logging.js";
 import { runPpcommitAll, runPpcommitBranch } from "../src/ppcommit.js";
 import {
@@ -658,7 +658,7 @@ async function runSteeringCli() {
     `${subAction === "generate" ? "Generating" : "Updating"} steering context...\n`,
   );
 
-  const secrets = buildSecrets(DEFAULT_PASS_ENV);
+  const secrets = buildSecrets(resolvePassEnv(config));
   const pool = new AgentPool({
     config,
     workspaceDir,

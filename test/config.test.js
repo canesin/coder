@@ -386,3 +386,32 @@ test("resolveConfig: invalid override throws readable Error", () => {
     },
   );
 });
+
+test("CoderConfigSchema: sandbox.passEnv defaults to known API keys", () => {
+  const config = CoderConfigSchema.parse({});
+  assert.ok(Array.isArray(config.sandbox.passEnv));
+  assert.ok(config.sandbox.passEnv.includes("GEMINI_API_KEY"));
+  assert.ok(config.sandbox.passEnv.includes("ANTHROPIC_API_KEY"));
+  assert.ok(config.sandbox.passEnv.includes("GITHUB_TOKEN"));
+});
+
+test("CoderConfigSchema: sandbox.passEnvPatterns defaults to empty", () => {
+  const config = CoderConfigSchema.parse({});
+  assert.deepEqual(config.sandbox.passEnvPatterns, []);
+});
+
+test("resolveConfig: sandbox.passEnv can be overridden", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir, {
+    sandbox: { passEnv: ["MY_CUSTOM_KEY"] },
+  });
+  assert.deepEqual(config.sandbox.passEnv, ["MY_CUSTOM_KEY"]);
+});
+
+test("resolveConfig: sandbox.passEnvPatterns can be set", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir, {
+    sandbox: { passEnvPatterns: ["AWS_*", "EOS_*"] },
+  });
+  assert.deepEqual(config.sandbox.passEnvPatterns, ["AWS_*", "EOS_*"]);
+});
