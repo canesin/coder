@@ -79,6 +79,86 @@ test("GH-81: executeStructured parses JSON on exitCode 0", async () => {
   assert.deepEqual(res.parsed, { ok: true });
 });
 
+test("GH-117: kill() aborts multiple concurrent requests", async () => {
+  const origFetch = global.fetch;
+  global.fetch = async (_url, opts) => {
+    return new Promise((_resolve, reject) => {
+      if (opts.signal?.aborted) {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        return reject(err);
+      }
+      opts.signal?.addEventListener("abort", () => {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        reject(err);
+      });
+    });
+  };
+
+  try {
+    const agent = new ApiAgent({
+      provider: "gemini",
+      endpoint: "https://test",
+      apiKey: "test-key",
+    });
+
+    const p1 = agent.execute("a");
+    const p2 = agent.execute("b");
+    const p3 = agent.execute("c");
+
+    await agent.kill();
+    const results = await Promise.all([p1, p2, p3]);
+
+    for (const res of results) {
+      assert.equal(
+        res.exitCode,
+        124,
+        "aborted request should return exitCode 124",
+      );
+    }
+    assert.equal(agent.activeControllers.size, 0);
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
+test("GH-117: concurrent execute() calls don't interfere", async () => {
+  const origFetch = global.fetch;
+  let callCount = 0;
+  global.fetch = async () => {
+    const n = ++callCount;
+    await new Promise((r) => setTimeout(r, 50));
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: `resp-${n}` }] } }],
+      }),
+    };
+  };
+
+  try {
+    const agent = new ApiAgent({
+      provider: "gemini",
+      endpoint: "https://test",
+      apiKey: "test-key",
+    });
+
+    const [r1, r2] = await Promise.all([
+      agent.execute("a"),
+      agent.execute("b"),
+    ]);
+
+    assert.equal(r1.exitCode, 0);
+    assert.equal(r2.exitCode, 0);
+    assert.ok(r1.stdout.startsWith("resp-"));
+    assert.ok(r2.stdout.startsWith("resp-"));
+    assert.equal(agent.activeControllers.size, 0);
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
 test("GH-81: McpAgent executeStructured returns undefined on failure", async () => {
   const agent = new McpAgent({ serverCommand: "true" });
   agent.execute = async () => ({
