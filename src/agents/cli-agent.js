@@ -14,16 +14,21 @@ import { makeJsonlLogger, sanitizeLogEvent } from "../logging.js";
 import { AgentAdapter } from "./_base.js";
 
 const GEMINI_AUTH_FAILURE_PATTERNS = [
-  "rejected stored OAuth token",
-  "Please re-authenticate using: /mcp auth",
+  { pattern: "rejected stored OAuth token", category: "auth" },
+  { pattern: "Please re-authenticate using: /mcp auth", category: "auth" },
 ];
 const CLAUDE_RESUME_FAILURE_PATTERNS = [
-  "No conversation found with session ID",
-  "Conversation not found",
-  "Session not found",
-  "Invalid session ID",
-  "Conversation has expired",
-  "Session has expired",
+  { pattern: "No conversation found with session ID", category: "auth" },
+  { pattern: "Conversation not found", category: "auth" },
+  { pattern: "Session not found", category: "auth" },
+  { pattern: "Invalid session ID", category: "auth" },
+  { pattern: "Conversation has expired", category: "auth" },
+  { pattern: "Session has expired", category: "auth" },
+];
+const GEMINI_TRANSIENT_FAILURE_PATTERNS = [
+  { pattern: "An unexpected critical error occurred", category: "transient" },
+  { pattern: "fetch failed sending request", category: "transient" },
+  { pattern: "Error when talking to Gemini API", category: "transient" },
 ];
 const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
 
@@ -173,7 +178,7 @@ export class CliAgent extends AgentAdapter {
     const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
     const isClaude = this.name === "claude";
     const defaultPatterns = isGemini
-      ? GEMINI_AUTH_FAILURE_PATTERNS
+      ? [...GEMINI_AUTH_FAILURE_PATTERNS, ...GEMINI_TRANSIENT_FAILURE_PATTERNS]
       : isClaude && (opts.resumeId || opts.sessionId)
         ? CLAUDE_RESUME_FAILURE_PATTERNS
         : [];
@@ -221,7 +226,8 @@ export class CliAgent extends AgentAdapter {
         shouldRetry: (ctx) => {
           const err = ctx.error;
           if (err.name === "CommandTimeoutError") return false;
-          if (err.name === "CommandAuthError") return false;
+          if (err.name === "CommandFatalStderrError" && err.category === "auth")
+            return false;
           if (err.name === "McpStartupError") return false;
           return true;
         },
