@@ -148,6 +148,31 @@ export async function runPlanLoop(
 }
 
 /**
+ * Run a function with retries suitable for machine execution.
+ * Checks for "failed" status in the result.
+ */
+export async function runWithMachineRetry(
+  fn,
+  { maxRetries, backoffMs = 5000, ctx },
+) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      ctx.log({ event: "machine_retry_attempt", attempt, maxRetries });
+      if (backoffMs > 0) await new Promise((r) => setTimeout(r, backoffMs));
+    }
+    const result = await fn();
+    if (result.status !== "failed") return result;
+    ctx.log({
+      event: "machine_retry_failed",
+      attempt,
+      maxRetries,
+      error: result.error,
+    });
+    if (attempt === maxRetries) return result;
+  }
+}
+
+/**
  * Run the full develop pipeline for a single issue.
  *
  * @param {{
@@ -242,33 +267,38 @@ export async function runDevelopPipeline(opts, ctx) {
   }
 
   // Phase 3: implementation → quality-review → PR creation
-  const phase3 = await runner.run(
-    [
-      {
-        machine: implementationMachine,
-        inputMapper: () => ({}),
-      },
-      {
-        machine: qualityReviewMachine,
-        inputMapper: () => ({
-          testCmd: opts.testCmd || "",
-          testConfigPath: opts.testConfigPath || "",
-          allowNoTests: opts.allowNoTests ?? false,
-          ppcommitPreset: opts.ppcommitPreset || "strict",
-        }),
-      },
-      {
-        machine: prCreationMachine,
-        inputMapper: () => ({
-          type: opts.prType || "feat",
-          semanticName: opts.prSemanticName || "",
-          title: opts.prTitle || "",
-          description: opts.prDescription || "",
-          base: opts.prBase || "",
-        }),
-      },
-    ],
-    {},
+  const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 3;
+  const phase3 = await runWithMachineRetry(
+    () =>
+      runner.run(
+        [
+          {
+            machine: implementationMachine,
+            inputMapper: () => ({}),
+          },
+          {
+            machine: qualityReviewMachine,
+            inputMapper: () => ({
+              testCmd: opts.testCmd || "",
+              testConfigPath: opts.testConfigPath || "",
+              allowNoTests: opts.allowNoTests ?? false,
+              ppcommitPreset: opts.ppcommitPreset || "strict",
+            }),
+          },
+          {
+            machine: prCreationMachine,
+            inputMapper: () => ({
+              type: opts.prType || "feat",
+              semanticName: opts.prSemanticName || "",
+              title: opts.prTitle || "",
+              description: opts.prDescription || "",
+              base: opts.prBase || "",
+            }),
+          },
+        ],
+        {},
+      ),
+    { maxRetries: maxMachineRetries, backoffMs: 5000, ctx },
   );
   allResults.push(...phase3.results);
 
