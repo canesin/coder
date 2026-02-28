@@ -469,18 +469,28 @@ export async function runDevelopLoop(opts, ctx) {
     source: listResult.data.source || "remote",
   });
 
-  // Initialize loop state
+  // Initialize loop state — merge terminal statuses from prior run
   const loopState = await loadLoopState(ctx.workspaceDir);
+  const priorQueue = loopState.issueQueue || [];
+  const priorById = new Map(priorQueue.map((q) => [q.id, q]));
+
   loopState.status = "running";
-  loopState.issueQueue = issues.map((iss) => ({
-    ...iss,
-    dependsOn: iss.dependsOn || iss.depends_on || [],
-    status: "pending",
-    branch: null,
-    prUrl: null,
-    error: null,
-    baseBranch: null,
-  }));
+  loopState.issueQueue = issues.map((iss) => {
+    const prior = priorById.get(iss.id);
+    const isTerminal =
+      prior && ["completed", "failed", "skipped"].includes(prior.status);
+    return {
+      ...iss,
+      dependsOn: iss.dependsOn || iss.depends_on || [],
+      status: isTerminal ? prior.status : "pending",
+      branch: isTerminal ? prior.branch : null,
+      prUrl: isTerminal ? prior.prUrl : null,
+      error: isTerminal ? prior.error : null,
+      baseBranch: isTerminal ? prior.baseBranch : null,
+      startedAt: isTerminal ? prior.startedAt : null,
+      completedAt: isTerminal ? prior.completedAt : null,
+    };
+  });
   loopState.currentIndex = 0;
   loopState.startedAt = new Date().toISOString();
   const prevLoopRunId = loopState.runId;
@@ -503,8 +513,36 @@ export async function runDevelopLoop(opts, ctx) {
   let failed = 0;
   let skipped = 0;
 
+  // Seed outcomeMap from ALL terminal issues in the prior run (includes
+  // issues no longer in the active list, e.g. closed/merged)
+  for (const prior of priorQueue) {
+    if (["completed", "failed", "skipped"].includes(prior.status)) {
+      outcomeMap.set(prior.id, {
+        status: prior.status,
+        branch: prior.branch || undefined,
+      });
+    }
+  }
+  for (const entry of loopState.issueQueue) {
+    if (entry.status === "completed") completed++;
+    else if (entry.status === "failed") failed++;
+    else if (entry.status === "skipped") skipped++;
+  }
+
   // Helper: process a single issue
   async function processIssue(issue, i, { isRetry = false } = {}) {
+    const currentStatus = loopState.issueQueue[i].status;
+    if (["completed", "failed", "skipped"].includes(currentStatus)) {
+      results.push({
+        ...issue,
+        status: currentStatus,
+        branch: loopState.issueQueue[i].branch,
+        prUrl: loopState.issueQueue[i].prUrl,
+        error: loopState.issueQueue[i].error,
+      });
+      return currentStatus;
+    }
+
     loopState.currentIndex = i;
     loopState.currentStage = isRetry ? "retry" : "processing";
     loopState.lastHeartbeatAt = new Date().toISOString();

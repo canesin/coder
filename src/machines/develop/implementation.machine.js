@@ -136,7 +136,11 @@ FORBIDDEN patterns:
         timeoutMs: ctx.config.workflow.timeouts.implementation,
       });
     } catch (err) {
-      if (err.name === "CommandAuthError" && state.claudeSessionId) {
+      if (
+        err.name === "CommandFatalStderrError" &&
+        err.category === "auth" &&
+        state.claudeSessionId
+      ) {
         ctx.log({
           event: "session_resume_failed",
           sessionId: state.claudeSessionId,

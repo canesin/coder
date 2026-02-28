@@ -340,7 +340,11 @@ export default defineMachine({
               timeoutMs: ctx.config.workflow.timeouts.reviewRound,
             });
           } catch (err) {
-            if (err.name === "CommandAuthError" && reviewSessionOpts.resumeId) {
+            if (
+              err.name === "CommandFatalStderrError" &&
+              err.category === "auth" &&
+              reviewSessionOpts.resumeId
+            ) {
               ctx.log({
                 event: "session_resume_failed",
                 sessionId: state.reviewerSessionId,
@@ -398,7 +402,11 @@ export default defineMachine({
             timeoutMs: ctx.config.workflow.timeouts.programmerFix,
           });
         } catch (err) {
-          if (err.name === "CommandAuthError" && state.claudeSessionId) {
+          if (
+            err.name === "CommandFatalStderrError" &&
+            err.category === "auth" &&
+            state.claudeSessionId
+          ) {
             ctx.log({
               event: "session_resume_failed",
               sessionId: state.claudeSessionId,

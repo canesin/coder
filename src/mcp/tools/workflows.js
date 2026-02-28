@@ -602,6 +602,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           const nextRunId = randomUUID().slice(0, 8);
           const initialAgent = params.agentRoles?.issueSelector || "gemini";
 
+          // Preserve prior issueQueue so runDevelopLoop can merge terminal statuses
+          const priorLoopState = loadLoopState(ws);
+
           // Save initial loop state
           await saveLoopState(ws, {
             version: 1,
@@ -610,7 +613,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             status: "running",
             projectFilter: params.projectFilter || null,
             maxIssues: params.maxIssues || null,
-            issueQueue: [],
+            issueQueue: priorLoopState.issueQueue || [],
             currentIndex: 0,
             currentStage: `${workflow}_starting`,
             currentStageStartedAt: new Date().toISOString(),
