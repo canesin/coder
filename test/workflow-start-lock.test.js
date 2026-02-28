@@ -11,7 +11,11 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { lockPathFor, withStartLock } from "../src/state/start-lock.js";
+import {
+  LOCK_DEFAULTS,
+  lockPathFor,
+  withStartLock,
+} from "../src/state/start-lock.js";
 
 function makeTmpDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-start-lock-"));
@@ -33,13 +37,18 @@ test("acquires and releases lock", async () => {
 
 test("concurrent starts: second caller gets lock-busy error", async () => {
   const ws = makeTmpDir();
-  const slow = withStartLock(ws, async () => {
-    await new Promise((r) => setTimeout(r, 6000));
-    return "first";
-  });
+  const opts = { lockTimeoutMs: 200, retryIntervalMs: 20 };
+  const slow = withStartLock(
+    ws,
+    async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      return "first";
+    },
+    opts,
+  );
   // Give the first call time to acquire
-  await new Promise((r) => setTimeout(r, 100));
-  await assert.rejects(() => withStartLock(ws, async () => "second"), {
+  await new Promise((r) => setTimeout(r, 50));
+  await assert.rejects(() => withStartLock(ws, async () => "second", opts), {
     message: /workflow start lock busy/,
   });
   // Clean up the slow holder
@@ -137,4 +146,33 @@ test("stale-evicted lock is not deleted by original holder", async () => {
   assert.equal(remaining.token, "holder-b-token");
   assert.notEqual(holderAToken, "holder-b-token");
   rmSync(ws, { recursive: true, force: true });
+});
+
+test("custom options are accepted and used", async () => {
+  const ws = makeTmpDir();
+  const opts = { lockTimeoutMs: 100, retryIntervalMs: 10 };
+  const result = await withStartLock(ws, async () => "custom", opts);
+  assert.equal(result, "custom");
+  assert.ok(!existsSync(lockPathFor(ws)));
+  // Verify timeout uses custom value
+  const lp = lockPathFor(ws);
+  writeFileSync(
+    lp,
+    JSON.stringify({
+      token: "blocker",
+      pid: process.pid,
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  await assert.rejects(() => withStartLock(ws, async () => "fail", opts), {
+    message: /within 100ms/,
+  });
+  rmSync(ws, { recursive: true, force: true });
+});
+
+test("LOCK_DEFAULTS exports expected keys", () => {
+  assert.ok(LOCK_DEFAULTS.lockTimeoutMs > 0);
+  assert.ok(LOCK_DEFAULTS.staleLockMs > 0);
+  assert.ok(LOCK_DEFAULTS.retryIntervalMs > 0);
+  assert.ok(LOCK_DEFAULTS.corruptFileMinAgeMs > 0);
 });

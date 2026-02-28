@@ -12,10 +12,12 @@ import path from "node:path";
 import process from "node:process";
 import { isPidAlive } from "../helpers.js";
 
-const LOCK_TIMEOUT_MS = 5000;
-const STALE_LOCK_MS = 60_000;
-const RETRY_INTERVAL_MS = 200;
-const CORRUPT_FILE_MIN_AGE_MS = 2000;
+export const LOCK_DEFAULTS = {
+  lockTimeoutMs: 5000,
+  staleLockMs: 60_000,
+  retryIntervalMs: 200,
+  corruptFileMinAgeMs: 2000,
+};
 
 export function lockPathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "start.lock");
@@ -25,11 +27,14 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function tryEvictStaleLock(lockPath) {
+function tryEvictStaleLock(lockPath, opts) {
+  const staleLockMs = opts.staleLockMs ?? LOCK_DEFAULTS.staleLockMs;
+  const corruptFileMinAgeMs =
+    opts.corruptFileMinAgeMs ?? LOCK_DEFAULTS.corruptFileMinAgeMs;
   try {
     const content = JSON.parse(readFileSync(lockPath, "utf8"));
     const age = Date.now() - Date.parse(content.createdAt);
-    if (age > STALE_LOCK_MS || !isPidAlive(content.pid)) {
+    if (age > staleLockMs || !isPidAlive(content.pid)) {
       try {
         unlinkSync(lockPath);
       } catch (unlinkErr) {
@@ -40,7 +45,7 @@ function tryEvictStaleLock(lockPath) {
     // Empty/corrupt file — only evict if mtime is old enough
     try {
       const stat = statSync(lockPath);
-      if (Date.now() - stat.mtimeMs > CORRUPT_FILE_MIN_AGE_MS) {
+      if (Date.now() - stat.mtimeMs > corruptFileMinAgeMs) {
         try {
           unlinkSync(lockPath);
         } catch {}
@@ -49,11 +54,13 @@ function tryEvictStaleLock(lockPath) {
   }
 }
 
-async function acquireStartLock(workspaceDir) {
+async function acquireStartLock(workspaceDir, opts) {
+  const lockTimeoutMs = opts.lockTimeoutMs ?? LOCK_DEFAULTS.lockTimeoutMs;
+  const retryIntervalMs = opts.retryIntervalMs ?? LOCK_DEFAULTS.retryIntervalMs;
   const lockPath = lockPathFor(workspaceDir);
   mkdirSync(path.dirname(lockPath), { recursive: true });
   const token = randomUUID();
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + lockTimeoutMs;
   while (Date.now() < deadline) {
     try {
       const fd = openSync(lockPath, "wx");
@@ -67,12 +74,12 @@ async function acquireStartLock(workspaceDir) {
       return { lockPath, token };
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      tryEvictStaleLock(lockPath);
-      await sleep(RETRY_INTERVAL_MS);
+      tryEvictStaleLock(lockPath, opts);
+      await sleep(retryIntervalMs * (0.5 + Math.random()));
     }
   }
   throw new Error(
-    "workflow start lock busy: could not acquire lock within 5000ms",
+    `workflow start lock busy: could not acquire lock within ${lockTimeoutMs}ms`,
   );
 }
 
@@ -87,8 +94,8 @@ function releaseLock(lockPath, token) {
   }
 }
 
-export async function withStartLock(workspaceDir, fn) {
-  const { lockPath, token } = await acquireStartLock(workspaceDir);
+export async function withStartLock(workspaceDir, fn, opts = {}) {
+  const { lockPath, token } = await acquireStartLock(workspaceDir, opts);
   try {
     return await fn();
   } finally {
