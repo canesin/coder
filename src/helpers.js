@@ -616,6 +616,17 @@ export function upsertIssueCompletionBlock(
   return true;
 }
 
+export function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err?.code === "EPERM") return true;
+    return false;
+  }
+}
+
 export async function runHostTests(
   repoDir,
   { testCmd, testConfigPath, allowNoTests } = {},
