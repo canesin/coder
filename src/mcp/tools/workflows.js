@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createActor } from "xstate";
@@ -51,7 +52,7 @@ function startWorkflowActor({
       workflow,
       snapshot: actor.getPersistedSnapshot(),
       sqlitePath,
-    });
+    }).catch(() => {});
   });
   actor.start();
   actor.send({
@@ -118,8 +119,8 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
   };
 }
 
-function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
-  const diskState = loadLoopState(workspaceDir);
+async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
+  const diskState = await loadLoopState(workspaceDir);
   if (diskState.runId !== runId) return false;
   if (!["running", "paused", "cancelling"].includes(diskState.status))
     return false;
@@ -130,7 +131,7 @@ function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   diskState.runnerPid = null;
   diskState.lastHeartbeatAt = new Date().toISOString();
   diskState.completedAt = new Date().toISOString();
-  saveLoopState(workspaceDir, diskState);
+  await saveLoopState(workspaceDir, diskState);
 
   const actorEntry = workflowActors.get(runId);
   if (actorEntry?.workspace === workspaceDir) {
@@ -150,7 +151,7 @@ function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   } else {
     let workflowState = status;
     if (status === "running" || status === "paused") workflowState = "failed";
-    saveWorkflowTerminalState(workspaceDir, {
+    await saveWorkflowTerminalState(workspaceDir, {
       runId,
       workflow,
       state: workflowState,
@@ -169,8 +170,8 @@ function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   return true;
 }
 
-function readWorkflowStatus(workspaceDir) {
-  const loopState = loadLoopState(workspaceDir);
+async function readWorkflowStatus(workspaceDir) {
+  const loopState = await loadLoopState(workspaceDir);
   const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
 
@@ -273,12 +274,12 @@ function readWorkflowEvents(
   return { events, nextSeq: end, totalLines };
 }
 
-function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
+async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
   if (runId) {
     const actorEntry = workflowActors.get(runId);
     if (actorEntry?.workspace === workspaceDir) {
       const snapshot = actorEntry.actor.getPersistedSnapshot();
-      const saved = saveWorkflowSnapshot(workspaceDir, {
+      const saved = await saveWorkflowSnapshot(workspaceDir, {
         runId,
         workflow,
         snapshot,
@@ -294,7 +295,7 @@ function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
     }
   }
 
-  const disk = loadWorkflowSnapshot(workspaceDir);
+  const disk = await loadWorkflowSnapshot(workspaceDir);
   if (!disk) {
     return {
       source: "none",
@@ -495,8 +496,8 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         const { action, workflow } = params;
 
         if (action === "status") {
-          const status = readWorkflowStatus(ws);
-          const workflowMachine = readWorkflowMachineStatus(
+          const status = await readWorkflowStatus(ws);
+          const workflowMachine = await readWorkflowMachineStatus(
             ws,
             status.runId,
             workflow,
@@ -516,7 +517,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "events") {
-          const currentStatus = readWorkflowStatus(ws);
+          const currentStatus = await readWorkflowStatus(ws);
           const result = readWorkflowEvents(
             ws,
             workflow,
@@ -543,7 +544,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             // Cancel any active in-memory runs for this workspace
             for (const [id, run] of activeRuns) {
               if (run.workspace !== ws) continue;
-              const diskState = loadLoopState(ws);
+              const diskState = await loadLoopState(ws);
               if (
                 ["completed", "failed", "cancelled"].includes(diskState.status)
               ) {
@@ -567,20 +568,20 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                 run.promise,
                 new Promise((r) => setTimeout(r, 10_000)),
               ]);
-              markRunTerminalOnDisk(ws, id, workflow, "cancelled");
+              await markRunTerminalOnDisk(ws, id, workflow, "cancelled");
               activeRuns.delete(id);
               workflowActors.delete(id);
             }
 
             // Also check disk state — guards against restarts where activeRuns was cleared
             {
-              const diskLoopState = loadLoopState(ws);
+              const diskLoopState = await loadLoopState(ws);
               if (
                 diskLoopState.status === "running" ||
                 diskLoopState.status === "paused"
               ) {
                 // Mark stale or orphaned disk runs as failed so the new run can start
-                markRunTerminalOnDisk(
+                await markRunTerminalOnDisk(
                   ws,
                   diskLoopState.runId,
                   workflow,
@@ -592,15 +593,18 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             const nextRunId = randomUUID().slice(0, 8);
             const initialAgent = params.agentRoles?.issueSelector || "gemini";
 
+            // Preserve prior issueQueue so runDevelopLoop can merge terminal statuses
+            const priorLoopState = loadLoopState(ws);
+
             // Save initial loop state
-            saveLoopState(ws, {
+            await saveLoopState(ws, {
               version: 1,
               runId: nextRunId,
               goal: params.goal,
               status: "running",
               projectFilter: params.projectFilter || null,
               maxIssues: params.maxIssues || null,
-              issueQueue: [],
+              issueQueue: priorLoopState.issueQueue || [],
               currentIndex: 0,
               currentStage: `${workflow}_starting`,
               currentStageStartedAt: new Date().toISOString(),
@@ -630,9 +634,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             const config = resolveConfig(ws, overrides);
             const artifactsDir = path.join(ws, ".coder", "artifacts");
             const scratchpadDir = path.join(ws, ".coder", "scratchpad");
-            mkdirSync(path.join(ws, ".coder"), { recursive: true });
-            mkdirSync(artifactsDir, { recursive: true });
-            mkdirSync(scratchpadDir, { recursive: true });
+            await mkdir(path.join(ws, ".coder"), { recursive: true });
+            await mkdir(artifactsDir, { recursive: true });
+            await mkdir(scratchpadDir, { recursive: true });
             ensureLogsDir(ws);
 
             const log = makeJsonlLogger(ws, workflow, { runId: nextRunId });
@@ -752,7 +756,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
                   actorEntry.actor.stop();
                   workflowActors.delete(nextRunId);
                 }
-                markRunTerminalOnDisk(ws, nextRunId, workflow, "failed");
+                await markRunTerminalOnDisk(ws, nextRunId, workflow, "failed");
                 activeRuns.delete(nextRunId);
                 await agentPool.killAll();
               }
@@ -821,7 +825,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
               ],
             };
           }
-          const cancelledOnDisk = markRunTerminalOnDisk(
+          const cancelledOnDisk = await markRunTerminalOnDisk(
             ws,
             runId,
             workflow,

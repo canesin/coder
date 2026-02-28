@@ -191,7 +191,7 @@ test("quality_review execute: generates spec delta, persists to state, and passe
   writeFileSync(path.join(artifactsDir, "ISSUE.md"), "Issue content");
   writeFileSync(path.join(artifactsDir, "PLAN.md"), "Plan content");
 
-  saveState(ws, {
+  await saveState(ws, {
     selected: null,
     selectedProject: null,
     linearProjects: null,
@@ -276,7 +276,7 @@ test("quality_review execute: generates spec delta, persists to state, and passe
   const result = await qualityReviewMachine.run({ allowNoTests: true }, ctx);
   assert.equal(result.status, "ok", result.error);
 
-  const finalState = loadState(ws);
+  const finalState = await loadState(ws);
   assert.ok(
     finalState.specDeltaSummary,
     "specDeltaSummary should be persisted to state",

@@ -1,36 +1,39 @@
 import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+  access,
+  mkdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { assign, setup } from "xstate";
 import { z } from "zod";
 import {
-  runSqliteIgnoreErrors,
+  runSqliteAsyncIgnoreErrors,
   sqlEscape,
   sqliteAvailable,
 } from "../sqlite.js";
 
 const WORKFLOW_STATE_SCHEMA_VERSION = 2;
 
+let _writeChain = Promise.resolve();
+let _sqliteWriteChain = Promise.resolve();
+
 function nowIso() {
   return new Date().toISOString();
 }
 
-function atomicWriteJson(filePath, data) {
+async function atomicWriteJson(filePath, data) {
   const dir = path.dirname(filePath);
   const tmpPath = filePath + ".tmp";
   let op = "mkdir";
   try {
-    mkdirSync(dir, { recursive: true });
+    await mkdir(dir, { recursive: true });
     op = "write";
-    writeFileSync(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf8");
+    await writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf8");
     op = "rename";
-    renameSync(tmpPath, filePath);
+    await rename(tmpPath, filePath);
   } catch (err) {
     const code = err.code ? ` (${err.code})` : "";
     throw new Error(
@@ -39,9 +42,8 @@ function atomicWriteJson(filePath, data) {
   }
 }
 
-function persistSnapshotToSqlite(sqlitePath, payload) {
-  if (!sqlitePath || !sqliteAvailable()) return;
-  mkdirSync(path.dirname(sqlitePath), { recursive: true });
+async function _persistSnapshotToSqliteInner(sqlitePath, payload) {
+  await mkdir(path.dirname(sqlitePath), { recursive: true });
   const valueJson = JSON.stringify(payload.value ?? null);
   const contextJson = JSON.stringify(payload.context ?? {});
   const sql = `
@@ -60,28 +62,47 @@ ON CONFLICT(run_id) DO UPDATE SET
   context_json=excluded.context_json,
   updated_at=excluded.updated_at;
 `;
-  runSqliteIgnoreErrors(sqlitePath, sql);
+  await runSqliteAsyncIgnoreErrors(sqlitePath, sql);
+}
+
+async function persistSnapshotToSqlite(sqlitePath, payload) {
+  if (!sqlitePath || !sqliteAvailable()) return;
+  _sqliteWriteChain = _sqliteWriteChain
+    .then(() => _persistSnapshotToSqliteInner(sqlitePath, payload))
+    .catch(() => {});
+  await _sqliteWriteChain;
+}
+
+async function fileExists(p) {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readGuardRunId(statePath, guardRunId) {
+  if (!guardRunId) return false;
+  if (!(await fileExists(statePath))) return false;
+  try {
+    const existing = JSON.parse(await readFile(statePath, "utf8"));
+    if (existing.runId && existing.runId !== guardRunId) return true;
+  } catch {}
+  return false;
 }
 
 export function workflowStatePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "workflow-state.json");
 }
 
-export function saveWorkflowSnapshot(
+export async function saveWorkflowSnapshot(
   workspaceDir,
   { runId, workflow = "develop", snapshot, sqlitePath = "", guardRunId = "" },
 ) {
   if (!runId || !snapshot) return null;
-  // Guard: skip write if a newer run owns the state file
-  if (guardRunId) {
-    const statePath = workflowStatePathFor(workspaceDir);
-    if (existsSync(statePath)) {
-      try {
-        const existing = JSON.parse(readFileSync(statePath, "utf8"));
-        if (existing.runId && existing.runId !== guardRunId) return null;
-      } catch {}
-    }
-  }
+  const statePath = workflowStatePathFor(workspaceDir);
+  if (await readGuardRunId(statePath, guardRunId)) return null;
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,
@@ -90,13 +111,19 @@ export function saveWorkflowSnapshot(
     context: snapshot.context,
     updatedAt: nowIso(),
   };
-  const statePath = workflowStatePathFor(workspaceDir);
-  atomicWriteJson(statePath, payload);
-  persistSnapshotToSqlite(sqlitePath, payload);
+  let writeErr;
+  _writeChain = _writeChain
+    .then(() => atomicWriteJson(statePath, payload))
+    .catch((e) => {
+      writeErr = e;
+    });
+  await _writeChain;
+  if (writeErr) throw writeErr;
+  await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
-export function saveWorkflowTerminalState(
+export async function saveWorkflowTerminalState(
   workspaceDir,
   {
     runId,
@@ -108,15 +135,8 @@ export function saveWorkflowTerminalState(
   },
 ) {
   if (!runId || !state) return null;
-  if (guardRunId) {
-    const statePath = workflowStatePathFor(workspaceDir);
-    if (existsSync(statePath)) {
-      try {
-        const existing = JSON.parse(readFileSync(statePath, "utf8"));
-        if (existing.runId && existing.runId !== guardRunId) return null;
-      } catch {}
-    }
-  }
+  const statePath = workflowStatePathFor(workspaceDir);
+  if (await readGuardRunId(statePath, guardRunId)) return null;
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,
@@ -125,17 +145,23 @@ export function saveWorkflowTerminalState(
     context,
     updatedAt: nowIso(),
   };
-  const statePath = workflowStatePathFor(workspaceDir);
-  atomicWriteJson(statePath, payload);
-  persistSnapshotToSqlite(sqlitePath, payload);
+  let writeErr;
+  _writeChain = _writeChain
+    .then(() => atomicWriteJson(statePath, payload))
+    .catch((e) => {
+      writeErr = e;
+    });
+  await _writeChain;
+  if (writeErr) throw writeErr;
+  await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
-export function loadWorkflowSnapshot(workspaceDir) {
+export async function loadWorkflowSnapshot(workspaceDir) {
   const p = workflowStatePathFor(workspaceDir);
-  if (!existsSync(p)) return null;
+  if (!(await fileExists(p))) return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8"));
+    return JSON.parse(await readFile(p, "utf8"));
   } catch (err) {
     console.error(`[coder] corrupt workflow state ${p}: ${err.message}`);
     return null;
@@ -302,32 +328,36 @@ export function loopStatePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "loop-state.json");
 }
 
-export function loadLoopState(workspaceDir) {
+export async function loadLoopState(workspaceDir) {
   const p = loopStatePathFor(workspaceDir);
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = JSON.parse(await readFile(p, "utf8"));
     return LoopStateSchema.parse(raw);
   } catch {
     return LoopStateSchema.parse({});
   }
 }
 
-export function saveLoopState(
+export async function saveLoopState(
   workspaceDir,
   loopState,
   { guardRunId = "" } = {},
 ) {
   const p = loopStatePathFor(workspaceDir);
-  // Guard: skip write if a newer run owns the state file
   if (guardRunId) {
-    if (existsSync(p)) {
-      try {
-        const existing = JSON.parse(readFileSync(p, "utf8"));
-        if (existing.runId && existing.runId !== guardRunId) return;
-      } catch {}
-    }
+    try {
+      const existing = JSON.parse(await readFile(p, "utf8"));
+      if (existing.runId && existing.runId !== guardRunId) return;
+    } catch {}
   }
-  atomicWriteJson(p, loopState);
+  let writeErr;
+  _writeChain = _writeChain
+    .then(() => atomicWriteJson(p, loopState))
+    .catch((e) => {
+      writeErr = e;
+    });
+  await _writeChain;
+  if (writeErr) throw writeErr;
 }
 
 // --- CLI control signals (file-based cancel/pause/resume) ---
@@ -336,41 +366,40 @@ export function controlSignalPath(workspaceDir) {
   return path.join(workspaceDir, ".coder", "control.json");
 }
 
-export function writeControlSignal(workspaceDir, signal) {
+export async function writeControlSignal(workspaceDir, signal) {
   const p = controlSignalPath(workspaceDir);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify({ ...signal, ts: nowIso() }), "utf8");
+  await mkdir(path.dirname(p), { recursive: true });
+  await writeFile(p, JSON.stringify({ ...signal, ts: nowIso() }), "utf8");
 }
 
 /**
  * Poll for a file-based control signal and apply it to the cancelToken.
  * Returns the action name if a signal was consumed, otherwise null.
  */
-export function pollControlSignal(workspaceDir, cancelToken, runId) {
+export async function pollControlSignal(workspaceDir, cancelToken, runId) {
   const p = controlSignalPath(workspaceDir);
-  if (!existsSync(p)) return null;
+  if (!(await fileExists(p))) return null;
   try {
-    const signal = JSON.parse(readFileSync(p, "utf8"));
-    // Only consume if runId matches (or no runId specified in signal)
+    const signal = JSON.parse(await readFile(p, "utf8"));
     if (signal.runId && signal.runId !== runId) return null;
     if (signal.action === "cancel") {
       cancelToken.cancelled = true;
       try {
-        unlinkSync(p);
+        await unlink(p);
       } catch {}
       return "cancel";
     }
     if (signal.action === "pause") {
       cancelToken.paused = true;
       try {
-        unlinkSync(p);
+        await unlink(p);
       } catch {}
       return "pause";
     }
     if (signal.action === "resume") {
       cancelToken.paused = false;
       try {
-        unlinkSync(p);
+        await unlink(p);
       } catch {}
       return "resume";
     }
@@ -468,17 +497,24 @@ export function statePathFor(workspaceDir) {
   return path.join(workspaceDir, ".coder", "state.json");
 }
 
-export function loadState(workspaceDir) {
+export async function loadState(workspaceDir) {
   const p = statePathFor(workspaceDir);
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = JSON.parse(await readFile(p, "utf8"));
     return IssueStateSchema.parse(raw);
   } catch {
     return { ...DEFAULT_ISSUE_STATE };
   }
 }
 
-export function saveState(workspaceDir, state) {
+export async function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
-  atomicWriteJson(p, state);
+  let writeErr;
+  _writeChain = _writeChain
+    .then(() => atomicWriteJson(p, state))
+    .catch((e) => {
+      writeErr = e;
+    });
+  await _writeChain;
+  if (writeErr) throw writeErr;
 }

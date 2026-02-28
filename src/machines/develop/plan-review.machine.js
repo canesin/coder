@@ -56,7 +56,7 @@ export default defineMachine({
   inputSchema: z.object({ round: z.number().int().nonnegative().default(0) }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
@@ -134,7 +134,7 @@ Constraints:
     }
 
     state.steps.wroteCritique = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     const planMd = existsSync(paths.plan)
       ? readFileSync(paths.plan, "utf8")

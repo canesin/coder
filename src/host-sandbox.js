@@ -41,6 +41,15 @@ export class CommandTimeoutError extends Error {
   }
 }
 
+export class CommandFatalStderrError extends Error {
+  constructor(pattern, category) {
+    super(`Command aborted after fatal stderr match [${category}]: ${pattern}`);
+    this.name = "CommandFatalStderrError";
+    this.pattern = pattern;
+    this.category = category;
+  }
+}
+
 export class McpStartupError extends Error {
   constructor(agentName, failedServers) {
     super(
@@ -137,7 +146,10 @@ class HostSandboxInstance extends EventEmitter {
     const hangResetOnStderr = options.hangResetOnStderr ?? true;
     const killOnStderrPatterns = Array.isArray(options.killOnStderrPatterns)
       ? options.killOnStderrPatterns.filter(
-          (p) => typeof p === "string" && p.trim() !== "",
+          (p) =>
+            typeof p?.pattern === "string" &&
+            p.pattern.trim() !== "" &&
+            typeof p?.category === "string",
         )
       : [];
 
@@ -288,14 +300,11 @@ class HostSandboxInstance extends EventEmitter {
         if (killOnStderrPatterns.length > 0) {
           const lower = chunk.toLowerCase();
           const hit = killOnStderrPatterns.find((p) =>
-            lower.includes(String(p).toLowerCase()),
+            lower.includes(p.pattern.toLowerCase()),
           );
           if (hit) {
             terminateChild();
-            const err = new Error(
-              `Command aborted after stderr auth failure: ${hit}`,
-            );
-            err.name = "CommandAuthError";
+            const err = new CommandFatalStderrError(hit.pattern, hit.category);
             err.stdout = stdout;
             err.stderr = stderr;
             settle(err);

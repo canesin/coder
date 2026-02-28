@@ -209,7 +209,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     if (!state.steps.implemented) {
@@ -246,7 +246,7 @@ export default defineMachine({
     );
     state.steps.ppcommitInitiallyClean = ppBefore.exitCode === 0;
     ctx.log({ event: "ppcommit_before", exitCode: ppBefore.exitCode });
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     const ppOutput = (ppBefore.stdout || ppBefore.stderr || "").trim();
     const ppSection =
@@ -265,7 +265,7 @@ export default defineMachine({
       });
       requireExitZero(reviewerName, "spec delta generation", deltaRes);
       state.specDeltaSummary = stripAgentNoise(deltaRes.stdout || "").trim();
-      saveState(ctx.workspaceDir, state);
+      await saveState(ctx.workspaceDir, state);
       ctx.log({ event: "spec_delta_done" });
     }
 
@@ -278,14 +278,14 @@ export default defineMachine({
       // Generate reviewer session ID for session continuity across rounds
       if (!state.reviewerSessionId) {
         state.reviewerSessionId = randomUUID();
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
 
       // Initialize review round tracking if not set (recovery-safe)
       if (state.steps.reviewRound === undefined) {
         state.steps.reviewRound = 0;
         state.steps.programmerFixedRound = 0;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
 
       const maxRounds = 2;
@@ -340,13 +340,17 @@ export default defineMachine({
               timeoutMs: ctx.config.workflow.timeouts.reviewRound,
             });
           } catch (err) {
-            if (err.name === "CommandAuthError" && reviewSessionOpts.resumeId) {
+            if (
+              err.name === "CommandFatalStderrError" &&
+              err.category === "auth" &&
+              reviewSessionOpts.resumeId
+            ) {
               ctx.log({
                 event: "session_resume_failed",
                 sessionId: state.reviewerSessionId,
               });
               state.reviewerSessionId = randomUUID();
-              saveState(ctx.workspaceDir, state);
+              await saveState(ctx.workspaceDir, state);
               // Fresh session loses prior review context — acceptable per GH-89
               reviewRes = await reviewerAgent.execute(reviewPrompt, {
                 sessionId: state.reviewerSessionId,
@@ -362,7 +366,7 @@ export default defineMachine({
           const { verdict } = parseReviewVerdict(paths.reviewFindings);
           state.steps.reviewRound = round;
           state.steps.reviewVerdict = verdict || "REVISE";
-          saveState(ctx.workspaceDir, state);
+          await saveState(ctx.workspaceDir, state);
 
           if (!verdict) {
             ctx.log({
@@ -376,7 +380,7 @@ export default defineMachine({
 
           if (verdict === "APPROVED") {
             state.steps.reviewerCompleted = true;
-            saveState(ctx.workspaceDir, state);
+            await saveState(ctx.workspaceDir, state);
             break;
           }
         }
@@ -398,13 +402,17 @@ export default defineMachine({
             timeoutMs: ctx.config.workflow.timeouts.programmerFix,
           });
         } catch (err) {
-          if (err.name === "CommandAuthError" && state.claudeSessionId) {
+          if (
+            err.name === "CommandFatalStderrError" &&
+            err.category === "auth" &&
+            state.claudeSessionId
+          ) {
             ctx.log({
               event: "session_resume_failed",
               sessionId: state.claudeSessionId,
             });
             state.claudeSessionId = null;
-            saveState(ctx.workspaceDir, state);
+            await saveState(ctx.workspaceDir, state);
             // Fresh session loses prior context — acceptable per GH-89
             fixRes = await programmerAgent.execute(fixPrompt, {
               timeoutMs: ctx.config.workflow.timeouts.programmerFix,
@@ -416,7 +424,7 @@ export default defineMachine({
         requireExitZero(programmerName, `fix round ${round}`, fixRes);
 
         state.steps.programmerFixedRound = round;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
 
         // WIP checkpoint after programmer fix
         maybeCheckpointWip(
@@ -451,7 +459,7 @@ export default defineMachine({
       // Mark review phase complete
       if (!state.steps.reviewerCompleted && !ctx.cancelToken.cancelled) {
         state.steps.reviewerCompleted = true;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
       }
     }
 
@@ -509,7 +517,7 @@ Hard constraints:
       );
     }
     state.steps.ppcommitClean = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // -----------------------------------------------------------------------
     // Phase 4: test hard gate
@@ -542,7 +550,7 @@ Hard constraints:
     );
 
     state.reviewFingerprint = computeGitWorktreeFingerprint(repoRoot);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
     return {
       status: "ok",
       data: {

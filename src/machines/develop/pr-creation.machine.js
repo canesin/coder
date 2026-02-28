@@ -28,7 +28,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     if (!state.steps.testsPassed) {
@@ -217,7 +217,7 @@ export default defineMachine({
     state.prBranch = remoteBranch;
     state.prBase = baseBranch;
     state.steps.prCreated = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     ctx.log({
       event: "pr_created",

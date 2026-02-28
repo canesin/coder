@@ -12,10 +12,41 @@ test("host sandbox aborts command on configured stderr auth-failure pattern", as
         `echo "MCP server 'linear' rejected stored OAuth token" 1>&2; sleep 2; echo "should-not-print"`,
         {
           timeoutMs: 5000,
-          killOnStderrPatterns: ["rejected stored OAuth token"],
+          killOnStderrPatterns: [
+            { pattern: "rejected stored OAuth token", category: "auth" },
+          ],
         },
       ),
-    /Command aborted after stderr auth failure/,
+    (err) => {
+      assert.equal(err.name, "CommandFatalStderrError");
+      assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "rejected stored OAuth token");
+      return true;
+    },
+  );
+});
+
+test("host sandbox aborts with transient category on matching stderr pattern", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `echo "fetch failed sending request" 1>&2; sleep 2; echo "should-not-print"`,
+        {
+          timeoutMs: 5000,
+          killOnStderrPatterns: [
+            { pattern: "fetch failed sending request", category: "transient" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStderrError");
+      assert.equal(err.category, "transient");
+      assert.equal(err.pattern, "fetch failed sending request");
+      return true;
+    },
   );
 });
 
