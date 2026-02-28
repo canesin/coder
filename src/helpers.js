@@ -549,17 +549,13 @@ export function computeGitWorktreeFingerprint(repoDir) {
   if (untrackedPaths.length > 0) {
     untrackedHashes = untrackedPaths
       .map((p) => {
-        const ho = spawnSync("git", ["hash-object", "--", p], {
-          cwd: repoDir,
-          encoding: "utf8",
-        });
-        if (ho.status !== 0) {
-          const msg = (ho.stderr || ho.stdout || "").trim();
-          throw new Error(
-            `git hash-object -- ${p} failed${msg ? `: ${msg}` : ""}`,
-          );
+        try {
+          const buf = readFileSync(path.join(repoDir, p));
+          const hashHex = createHash("sha256").update(buf).digest("hex");
+          return `${p}\n${hashHex}\n`;
+        } catch (err) {
+          return `${p}\nERR:${err.code || "UNKNOWN"}\n`;
         }
-        return `${p}\n${(ho.stdout || "").trim()}\n`;
       })
       .join("");
   }
