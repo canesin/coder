@@ -33,7 +33,7 @@ function tryEvictStaleLock(lockPath) {
       try {
         unlinkSync(lockPath);
       } catch (unlinkErr) {
-        if (unlinkErr.code !== "ENOENT") return;
+        if (unlinkErr.code === "ENOENT") return;
       }
     }
   } catch {
