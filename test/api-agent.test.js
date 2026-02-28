@@ -117,7 +117,7 @@ test("GH-117: kill() aborts multiple concurrent requests", async () => {
         "aborted request should return exitCode 124",
       );
     }
-    assert.equal(agent.activeControllers.size, 0);
+    assert.equal(agent._activeControllers.size, 0);
   } finally {
     global.fetch = origFetch;
   }
@@ -153,7 +153,7 @@ test("GH-117: concurrent execute() calls don't interfere", async () => {
     assert.equal(r2.exitCode, 0);
     assert.ok(r1.stdout.startsWith("resp-"));
     assert.ok(r2.stdout.startsWith("resp-"));
-    assert.equal(agent.activeControllers.size, 0);
+    assert.equal(agent._activeControllers.size, 0);
   } finally {
     global.fetch = origFetch;
   }
@@ -198,7 +198,7 @@ test("GH-117: one call's timeout does not abort a concurrent call", async () => 
     const resB = await pB;
     assert.equal(resB.exitCode, 0, "long-timeout call must not be aborted");
     assert.equal(resB.stdout, "ok-b");
-    assert.equal(agent.activeControllers.size, 0);
+    assert.equal(agent._activeControllers.size, 0);
   } finally {
     global.fetch = origFetch;
   }
@@ -247,7 +247,7 @@ test("GH-117: new request after kill() is not pre-aborted", async () => {
     assert.equal(res.exitCode, 0, "post-kill request must not be pre-aborted");
     assert.equal(res.stdout, "fresh");
     assert.equal(fetchCount, 1);
-    assert.equal(agent.activeControllers.size, 0);
+    assert.equal(agent._activeControllers.size, 0);
   } finally {
     global.fetch = origFetch;
   }

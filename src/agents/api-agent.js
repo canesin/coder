@@ -25,13 +25,13 @@ export class ApiAgent extends AgentAdapter {
     this.apiKey = opts.apiKey;
     this.model = opts.model || "";
     this.systemPrompt = opts.systemPrompt || "";
-    this.activeControllers = new Set();
+    this._activeControllers = new Set();
   }
 
   async execute(prompt, opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const controller = new AbortController();
-    this.activeControllers.add(controller);
+    this._activeControllers.add(controller);
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
@@ -52,7 +52,7 @@ export class ApiAgent extends AgentAdapter {
       return { exitCode: 1, stdout: "", stderr: err.message };
     } finally {
       clearTimeout(timer);
-      this.activeControllers.delete(controller);
+      this._activeControllers.delete(controller);
     }
   }
 
@@ -100,10 +100,10 @@ export class ApiAgent extends AgentAdapter {
   }
 
   async kill() {
-    for (const controller of this.activeControllers) {
+    for (const controller of this._activeControllers) {
       controller.abort();
     }
-    this.activeControllers.clear();
+    this._activeControllers.clear();
   }
 
   async _callGemini(prompt, signal) {
