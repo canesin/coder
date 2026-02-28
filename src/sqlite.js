@@ -27,9 +27,13 @@ export function sqlEscape(value) {
 }
 
 export class SqliteTimeoutError extends Error {
-  constructor(message) {
+  constructor(message, { dbPath, timeoutMs, graceMs } = {}) {
     super(message);
     this.name = "SqliteTimeoutError";
+    this.code = "SQLITE_TIMEOUT";
+    this.dbPath = dbPath ?? null;
+    this.timeoutMs = timeoutMs ?? null;
+    this.graceMs = graceMs ?? null;
   }
 }
 
@@ -79,7 +83,11 @@ export function runSqliteAsync(dbPath, sql, { timeoutMs = 30000 } = {}) {
       cleanup();
       if (killed) {
         reject(
-          new SqliteTimeoutError(`sqlite3 timed out after ${timeoutMs}ms`),
+          new SqliteTimeoutError(`sqlite3 timed out after ${timeoutMs}ms`, {
+            dbPath,
+            timeoutMs,
+            graceMs: KILL_GRACE_MS,
+          }),
         );
         return;
       }

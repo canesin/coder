@@ -18,6 +18,7 @@ import {
 const WORKFLOW_STATE_SCHEMA_VERSION = 2;
 
 let _writeChain = Promise.resolve();
+let _sqliteWriteChain = Promise.resolve();
 
 function nowIso() {
   return new Date().toISOString();
@@ -41,8 +42,7 @@ async function atomicWriteJson(filePath, data) {
   }
 }
 
-async function persistSnapshotToSqlite(sqlitePath, payload) {
-  if (!sqlitePath || !sqliteAvailable()) return;
+async function _persistSnapshotToSqliteInner(sqlitePath, payload) {
   await mkdir(path.dirname(sqlitePath), { recursive: true });
   const valueJson = JSON.stringify(payload.value ?? null);
   const contextJson = JSON.stringify(payload.context ?? {});
@@ -63,6 +63,14 @@ ON CONFLICT(run_id) DO UPDATE SET
   updated_at=excluded.updated_at;
 `;
   await runSqliteAsyncIgnoreErrors(sqlitePath, sql);
+}
+
+async function persistSnapshotToSqlite(sqlitePath, payload) {
+  if (!sqlitePath || !sqliteAvailable()) return;
+  _sqliteWriteChain = _sqliteWriteChain
+    .then(() => _persistSnapshotToSqliteInner(sqlitePath, payload))
+    .catch(() => {});
+  await _sqliteWriteChain;
 }
 
 async function fileExists(p) {

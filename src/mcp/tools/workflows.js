@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createActor } from "xstate";
@@ -639,9 +640,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
           const config = resolveConfig(ws, overrides);
           const artifactsDir = path.join(ws, ".coder", "artifacts");
           const scratchpadDir = path.join(ws, ".coder", "scratchpad");
-          mkdirSync(path.join(ws, ".coder"), { recursive: true });
-          mkdirSync(artifactsDir, { recursive: true });
-          mkdirSync(scratchpadDir, { recursive: true });
+          await mkdir(path.join(ws, ".coder"), { recursive: true });
+          await mkdir(artifactsDir, { recursive: true });
+          await mkdir(scratchpadDir, { recursive: true });
           ensureLogsDir(ws);
 
           const log = makeJsonlLogger(ws, workflow, { runId: nextRunId });

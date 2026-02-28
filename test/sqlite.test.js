@@ -76,6 +76,10 @@ test("runSqliteAsync times out and throws SqliteTimeoutError", async () => {
         assert.ok(err instanceof SqliteTimeoutError);
         assert.ok(err instanceof Error);
         assert.ok(err.message.includes("timed out"));
+        assert.equal(err.code, "SQLITE_TIMEOUT");
+        assert.equal(err.dbPath, dbPath);
+        assert.equal(err.timeoutMs, 200);
+        assert.equal(err.graceMs, 5000);
         return true;
       },
     );
@@ -89,9 +93,17 @@ test("runSqliteAsyncIgnoreErrors swallows errors", async () => {
   await runSqliteAsyncIgnoreErrors("/nonexistent/path.db", "INVALID SQL;");
 });
 
-test("SqliteTimeoutError is an instance of Error", () => {
-  const err = new SqliteTimeoutError("test");
+test("SqliteTimeoutError is an instance of Error with structured properties", () => {
+  const err = new SqliteTimeoutError("test", {
+    dbPath: "/tmp/test.db",
+    timeoutMs: 5000,
+    graceMs: 3000,
+  });
   assert.ok(err instanceof Error);
   assert.ok(err instanceof SqliteTimeoutError);
   assert.equal(err.name, "SqliteTimeoutError");
+  assert.equal(err.code, "SQLITE_TIMEOUT");
+  assert.equal(err.dbPath, "/tmp/test.db");
+  assert.equal(err.timeoutMs, 5000);
+  assert.equal(err.graceMs, 3000);
 });
