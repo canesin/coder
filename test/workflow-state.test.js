@@ -34,14 +34,14 @@ test("loopStatePathFor returns expected path", () => {
   );
 });
 
-test("loadState returns defaults for nonexistent workspace", () => {
-  const state = loadState("/nonexistent-path-" + Date.now());
+test("loadState returns defaults for nonexistent workspace", async () => {
+  const state = await loadState("/nonexistent-path-" + Date.now());
   assert.equal(state.selected, null);
   assert.equal(state.repoPath, null);
   assert.deepEqual(state.steps, {});
 });
 
-test("saveState + loadState round-trip", () => {
+test("saveState + loadState round-trip", async () => {
   const ws = makeTmpDir();
   const state = {
     selected: { source: "github", id: "123", title: "Test issue" },
@@ -63,15 +63,15 @@ test("saveState + loadState round-trip", () => {
     scratchpadPath: null,
     lastWipPushAt: null,
   };
-  saveState(ws, state);
-  const loaded = loadState(ws);
+  await saveState(ws, state);
+  const loaded = await loadState(ws);
   assert.equal(loaded.selected.id, "123");
   assert.equal(loaded.repoPath, ".");
   assert.equal(loaded.steps.wroteIssue, true);
   rmSync(ws, { recursive: true, force: true });
 });
 
-test("saveState + loadState round-trip with gitlab source", () => {
+test("saveState + loadState round-trip with gitlab source", async () => {
   const ws = makeTmpDir();
   const state = {
     selected: { source: "gitlab", id: "42", title: "Add health endpoint" },
@@ -93,21 +93,21 @@ test("saveState + loadState round-trip with gitlab source", () => {
     scratchpadPath: null,
     lastWipPushAt: null,
   };
-  saveState(ws, state);
-  const loaded = loadState(ws);
+  await saveState(ws, state);
+  const loaded = await loadState(ws);
   assert.equal(loaded.selected.source, "gitlab");
   assert.equal(loaded.selected.id, "42");
   rmSync(ws, { recursive: true, force: true });
 });
 
-test("loadLoopState returns defaults for nonexistent workspace", () => {
-  const state = loadLoopState("/nonexistent-path-" + Date.now());
+test("loadLoopState returns defaults for nonexistent workspace", async () => {
+  const state = await loadLoopState("/nonexistent-path-" + Date.now());
   assert.equal(state.status, "idle");
   assert.equal(state.runId, null);
   assert.deepEqual(state.issueQueue, []);
 });
 
-test("saveLoopState + loadLoopState round-trip", () => {
+test("saveLoopState + loadLoopState round-trip", async () => {
   const ws = makeTmpDir();
   const state = {
     runId: "abc123",
@@ -125,8 +125,8 @@ test("saveLoopState + loadLoopState round-trip", () => {
     startedAt: new Date().toISOString(),
     completedAt: null,
   };
-  saveLoopState(ws, state);
-  const loaded = loadLoopState(ws);
+  await saveLoopState(ws, state);
+  const loaded = await loadLoopState(ws);
   assert.equal(loaded.runId, "abc123");
   assert.equal(loaded.status, "running");
   assert.equal(loaded.goal, "test goal");
@@ -208,7 +208,7 @@ test("createWorkflowLifecycleMachine handles fail from running", () => {
   actor.stop();
 });
 
-test("saveWorkflowSnapshot + loadWorkflowSnapshot round-trip", () => {
+test("saveWorkflowSnapshot + loadWorkflowSnapshot round-trip", async () => {
   const ws = makeTmpDir();
   const machine = createWorkflowLifecycleMachine();
   const actor = createActor(machine);
@@ -220,13 +220,13 @@ test("saveWorkflowSnapshot + loadWorkflowSnapshot round-trip", () => {
     at: new Date().toISOString(),
   });
 
-  saveWorkflowSnapshot(ws, {
+  await saveWorkflowSnapshot(ws, {
     runId: "snap-run",
     workflow: "develop",
     snapshot: actor.getPersistedSnapshot(),
   });
 
-  const loaded = loadWorkflowSnapshot(ws);
+  const loaded = await loadWorkflowSnapshot(ws);
   assert.equal(loaded.runId, "snap-run");
   assert.equal(loaded.workflow, "develop");
   assert.equal(loaded.value, "running");
@@ -235,19 +235,86 @@ test("saveWorkflowSnapshot + loadWorkflowSnapshot round-trip", () => {
   rmSync(ws, { recursive: true, force: true });
 });
 
-test("saveWorkflowTerminalState persists terminal state", () => {
+test("saveWorkflowTerminalState persists terminal state", async () => {
   const ws = makeTmpDir();
-  saveWorkflowTerminalState(ws, {
+  await saveWorkflowTerminalState(ws, {
     runId: "term-run",
     workflow: "research",
     state: "completed",
     context: { runId: "term-run", workflow: "research" },
   });
 
-  const loaded = loadWorkflowSnapshot(ws);
+  const loaded = await loadWorkflowSnapshot(ws);
   assert.equal(loaded.runId, "term-run");
   assert.equal(loaded.value, "completed");
   assert.equal(loaded.workflow, "research");
 
+  rmSync(ws, { recursive: true, force: true });
+});
+
+test("concurrent saveState calls serialize without errors", async () => {
+  const ws = makeTmpDir();
+  const writes = [];
+  for (let i = 0; i < 5; i++) {
+    writes.push(
+      saveState(ws, {
+        selected: { source: "github", id: String(i), title: `Issue ${i}` },
+        selectedProject: null,
+        linearProjects: null,
+        repoPath: ".",
+        baseBranch: "main",
+        branch: null,
+        questions: null,
+        answers: null,
+        steps: {},
+        claudeSessionId: null,
+        lastError: null,
+        reviewFingerprint: null,
+        reviewedAt: null,
+        prUrl: null,
+        prBranch: null,
+        prBase: null,
+        scratchpadPath: null,
+        lastWipPushAt: null,
+      }),
+    );
+  }
+  await Promise.all(writes);
+  const loaded = await loadState(ws);
+  assert.ok(loaded.selected);
+  // Last write wins — id should be "4"
+  assert.equal(loaded.selected.id, "4");
+  rmSync(ws, { recursive: true, force: true });
+});
+
+test("concurrent saveWorkflowSnapshot calls serialize without errors", async () => {
+  const ws = makeTmpDir();
+  const machine = createWorkflowLifecycleMachine();
+  const actor = createActor(machine);
+  actor.start();
+  actor.send({
+    type: "START",
+    runId: "concurrent-run",
+    workflow: "develop",
+    at: new Date().toISOString(),
+  });
+
+  const writes = [];
+  for (let i = 0; i < 5; i++) {
+    writes.push(
+      saveWorkflowSnapshot(ws, {
+        runId: `run-${i}`,
+        workflow: "develop",
+        snapshot: actor.getPersistedSnapshot(),
+      }),
+    );
+  }
+  await Promise.all(writes);
+  const loaded = await loadWorkflowSnapshot(ws);
+  assert.ok(loaded);
+  // Last write wins
+  assert.equal(loaded.runId, "run-4");
+
+  actor.stop();
   rmSync(ws, { recursive: true, force: true });
 });

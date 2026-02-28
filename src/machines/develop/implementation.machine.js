@@ -17,7 +17,7 @@ export default defineMachine({
   inputSchema: z.object({}),
 
   async execute(_input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
@@ -142,7 +142,7 @@ FORBIDDEN patterns:
           sessionId: state.claudeSessionId,
         });
         state.claudeSessionId = null;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
         // Fresh session loses prior planning context — acceptable per GH-89
         res = await programmerAgent.execute(implPrompt, {
           timeoutMs: ctx.config.workflow.timeouts.implementation,
@@ -154,7 +154,7 @@ FORBIDDEN patterns:
     requireExitZero(programmerName, "implementation failed", res);
 
     state.steps.implemented = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     const diffStat = spawnSync("git", ["diff", "--stat", "HEAD"], {
       cwd: repoRoot,

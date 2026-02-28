@@ -20,7 +20,7 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
     const paths = artifactPaths(ctx.artifactsDir);
 
@@ -123,7 +123,7 @@ export default defineMachine({
     if (creatingSession) {
       state.claudeSessionId = randomUUID();
       state.plannerAgentName = plannerName;
-      saveState(ctx.workspaceDir, state);
+      await saveState(ctx.workspaceDir, state);
     }
 
     // Full prompt used only when creating a fresh session.
@@ -227,7 +227,7 @@ Constraints:
               sessionId: state.claudeSessionId,
             });
             state.claudeSessionId = randomUUID();
-            saveState(ctx.workspaceDir, state);
+            await saveState(ctx.workspaceDir, state);
             // Fresh session needs full planPrompt even during REVISE/constraint rounds
             const retryPrompt =
               prompt === planPrompt || prompt.startsWith(planPrompt)
@@ -244,7 +244,7 @@ Constraints:
         requireExitZero(plannerName, "plan generation failed", res);
       } catch (err) {
         state.claudeSessionId = null;
-        saveState(ctx.workspaceDir, state);
+        await saveState(ctx.workspaceDir, state);
         throw err;
       }
 
@@ -305,7 +305,7 @@ Constraints:
     if (!existsSync(paths.plan))
       throw new Error(`PLAN.md not found: ${paths.plan}`);
     state.steps.wrotePlan = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     return { status: "ok", data: { planMd: "written" } };
   },
