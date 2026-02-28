@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import test from "node:test";
 
@@ -138,4 +139,118 @@ test("custom agent falls through to codex exec in _buildCommand", () => {
   const agent = makeAgent("aider");
   const cmd = agent._buildCommand("test prompt");
   assert.ok(cmd.startsWith("codex exec"));
+});
+
+function makeFakeSandbox() {
+  const sandbox = new EventEmitter();
+  sandbox.kill = () => Promise.resolve();
+  sandbox.commands = {
+    run: () => Promise.resolve({ exitCode: 0, stdout: "", stderr: "" }),
+  };
+  return sandbox;
+}
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+test("_ensureSandbox: concurrent calls coalesce to a single create()", async () => {
+  const agent = makeAgent("claude");
+  let createCount = 0;
+  const sandbox = makeFakeSandbox();
+  agent._provider = {
+    create: () => {
+      createCount++;
+      return Promise.resolve(sandbox);
+    },
+  };
+
+  const [s1, s2, s3] = await Promise.all([
+    agent._ensureSandbox(),
+    agent._ensureSandbox(),
+    agent._ensureSandbox(),
+  ]);
+
+  assert.equal(createCount, 1);
+  assert.equal(s1, sandbox);
+  assert.equal(s2, sandbox);
+  assert.equal(s3, sandbox);
+});
+
+test("_ensureSandbox: failed creation clears promise, allowing retry", async () => {
+  const agent = makeAgent("claude");
+  let createCount = 0;
+  const sandbox = makeFakeSandbox();
+  agent._provider = {
+    create: () => {
+      createCount++;
+      if (createCount === 1) return Promise.reject(new Error("boom"));
+      return Promise.resolve(sandbox);
+    },
+  };
+
+  await assert.rejects(() => agent._ensureSandbox(), /boom/);
+  assert.equal(agent._sandboxPromise, null);
+
+  const result = await agent._ensureSandbox();
+  assert.equal(result, sandbox);
+  assert.equal(createCount, 2);
+});
+
+test("_ensureSandbox: kill() during in-flight creation aborts and kills sandbox", async () => {
+  const agent = makeAgent("claude");
+  const d = deferred();
+  agent._provider = { create: () => d.promise };
+
+  const ensurePromise = agent._ensureSandbox();
+
+  await agent.kill();
+  assert.equal(agent._sandboxPromise, null);
+
+  let killCalled = false;
+  const sandbox = makeFakeSandbox();
+  sandbox.kill = () => {
+    killCalled = true;
+    return Promise.resolve();
+  };
+  d.resolve(sandbox);
+
+  await assert.rejects(ensurePromise, { name: "AbortError" });
+  assert.equal(killCalled, true);
+  assert.equal(agent._sandbox, null);
+});
+
+test("_ensureSandbox: rejected first creation does not wipe second in-flight promise", async () => {
+  const agent = makeAgent("claude");
+  const d1 = deferred();
+  const d2 = deferred();
+  let createCount = 0;
+  agent._provider = {
+    create: () => {
+      createCount++;
+      return createCount === 1 ? d1.promise : d2.promise;
+    },
+  };
+
+  const p1 = agent._ensureSandbox();
+  await agent.kill();
+
+  const p2 = agent._ensureSandbox();
+
+  d1.reject(new Error("first failed"));
+  await assert.rejects(p1, /first failed/);
+
+  // Second promise must still be intact
+  assert.notEqual(agent._sandboxPromise, null);
+
+  const sandbox2 = makeFakeSandbox();
+  d2.resolve(sandbox2);
+  const result = await p2;
+  assert.equal(result, sandbox2);
+  assert.equal(agent._sandbox, sandbox2);
 });

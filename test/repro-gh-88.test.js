@@ -18,17 +18,17 @@ function makeTmpDir() {
 
 // --- saveWorkflowTerminalState guardRunId ---
 
-test("GH-88: saveWorkflowTerminalState with guardRunId skips write when runId differs", () => {
+test("GH-88: saveWorkflowTerminalState with guardRunId skips write when runId differs", async () => {
   const ws = makeTmpDir();
   try {
-    saveWorkflowTerminalState(ws, {
+    await saveWorkflowTerminalState(ws, {
       runId: "run-B",
       workflow: "develop",
       state: "running",
       context: { runId: "run-B" },
     });
 
-    const result = saveWorkflowTerminalState(ws, {
+    const result = await saveWorkflowTerminalState(ws, {
       runId: "run-A",
       workflow: "develop",
       state: "completed",
@@ -37,24 +37,24 @@ test("GH-88: saveWorkflowTerminalState with guardRunId skips write when runId di
     });
 
     assert.equal(result, null, "stale write should be blocked");
-    const loaded = loadWorkflowSnapshot(ws);
+    const loaded = await loadWorkflowSnapshot(ws);
     assert.equal(loaded.runId, "run-B", "file should still belong to run-B");
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }
 });
 
-test("GH-88: saveWorkflowTerminalState with guardRunId allows write when runId matches", () => {
+test("GH-88: saveWorkflowTerminalState with guardRunId allows write when runId matches", async () => {
   const ws = makeTmpDir();
   try {
-    saveWorkflowTerminalState(ws, {
+    await saveWorkflowTerminalState(ws, {
       runId: "run-A",
       workflow: "develop",
       state: "running",
       context: { runId: "run-A" },
     });
 
-    const result = saveWorkflowTerminalState(ws, {
+    const result = await saveWorkflowTerminalState(ws, {
       runId: "run-A",
       workflow: "develop",
       state: "completed",
@@ -63,24 +63,24 @@ test("GH-88: saveWorkflowTerminalState with guardRunId allows write when runId m
     });
 
     assert.ok(result, "write should succeed");
-    const loaded = loadWorkflowSnapshot(ws);
+    const loaded = await loadWorkflowSnapshot(ws);
     assert.equal(loaded.value, "completed");
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }
 });
 
-test("GH-88: saveWorkflowTerminalState without guardRunId always writes", () => {
+test("GH-88: saveWorkflowTerminalState without guardRunId always writes", async () => {
   const ws = makeTmpDir();
   try {
-    saveWorkflowTerminalState(ws, {
+    await saveWorkflowTerminalState(ws, {
       runId: "run-B",
       workflow: "develop",
       state: "running",
       context: { runId: "run-B" },
     });
 
-    const result = saveWorkflowTerminalState(ws, {
+    const result = await saveWorkflowTerminalState(ws, {
       runId: "run-A",
       workflow: "develop",
       state: "completed",
@@ -88,7 +88,7 @@ test("GH-88: saveWorkflowTerminalState without guardRunId always writes", () => 
     });
 
     assert.ok(result, "write should succeed without guard");
-    const loaded = loadWorkflowSnapshot(ws);
+    const loaded = await loadWorkflowSnapshot(ws);
     assert.equal(loaded.runId, "run-A");
   } finally {
     rmSync(ws, { recursive: true, force: true });

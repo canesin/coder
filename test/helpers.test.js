@@ -278,6 +278,24 @@ test("runHostTests does not throw TestInfrastructureError when cargo is run afte
   assert.notEqual(res.exitCode, 0);
 });
 
+test("runHostTests maps exit code 5 to 0 when allowNoTests is true", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tests-"));
+  const res = await runHostTests(dir, {
+    testCmd: "exit 5",
+    allowNoTests: true,
+  });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests preserves exit code 5 when allowNoTests is false", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tests-"));
+  const res = await runHostTests(dir, {
+    testCmd: "exit 5",
+    allowNoTests: false,
+  });
+  assert.equal(res.exitCode, 5);
+});
+
 test("shellEscape wraps plain string in single quotes", () => {
   assert.equal(shellEscape("gemini-pro"), "'gemini-pro'");
 });

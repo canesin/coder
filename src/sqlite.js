@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 let _sqliteAvailableCache = null;
 
@@ -26,34 +26,95 @@ export function sqlEscape(value) {
     .replace(/'/g, "''");
 }
 
-/**
- * Run a SQL statement against a sqlite3 database via CLI.
- * @param {string} dbPath - Path to the SQLite database file
- * @param {string} sql - SQL statement(s) to execute
- * @returns {string} stdout from sqlite3
- */
-export function runSqlite(dbPath, sql) {
-  const res = spawnSync("sqlite3", [dbPath], {
-    encoding: "utf8",
-    input: `${sql}\n`,
-  });
-  if (res.status !== 0) {
-    throw new Error(
-      `sqlite3 failed: ${(res.stderr || res.stdout || "").trim() || "unknown error"}`,
-    );
+export class SqliteTimeoutError extends Error {
+  constructor(message, { dbPath, timeoutMs, graceMs } = {}) {
+    super(message);
+    this.name = "SqliteTimeoutError";
+    this.code = "SQLITE_TIMEOUT";
+    this.dbPath = dbPath ?? null;
+    this.timeoutMs = timeoutMs ?? null;
+    this.graceMs = graceMs ?? null;
   }
-  return res.stdout || "";
+}
+
+const KILL_GRACE_MS = 5000;
+
+/**
+ * Run SQL asynchronously via the sqlite3 CLI with timeout.
+ * @param {string} dbPath
+ * @param {string} sql
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<string>}
+ */
+export function runSqliteAsync(dbPath, sql, { timeoutMs = 30000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("sqlite3", [dbPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    let killTimer = null;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+    };
+
+    const timer = setTimeout(() => {
+      killed = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+
+    child.on("close", (code) => {
+      cleanup();
+      if (killed) {
+        reject(
+          new SqliteTimeoutError(`sqlite3 timed out after ${timeoutMs}ms`, {
+            dbPath,
+            timeoutMs,
+            graceMs: KILL_GRACE_MS,
+          }),
+        );
+        return;
+      }
+      if (code !== 0) {
+        reject(
+          new Error(
+            `sqlite3 failed: ${(stderr || stdout || "").trim() || "unknown error"}`,
+          ),
+        );
+        return;
+      }
+      resolve(stdout || "");
+    });
+
+    child.stdin.write(`${sql}\n`);
+    child.stdin.end();
+  });
 }
 
 /**
- * Persist a payload to SQLite via the sqlite3 CLI. No-op if sqlite3 is unavailable.
- * @param {string} dbPath - Path to the SQLite database file
- * @param {string} sql - SQL to execute
+ * Async version of runSqliteIgnoreErrors. No-op if sqlite3 is unavailable.
  */
-export function runSqliteIgnoreErrors(dbPath, sql) {
+export async function runSqliteAsyncIgnoreErrors(dbPath, sql) {
   if (!dbPath || !sqliteAvailable()) return;
-  spawnSync("sqlite3", [dbPath, sql], {
-    encoding: "utf8",
-    stdio: "ignore",
-  });
+  try {
+    await runSqliteAsync(dbPath, sql);
+  } catch {
+    // best-effort
+  }
 }

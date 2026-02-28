@@ -133,7 +133,7 @@ export default defineMachine({
   async execute(input, ctx) {
     checkArtifactCollisions(ctx.artifactsDir, { force: input.force });
 
-    const state = loadState(ctx.workspaceDir);
+    const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
 
     // Idempotency: skip if this issue's draft is already on disk
@@ -175,7 +175,7 @@ export default defineMachine({
     state.repoPath = repoPath;
     state.baseBranch = input.baseBranch || null;
     state.branch = buildIssueBranchName(input.issue);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Update pool repo root
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
@@ -199,7 +199,7 @@ export default defineMachine({
       sqliteSync: ctx.config.workflow.scratchpad.sqliteSync,
     });
     const scratchpadPath = scratchpad.issueScratchpadPath(input.issue);
-    scratchpad.restoreFromSqlite(scratchpadPath);
+    await scratchpad.restoreFromSqlite(scratchpadPath);
     if (!existsSync(scratchpadPath)) {
       const header = [
         `# Scratchpad for ${input.issue.source}#${input.issue.id}`,
@@ -213,11 +213,11 @@ export default defineMachine({
       mkdirSync(path.dirname(scratchpadPath), { recursive: true });
       writeFileSync(scratchpadPath, header, "utf8");
     }
-    scratchpad.appendSection(scratchpadPath, "Input", [
+    await scratchpad.appendSection(scratchpadPath, "Input", [
       `- clarifications: ${(input.clarifications || "(none provided)").trim()}`,
     ]);
     state.scratchpadPath = path.relative(ctx.workspaceDir, scratchpadPath);
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // When force=true (re-run), reset dirty state before branch operations.
     // Exclude .coder/ from cleanup to preserve workflow state and artifacts dir.
@@ -240,7 +240,7 @@ export default defineMachine({
     // Verify clean repo
     gitCleanOrThrow(repoRoot);
     state.steps.verifiedCleanRepo = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
     // Optional base branch checkout for stacked PRs
     if (state.baseBranch) {
@@ -381,9 +381,9 @@ If you wrote ISSUE.md to disk via a tool, also output its full contents to stdou
     }
 
     state.steps.wroteIssue = true;
-    saveState(ctx.workspaceDir, state);
+    await saveState(ctx.workspaceDir, state);
 
-    scratchpad.appendSection(scratchpadPath, "Drafted ISSUE.md", [
+    await scratchpad.appendSection(scratchpadPath, "Drafted ISSUE.md", [
       `- issue_artifact: ${paths.issue}`,
       "- status: complete",
     ]);
