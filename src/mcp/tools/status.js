@@ -53,9 +53,9 @@ function readResearchState(workspaceDir) {
   }
 }
 
-function getStatus(workspaceDir) {
+async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
-  const state = loadState(workspaceDir);
+  const state = await loadState(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
   const scratchpadDir = path.join(workspaceDir, ".coder", "scratchpad");
 
@@ -132,7 +132,7 @@ export function registerStatusTools(server, defaultWorkspace) {
     async ({ workspace }) => {
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
-        const status = getStatus(ws);
+        const status = await getStatus(ws);
         return {
           content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
         };

@@ -112,7 +112,7 @@ test("prior completed issue is not re-processed, dependency resolves for B", asy
       { id: "B", title: "Issue B", difficulty: 2, dependsOn: ["A"] },
     ]);
 
-    saveLoopState(ws, {
+    await saveLoopState(ws, {
       runId: "prior-run",
       status: "completed",
       issueQueue: [
@@ -161,7 +161,7 @@ test("prior completed issue is not re-processed, dependency resolves for B", asy
     const deferred = ctx.logEvents.filter((e) => e.event === "issue_deferred");
     assert.equal(deferred.length, 0, "B should not be deferred");
 
-    const finalLoop = loadLoopState(ws);
+    const finalLoop = await loadLoopState(ws);
     const qA = finalLoop.issueQueue.find((q) => q.id === "A");
     const qB = finalLoop.issueQueue.find((q) => q.id === "B");
     assert.equal(qA.status, "completed");
@@ -181,7 +181,7 @@ test("prior failed issue is not re-processed, dependent is skipped", async () =>
       { id: "B", title: "Issue B", difficulty: 2, dependsOn: ["A"] },
     ]);
 
-    saveLoopState(ws, {
+    await saveLoopState(ws, {
       runId: "prior-run",
       status: "completed",
       issueQueue: [
@@ -235,7 +235,7 @@ test("closed prior dependency not in issue list still resolves", async () => {
       { id: "B", title: "Issue B", difficulty: 2, dependsOn: ["A"] },
     ]);
 
-    saveLoopState(ws, {
+    await saveLoopState(ws, {
       runId: "prior-run",
       status: "completed",
       issueQueue: [

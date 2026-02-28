@@ -111,7 +111,7 @@ test("LoopIssueResultSchema accepts local source", async () => {
   );
   const tmp = makeTmpDir();
   try {
-    saveLoopState(tmp, {
+    await saveLoopState(tmp, {
       runId: "test-1",
       status: "running",
       issueQueue: [
@@ -124,7 +124,7 @@ test("LoopIssueResultSchema accepts local source", async () => {
         },
       ],
     });
-    const loaded = loadLoopState(tmp);
+    const loaded = await loadLoopState(tmp);
     assert.equal(loaded.issueQueue[0].source, "local");
     assert.deepEqual(loaded.issueQueue[0].dependsOn, ["ISSUE-00"]);
   } finally {

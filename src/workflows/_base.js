@@ -108,12 +108,11 @@ export class WorkflowRunner {
 
     this._heartbeatInterval = setInterval(() => {
       this.onHeartbeat();
-      // Poll for file-based control signals (CLI cancel/pause/resume)
       pollControlSignal(
         this.ctx.workspaceDir,
         this.ctx.cancelToken,
         this.runId,
-      );
+      ).catch(() => {});
     }, 2000);
 
     try {
@@ -241,7 +240,7 @@ export class WorkflowRunner {
       }
       await new Promise((r) => setTimeout(r, CHECK_INTERVAL_MS));
       this.onHeartbeat();
-      pollControlSignal(
+      await pollControlSignal(
         this.ctx.workspaceDir,
         this.ctx.cancelToken,
         this.runId,

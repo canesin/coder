@@ -22,7 +22,7 @@ function makeTmpDir() {
   return dir;
 }
 
-test("saveWorkflowSnapshot throws descriptive error on write failure", () => {
+test("saveWorkflowSnapshot throws descriptive error on write failure", async () => {
   const ws = mkdtempSync(path.join(os.tmpdir(), "coder-repro-80-"));
   const stateDir = path.join(ws, ".coder");
   mkdirSync(stateDir, { recursive: true });
@@ -32,13 +32,12 @@ test("saveWorkflowSnapshot throws descriptive error on write failure", () => {
   mkdirSync(statePath);
 
   try {
-    assert.throws(
-      () => {
+    await assert.rejects(
+      () =>
         saveWorkflowSnapshot(ws, {
           runId: "test-run",
           snapshot: { value: "running", context: {} },
-        });
-      },
+        }),
       (err) => {
         return (
           err.message.includes("Failed to write state") &&
@@ -51,17 +50,17 @@ test("saveWorkflowSnapshot throws descriptive error on write failure", () => {
   }
 });
 
-test("saveWorkflowTerminalState guardRunId prevents stale overwrite", () => {
+test("saveWorkflowTerminalState guardRunId prevents stale overwrite", async () => {
   const ws = makeTmpDir();
   // Seed with run-A
-  saveWorkflowTerminalState(ws, {
+  await saveWorkflowTerminalState(ws, {
     runId: "run-A",
     state: "completed",
     context: {},
   });
 
   // Attempt overwrite with mismatched guardRunId
-  const result = saveWorkflowTerminalState(ws, {
+  const result = await saveWorkflowTerminalState(ws, {
     runId: "run-B",
     state: "failed",
     context: {},
@@ -74,15 +73,15 @@ test("saveWorkflowTerminalState guardRunId prevents stale overwrite", () => {
   rmSync(ws, { recursive: true, force: true });
 });
 
-test("saveWorkflowTerminalState guardRunId allows matching write", () => {
+test("saveWorkflowTerminalState guardRunId allows matching write", async () => {
   const ws = makeTmpDir();
-  saveWorkflowTerminalState(ws, {
+  await saveWorkflowTerminalState(ws, {
     runId: "run-A",
     state: "running",
     context: {},
   });
 
-  const result = saveWorkflowTerminalState(ws, {
+  const result = await saveWorkflowTerminalState(ws, {
     runId: "run-A",
     state: "completed",
     context: {},
@@ -95,7 +94,7 @@ test("saveWorkflowTerminalState guardRunId allows matching write", () => {
   rmSync(ws, { recursive: true, force: true });
 });
 
-test("loadWorkflowSnapshot logs warning on corrupt JSON", () => {
+test("loadWorkflowSnapshot logs warning on corrupt JSON", async () => {
   const ws = makeTmpDir();
   writeFileSync(workflowStatePathFor(ws), "NOT-JSON{{{", "utf8");
 
@@ -103,7 +102,7 @@ test("loadWorkflowSnapshot logs warning on corrupt JSON", () => {
   const calls = [];
   console.error = (...args) => calls.push(args.join(" "));
   try {
-    const result = loadWorkflowSnapshot(ws);
+    const result = await loadWorkflowSnapshot(ws);
     assert.equal(result, null);
     assert.equal(calls.length, 1);
     assert.ok(calls[0].includes("workflow-state.json"));

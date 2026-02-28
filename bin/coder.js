@@ -239,10 +239,10 @@ function formatStatusHuman(status) {
   return lines.join("\n");
 }
 
-function buildStatus(workspaceDir) {
-  const state = loadState(workspaceDir);
-  const loopState = loadLoopState(workspaceDir);
-  const wfSnapshot = loadWorkflowSnapshot(workspaceDir);
+async function buildStatus(workspaceDir) {
+  const state = await loadState(workspaceDir);
+  const loopState = await loadLoopState(workspaceDir);
+  const wfSnapshot = await loadWorkflowSnapshot(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
   const config = resolveConfig(workspaceDir);
 
@@ -321,7 +321,7 @@ function buildStatus(workspaceDir) {
   };
 }
 
-function runStatusCli() {
+async function runStatusCli() {
   const { values } = nodeParseArgs({
     args: process.argv.slice(3),
     strict: true,
@@ -338,8 +338,8 @@ function runStatusCli() {
     process.exit(1);
   }
 
-  const printStatus = () => {
-    const status = buildStatus(workspaceDir);
+  const printStatus = async () => {
+    const status = await buildStatus(workspaceDir);
     if (values.json) {
       process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
     } else {
@@ -348,20 +348,20 @@ function runStatusCli() {
   };
 
   if (values.watch) {
-    const redraw = () => {
+    const redraw = async () => {
       process.stdout.write("\x1b[2J\x1b[H");
-      printStatus();
+      await printStatus();
       process.stdout.write("\n\x1b[2m[watch mode — Ctrl+C to stop]\x1b[0m\n");
     };
-    redraw();
-    const timer = setInterval(redraw, 3000);
+    await redraw();
+    const timer = setInterval(() => redraw().catch(() => {}), 3000);
     process.on("SIGINT", () => {
       clearInterval(timer);
       process.stdout.write("\n");
       process.exit(0);
     });
   } else {
-    printStatus();
+    await printStatus();
   }
 }
 
@@ -544,7 +544,7 @@ async function runEventsCli() {
 
 // --- coder cancel / pause / resume ---
 
-function runControlCli(action) {
+async function runControlCli(action) {
   const { values } = nodeParseArgs({
     args: process.argv.slice(3),
     strict: true,
@@ -560,7 +560,7 @@ function runControlCli(action) {
     process.exit(1);
   }
 
-  const loopState = loadLoopState(workspaceDir);
+  const loopState = await loadLoopState(workspaceDir);
   const runId = values.run || loopState.runId;
 
   if (!runId) {
@@ -588,7 +588,7 @@ function runControlCli(action) {
     process.exit(1);
   }
 
-  writeControlSignal(workspaceDir, { action, runId });
+  await writeControlSignal(workspaceDir, { action, runId });
   process.stdout.write(`${action} signal written for run ${runId}\n`);
 
   // For cancel, also check if runner is alive and send SIGTERM
@@ -768,7 +768,10 @@ if (!subcommand || subcommand === "--help" || subcommand === "-h") {
 
 switch (subcommand) {
   case "status":
-    runStatusCli();
+    runStatusCli().catch((err) => {
+      process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+      process.exitCode = 1;
+    });
     break;
   case "events":
     runEventsCli().catch((err) => {
@@ -777,13 +780,22 @@ switch (subcommand) {
     });
     break;
   case "cancel":
-    runControlCli("cancel");
+    runControlCli("cancel").catch((err) => {
+      process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+      process.exitCode = 1;
+    });
     break;
   case "pause":
-    runControlCli("pause");
+    runControlCli("pause").catch((err) => {
+      process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+      process.exitCode = 1;
+    });
     break;
   case "resume":
-    runControlCli("resume");
+    runControlCli("resume").catch((err) => {
+      process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+      process.exitCode = 1;
+    });
     break;
   case "steering":
     runSteeringCli().catch((err) => {
