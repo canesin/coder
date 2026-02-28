@@ -67,6 +67,7 @@ export class CliAgent extends AgentAdapter {
       baseEnv: opts.secrets,
     });
     this._sandbox = null;
+    this._sandboxPromise = null;
     this._log = makeJsonlLogger(opts.workspaceDir, this.name);
 
     this.steeringContext = opts.steeringContext;
@@ -80,26 +81,54 @@ export class CliAgent extends AgentAdapter {
 
   async _ensureSandbox() {
     if (this._sandbox) return this._sandbox;
-    this._sandbox = await this._provider.create();
+    if (this._sandboxPromise) return this._sandboxPromise;
 
-    this._sandbox.on("stdout", (d) => {
-      this._log({ stream: "stdout", data: d });
-      this._events.emit("stdout", d);
-      if (this.verbose) {
-        process.stdout.write(`[${this.name}] ${sanitizeLogEvent(String(d))}`);
+    const promise = (async () => {
+      try {
+        const sandbox = await this._provider.create();
+
+        // kill() was called or a new promise replaced this one — abort
+        if (this._sandboxPromise !== promise) {
+          sandbox.kill().catch(() => {});
+          const err = new Error("Sandbox creation aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+
+        sandbox.on("stdout", (d) => {
+          this._log({ stream: "stdout", data: d });
+          this._events.emit("stdout", d);
+          if (this.verbose) {
+            process.stdout.write(
+              `[${this.name}] ${sanitizeLogEvent(String(d))}`,
+            );
+          }
+        });
+
+        sandbox.on("stderr", (d) => {
+          this._log({ stream: "stderr", data: d });
+          this._events.emit("stderr", d);
+          if (this.verbose) {
+            process.stderr.write(
+              `[${this.name}] ${sanitizeLogEvent(String(d))}`,
+            );
+          }
+          this._parseMcpHealth(d);
+        });
+
+        this._sandbox = sandbox;
+        this._sandboxPromise = null;
+        return sandbox;
+      } catch (err) {
+        if (this._sandboxPromise === promise) {
+          this._sandboxPromise = null;
+        }
+        throw err;
       }
-    });
+    })();
 
-    this._sandbox.on("stderr", (d) => {
-      this._log({ stream: "stderr", data: d });
-      this._events.emit("stderr", d);
-      if (this.verbose) {
-        process.stderr.write(`[${this.name}] ${sanitizeLogEvent(String(d))}`);
-      }
-      this._parseMcpHealth(d);
-    });
-
-    return this._sandbox;
+    this._sandboxPromise = promise;
+    return promise;
   }
 
   _parseMcpHealth(data) {
@@ -220,6 +249,7 @@ export class CliAgent extends AgentAdapter {
         factor: 2,
         shouldRetry: (ctx) => {
           const err = ctx.error;
+          if (err.name === "AbortError") return false;
           if (err.name === "CommandTimeoutError") return false;
           if (err.name === "CommandAuthError") return false;
           if (err.name === "McpStartupError") return false;
@@ -239,6 +269,7 @@ export class CliAgent extends AgentAdapter {
   }
 
   async kill() {
+    this._sandboxPromise = null;
     if (this._sandbox) {
       await this._sandbox.kill();
       this._sandbox = null;
