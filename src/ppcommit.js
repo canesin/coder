@@ -792,8 +792,11 @@ function getParserForFile(filePath) {
 }
 
 function safeSliceByIndex(s, startIndex, endIndex) {
-  // tree-sitter indices are byte offsets; for ASCII code this matches JS indices.
-  return s.slice(startIndex, endIndex);
+  // tree-sitter indices are UTF-8 byte offsets.
+  const buf = Buffer.from(String(s), "utf8");
+  const start = Math.max(0, Math.min(Number(startIndex) || 0, buf.length));
+  const end = Math.max(start, Math.min(Number(endIndex) || 0, buf.length));
+  return buf.subarray(start, end).toString("utf8");
 }
 
 function parseNumericLiteral(text) {

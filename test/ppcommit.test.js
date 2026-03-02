@@ -89,6 +89,30 @@ test("ppcommit: does not crash when optional parsers are unavailable", async () 
   assert.equal(r.exitCode, 0);
 });
 
+test("ppcommit: magic number detection remains correct with non-ASCII before literal", async () => {
+  try {
+    await import("tree-sitter-javascript");
+  } catch {
+    return;
+  }
+
+  const repo = makeRepo();
+  writeFileSync(
+    path.join(repo, "a.js"),
+    'const label = "cafe\\u00e9";\nconst n = 11;\n',
+    "utf8",
+  );
+
+  const r = await runPpcommitNative(repo, {
+    blockSecrets: false,
+    enableLlm: false,
+    treatWarningsAsErrors: true,
+  });
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stdout, /Magic number/);
+  assert.match(r.stdout, /a\.js:2/);
+});
+
 test("ppcommit: detects staged new markdown files", async () => {
   const repo = makeRepo();
   mkdirSync(path.join(repo, "docs"), { recursive: true });
