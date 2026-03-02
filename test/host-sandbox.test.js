@@ -108,3 +108,21 @@ test("host sandbox does not inherit sensitive env vars from process.env", async 
     }
   }
 });
+
+test("host sandbox strips CLAUDECODE and CLAUDE_CODE_ENTRYPOINT from final env", async () => {
+  const provider = new HostSandboxProvider({
+    baseEnv: {
+      CLAUDECODE: "1",
+      CLAUDE_CODE_ENTRYPOINT: "nested",
+    },
+  });
+  const sandbox = await provider.create({
+    CLAUDECODE: "1",
+    CLAUDE_CODE_ENTRYPOINT: "nested",
+  });
+  const result = await sandbox.commands.run(`printenv || true`, {
+    timeoutMs: 5000,
+  });
+  assert.ok(!/CLAUDECODE=/.test(result.stdout));
+  assert.ok(!/CLAUDE_CODE_ENTRYPOINT=/.test(result.stdout));
+});

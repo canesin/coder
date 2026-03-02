@@ -65,6 +65,13 @@ function mergeEnv(base, extra) {
   return { ...base, ...(extra || {}) };
 }
 
+function stripNestedClaudeEnv(env) {
+  const clean = { ...(env || {}) };
+  delete clean.CLAUDECODE;
+  delete clean.CLAUDE_CODE_ENTRYPOINT;
+  return clean;
+}
+
 function filterEnv(env) {
   const out = {};
   for (const key of SAFE_ENV_KEYS) {
@@ -85,20 +92,26 @@ export class HostSandboxProvider {
 
   async create(envs = {}, agentType = "default", workingDirectory) {
     const sandboxId = `host-${agentType}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const mergedEnv = stripNestedClaudeEnv(
+      mergeEnv(mergeEnv(filterEnv(process.env), this.baseEnv), envs),
+    );
     return new HostSandboxInstance({
       sandboxId,
       cwd: workingDirectory || this.defaultCwd,
-      env: mergeEnv(mergeEnv(filterEnv(process.env), this.baseEnv), envs),
+      env: mergedEnv,
       useSystemdRun: this.useSystemdRun,
     });
   }
 
   async resume(sandboxId) {
     // "Resume" is best-effort for host execution: return a fresh instance using current env/cwd.
+    const mergedEnv = stripNestedClaudeEnv(
+      mergeEnv(filterEnv(process.env), this.baseEnv),
+    );
     return new HostSandboxInstance({
       sandboxId,
       cwd: this.defaultCwd,
-      env: mergeEnv(filterEnv(process.env), this.baseEnv),
+      env: mergedEnv,
       useSystemdRun: this.useSystemdRun,
     });
   }

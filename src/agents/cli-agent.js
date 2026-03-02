@@ -175,7 +175,7 @@ export class CliAgent extends AgentAdapter {
     }
 
     if (this.name === "claude") {
-      let flags = "claude -p";
+      let flags = "claude -p --no-session-persistence";
       const claudeModel = resolveModelName(this.config.models.claude);
       if (claudeModel) {
         flags += ` --model ${shellEscape(claudeModel)}`;
