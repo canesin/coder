@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { formatCommandFailure } from "../../helpers.js";
+import { formatCommandFailure, stripAgentNoise } from "../../helpers.js";
 import {
   IssueItemSchema,
   IssuesPayloadSchema,
@@ -13,6 +13,12 @@ import { defineMachine } from "../_base.js";
 import { parseAgentPayload, requireExitZero } from "./_shared.js";
 
 const HANG_TIMEOUT_MS = 1000 * 60 * 2;
+
+function isNoiseOnlyGeminiResult(agentName, res) {
+  if (agentName !== "gemini") return "";
+  const cleaned = stripAgentNoise(res?.stdout || "").trim();
+  return cleaned ? "" : "gemini returned no response content (noise-only stdout)";
+}
 
 /**
  * Load issues from a local manifest.json + markdown files.
@@ -321,6 +327,7 @@ Return ONLY valid JSON in this schema:
           hangTimeoutMs: HANG_TIMEOUT_MS,
           retries: 2,
           retryOnRateLimit: true,
+          isTransientResult: (res) => isNoiseOnlyGeminiResult(agentName, res),
         });
         requireExitZero(agentName, "project listing failed", projRes);
 
@@ -427,6 +434,7 @@ ${TAIL}`;
       hangTimeoutMs: HANG_TIMEOUT_MS,
       retries: 2,
       retryOnRateLimit: true,
+      isTransientResult: (r) => isNoiseOnlyGeminiResult(agentName, r),
     });
     requireExitZero(agentName, "issue listing failed", res);
 

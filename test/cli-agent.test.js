@@ -254,3 +254,34 @@ test("_ensureSandbox: rejected first creation does not wipe second in-flight pro
   assert.equal(result, sandbox2);
   assert.equal(agent._sandbox, sandbox2);
 });
+
+test("executeWithRetry retries when isTransientResult flags a successful response", async () => {
+  const agent = makeAgent("gemini");
+  let calls = 0;
+  agent.execute = async () => {
+    calls++;
+    if (calls === 1) {
+      return {
+        exitCode: 0,
+        stdout: "Resources updated for server: github",
+        stderr: "",
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: '{"issues":[],"recommended_index":0}',
+      stderr: "",
+    };
+  };
+
+  const res = await agent.executeWithRetry("prompt", {
+    retries: 1,
+    backoffMs: 0,
+    isTransientResult: (result) =>
+      /updated for server/i.test(result.stdout || "") ? "noise-only" : "",
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(res.exitCode, 0);
+  assert.match(res.stdout, /recommended_index/);
+});
