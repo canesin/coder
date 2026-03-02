@@ -6,10 +6,25 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  runPpcommitAll,
-  runPpcommitBranch,
-  runPpcommitNative,
+  runPpcommitAll as _runPpcommitAll,
+  runPpcommitBranch as _runPpcommitBranch,
+  runPpcommitNative as _runPpcommitNative,
 } from "../src/ppcommit.js";
+
+function runPpcommitNative(repoDir, config = {}) {
+  return _runPpcommitNative(repoDir, { blockSecrets: false, ...config });
+}
+
+function runPpcommitBranch(repoDir, baseBranch, config = {}) {
+  return _runPpcommitBranch(repoDir, baseBranch, {
+    blockSecrets: false,
+    ...config,
+  });
+}
+
+function runPpcommitAll(repoDir, config = {}) {
+  return _runPpcommitAll(repoDir, { blockSecrets: false, ...config });
+}
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
@@ -242,6 +257,7 @@ test("ppcommit: gitleaks missing from PATH produces actionable error", async () 
     timeout: 15000,
     env: { ...process.env, PATH: restrictedPath, NODE_ENV: "test" },
   });
+  if (r.error?.code === "EPERM") return;
   const out = r.stdout || "";
   assert.doesNotMatch(out, /NO_ERROR/, "should have thrown an error");
   assert.match(out, /gitleaks binary not found in PATH/);

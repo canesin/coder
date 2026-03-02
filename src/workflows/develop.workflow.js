@@ -380,7 +380,6 @@ function resolveDependencyBranch(issue, outcomeMap) {
   }
 
   const outcomes = {};
-  let _successCount = 0;
   let failCount = 0;
   let baseBranch = null;
 
@@ -392,7 +391,6 @@ function resolveDependencyBranch(issue, outcomeMap) {
     }
     outcomes[depId] = outcome.status;
     if (outcome.status === "completed" && outcome.branch) {
-      _successCount++;
       // Use the first successful dependency branch as base
       if (!baseBranch) baseBranch = outcome.branch;
     } else if (outcome.status === "failed" || outcome.status === "skipped") {
@@ -405,9 +403,6 @@ function resolveDependencyBranch(issue, outcomeMap) {
 
   return { baseBranch, allDepsFailed, depOutcomes: outcomes };
 }
-
-const isRateLimitError = (text) =>
-  /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
 
 /**
  * Run the autonomous develop loop — process multiple issues.

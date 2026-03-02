@@ -59,7 +59,7 @@ function makeCtx(workspaceDir) {
     log: () => {},
     config: {
       workflow: {
-        maxMachineRetries: 0,
+        maxMachineRetries: 2,
         retryBackoffMs: 0,
         hooks: [],
         issueSource: "local",
