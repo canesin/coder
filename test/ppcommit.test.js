@@ -89,6 +89,41 @@ test("ppcommit: does not crash when optional parsers are unavailable", async () 
   assert.equal(r.exitCode, 0);
 });
 
+test("ppcommit: irreparable LLM fallback JSON returns cleanly without extra retries", async () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
+
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls++;
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: 'prefix [{"a":"\\uZZZZ"}] suffix',
+            },
+          },
+        ],
+      }),
+    };
+  };
+
+  try {
+    const r = await runPpcommitNative(repo, {
+      blockSecrets: false,
+      enableLlm: true,
+      llmApiKey: "test-key",
+    });
+    assert.equal(r.exitCode, 0);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("ppcommit: detects staged new markdown files", async () => {
   const repo = makeRepo();
   mkdirSync(path.join(repo, "docs"), { recursive: true });

@@ -960,7 +960,11 @@ function extractJsonArray(text) {
   const lastBracket = trimmed.lastIndexOf("]");
   if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
     const candidate = trimmed.slice(firstBracket, lastBracket + 1);
-    return JSON.parse(jsonrepair(candidate));
+    try {
+      return JSON.parse(jsonrepair(candidate));
+    } catch {
+      return [];
+    }
   }
   return [];
 }
