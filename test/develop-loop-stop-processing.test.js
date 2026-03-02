@@ -114,7 +114,10 @@ test("hard failure aborts queue and emits issue_skipped hooks for auto-skipped i
         currentIssueId = steps[0]?.inputMapper?.()?.issue?.id;
         issueDraftCalls.push(currentIssueId);
       }
-      if (machineName === "develop.planning" || machineName === "develop.plan_review") {
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
         return {
           status: "completed",
           results: [{ status: "ok", data: { verdict: "APPROVED" } }],
@@ -141,7 +144,7 @@ test("hard failure aborts queue and emits issue_skipped hooks for auto-skipped i
       return completedRunnerResult("run-hard-fail");
     };
 
-    const hookCmd = `printf '%s\\n' \"$CODER_HOOK_ISSUE_ID\" >> ${JSON.stringify(hookLog)}`;
+    const hookCmd = `printf '%s\\n' "$CODER_HOOK_ISSUE_ID" >> ${JSON.stringify(hookLog)}`;
     const ctx = makeCtx(ws, {
       config: {
         workflow: {
@@ -203,7 +206,10 @@ test("rate-limited failures defer and do not trigger queue abort", async () => {
         currentIssueId = steps[0]?.inputMapper?.()?.issue?.id;
         issueDraftCalls.push(currentIssueId);
       }
-      if (machineName === "develop.planning" || machineName === "develop.plan_review") {
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
         return {
           status: "completed",
           results: [{ status: "ok", data: { verdict: "APPROVED" } }],
