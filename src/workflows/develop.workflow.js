@@ -753,7 +753,60 @@ export async function runDevelopLoop(opts, ctx) {
   // Main pass
   for (let i = 0; i < issues.length; i++) {
     if (ctx.cancelToken.cancelled) break;
-    await processIssue(issues[i], i);
+    const issueStatus = await processIssue(issues[i], i);
+    if (issueStatus !== "failed") continue;
+
+    const failedIssueId = issues[i]?.id;
+    ctx.log({
+      event: "loop_aborted_on_failure",
+      issueId: failedIssueId,
+      reason: "issue_failed",
+    });
+
+    for (let j = 0; j < loopState.issueQueue.length; j++) {
+      const entry = loopState.issueQueue[j];
+      if (entry.status !== "pending" && entry.status !== "deferred") continue;
+
+      entry.status = "skipped";
+      entry.error = "Skipped: prior issue failed";
+      entry.completedAt = new Date().toISOString();
+      outcomeMap.set(entry.id, { status: "skipped" });
+      skipped++;
+
+      const issueEnv = {
+        CODER_HOOK_ISSUE_ID: String(entry.id || ""),
+        CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
+      };
+      ctx.log({
+        event: "issue_skipped",
+        issueId: entry.id,
+        reason: "aborted_after_failure",
+        failedIssueId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_skipped",
+        "",
+        {
+          status: "skipped",
+          reason: "aborted_after_failure",
+          failedIssueId,
+        },
+        issueEnv,
+      );
+
+      results.push({
+        ...issues[j],
+        status: "skipped",
+        error: entry.error,
+      });
+    }
+
+    await saveLoopState(ctx.workspaceDir, loopState, {
+      guardRunId: loopState.runId,
+    });
+    break;
   }
 
   // Retry pass for deferred issues whose dependencies are now resolved
