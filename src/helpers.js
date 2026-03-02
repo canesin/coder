@@ -43,6 +43,27 @@ export function detectDefaultBranch(repoDir) {
   return mainCheck.status === 0 ? "main" : "master";
 }
 
+/**
+ * Detect repository hosting type from remote URL.
+ *
+ * @param {string} repoDir - Path to the git repository
+ * @param {string} [remoteName="origin"] - Remote name to inspect
+ * @returns {"github" | "gitlab"}
+ */
+export function detectRemoteType(repoDir, remoteName = "origin") {
+  const origin = spawnSync("git", ["remote", "get-url", remoteName], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  if (origin.status !== 0) return "github";
+  const url = (origin.stdout || "").trim();
+  const httpsMatch = url.match(/^https?:\/\/([^/:]+)/i);
+  const sshMatch = url.match(/^[^@]+@([^:]+):/);
+  const host = (httpsMatch?.[1] || sshMatch?.[1] || "").toLowerCase();
+  if (host.includes("gitlab")) return "gitlab";
+  return "github";
+}
+
 const DEFAULT_PASS_ENV = [
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
@@ -50,6 +71,7 @@ const DEFAULT_PASS_ENV = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "OPENAI_API_KEY",
   "GITHUB_TOKEN",
+  "GITLAB_TOKEN",
   "LINEAR_API_KEY",
 ];
 

@@ -393,6 +393,7 @@ test("CoderConfigSchema: sandbox.passEnv defaults to known API keys", () => {
   assert.ok(config.sandbox.passEnv.includes("GEMINI_API_KEY"));
   assert.ok(config.sandbox.passEnv.includes("ANTHROPIC_API_KEY"));
   assert.ok(config.sandbox.passEnv.includes("GITHUB_TOKEN"));
+  assert.ok(config.sandbox.passEnv.includes("GITLAB_TOKEN"));
 });
 
 test("CoderConfigSchema: sandbox.passEnvPatterns defaults to empty", () => {

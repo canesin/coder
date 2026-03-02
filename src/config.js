@@ -210,6 +210,7 @@ export const SandboxConfigSchema = z.object({
       "CLAUDE_CODE_OAUTH_TOKEN",
       "OPENAI_API_KEY",
       "GITHUB_TOKEN",
+      "GITLAB_TOKEN",
       "LINEAR_API_KEY",
     ]),
   passEnvPatterns: z.array(z.string()).default([]),
