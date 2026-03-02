@@ -20,7 +20,7 @@ export const LOCK_DEFAULTS = {
 };
 
 export function lockPathFor(workspaceDir) {
-  return path.join(workspaceDir, ".coder", "start.lock");
+  return path.join(workspaceDir, ".coder", "locks", "workflow-start.lock");
 }
 
 function sleep(ms) {
@@ -78,9 +78,11 @@ async function acquireStartLock(workspaceDir, opts) {
       await sleep(retryIntervalMs * (0.5 + Math.random()));
     }
   }
-  throw new Error(
+  const err = new Error(
     `workflow start lock busy: could not acquire lock within ${lockTimeoutMs}ms`,
   );
+  err.code = "WORKFLOW_START_LOCK_BUSY";
+  throw err;
 }
 
 function releaseLock(lockPath, token) {

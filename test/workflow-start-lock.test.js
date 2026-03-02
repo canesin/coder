@@ -19,7 +19,7 @@ import {
 
 function makeTmpDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-start-lock-"));
-  mkdirSync(path.join(dir, ".coder"), { recursive: true });
+  mkdirSync(path.join(dir, ".coder", "locks"), { recursive: true });
   return dir;
 }
 
@@ -48,9 +48,14 @@ test("concurrent starts: second caller gets lock-busy error", async () => {
   );
   // Give the first call time to acquire
   await new Promise((r) => setTimeout(r, 50));
-  await assert.rejects(() => withStartLock(ws, async () => "second", opts), {
-    message: /workflow start lock busy/,
-  });
+  await assert.rejects(
+    () => withStartLock(ws, async () => "second", opts),
+    (err) => {
+      assert.match(err.message, /workflow start lock busy/);
+      assert.equal(err.code, "WORKFLOW_START_LOCK_BUSY");
+      return true;
+    },
+  );
   // Clean up the slow holder
   const result = await slow;
   assert.equal(result, "first");
@@ -175,4 +180,13 @@ test("LOCK_DEFAULTS exports expected keys", () => {
   assert.ok(LOCK_DEFAULTS.staleLockMs > 0);
   assert.ok(LOCK_DEFAULTS.retryIntervalMs > 0);
   assert.ok(LOCK_DEFAULTS.corruptFileMinAgeMs > 0);
+});
+
+test("lockPathFor uses namespaced workflow start lock path", () => {
+  const ws = makeTmpDir();
+  assert.equal(
+    lockPathFor(ws),
+    path.join(ws, ".coder", "locks", "workflow-start.lock"),
+  );
+  rmSync(ws, { recursive: true, force: true });
 });

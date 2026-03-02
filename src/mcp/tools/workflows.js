@@ -540,9 +540,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         }
 
         if (action === "start") {
-          const { nextRunId, initialAgent } = await withStartLock(
-            ws,
-            async () => {
+          let startContext;
+          try {
+            startContext = await withStartLock(ws, async () => {
               // Cancel any active in-memory runs for this workspace
               for (const [id, run] of activeRuns) {
                 if (run.workspace !== ws) continue;
@@ -620,8 +620,26 @@ export function registerWorkflowTools(server, defaultWorkspace) {
               });
 
               return { nextRunId, initialAgent };
-            },
-          );
+            });
+          } catch (err) {
+            if (err?.code === "WORKFLOW_START_LOCK_BUSY") {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      action,
+                      workflow,
+                      status: "blocked",
+                      reason: "workflow_start_lock_busy",
+                    }),
+                  },
+                ],
+              };
+            }
+            throw err;
+          }
+          const { nextRunId, initialAgent } = startContext;
 
           startWorkflowActor({
             workflow,
