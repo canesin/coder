@@ -763,6 +763,11 @@ export async function runDevelopLoop(opts, ctx) {
           entry.error = "Skipped: prior issue failed";
           outcomeMap.set(entry.id, { status: "skipped" });
           skipped++;
+          results.push({
+            ...entry,
+            status: "skipped",
+            error: entry.error,
+          });
         }
       }
       await saveLoopState(ctx.workspaceDir, loopState, {
