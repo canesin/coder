@@ -17,7 +17,9 @@ const HANG_TIMEOUT_MS = 1000 * 60 * 2;
 function isNoiseOnlyGeminiResult(agentName, res) {
   if (agentName !== "gemini") return "";
   const cleaned = stripAgentNoise(res?.stdout || "").trim();
-  return cleaned ? "" : "gemini returned no response content (noise-only stdout)";
+  return cleaned
+    ? ""
+    : "gemini returned no response content (noise-only stdout)";
 }
 
 /**
