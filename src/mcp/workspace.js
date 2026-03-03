@@ -37,10 +37,5 @@ export function resolveWorkspaceForMcp(workspace, defaultWorkspace) {
         "Set CODER_ALLOW_ANY_WORKSPACE=1 to allow arbitrary paths.",
     );
   }
-  try {
-    return realpathSync(targetPath);
-  } catch (err) {
-    if (err?.code !== "ENOENT") throw err;
-    return targetPath;
-  }
+  return existsSync(targetPath) ? target : targetPath;
 }
