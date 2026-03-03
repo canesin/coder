@@ -1,4 +1,13 @@
 import assert from "node:assert/strict";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
@@ -240,5 +249,112 @@ test("runDevelopPipeline: retries failed phase-3 machine sequence and succeeds",
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
+  }
+});
+
+test("runDevelopPipeline: injects quality-review failure details before retry", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "coder-retry-feedback-"));
+  const artifactsDir = path.join(tmp, ".coder", "artifacts");
+  mkdirSync(artifactsDir, { recursive: true });
+  const critiquePath = path.join(artifactsDir, "PLANREVIEW.md");
+  writeFileSync(critiquePath, "# Existing critique\n", "utf8");
+
+  const ctx = makeCtx({
+    workspaceDir: tmp,
+    artifactsDir,
+    scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    config: {
+      workflow: { maxMachineRetries: 1, retryBackoffMs: 0 },
+    },
+  });
+  const opts = {
+    issue: { source: "local", id: "ISSUE-2", title: "Retry feedback test" },
+    repoPath: "/tmp/repo",
+  };
+
+  const originalRun = WorkflowRunner.prototype.run;
+  let phase3Calls = 0;
+
+  WorkflowRunner.prototype.run = async function runStub(steps) {
+    const machineName = steps[0]?.machine?.name;
+
+    if (machineName === "develop.issue_draft") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: {} }],
+        runId: "run-2",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.planning") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: { planMd: "plan" } }],
+        runId: "run-2",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.plan_review") {
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: { verdict: "APPROVED", critiqueMd: "" } },
+        ],
+        runId: "run-2",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.implementation") {
+      phase3Calls++;
+      if (phase3Calls === 1) {
+        return {
+          status: "failed",
+          error: "quality review failed",
+          results: [
+            { machine: "develop.implementation", status: "ok", data: {} },
+            {
+              machine: "develop.quality_review",
+              status: "error",
+              error: "tests failed: 2 failing cases",
+            },
+          ],
+          runId: "run-2",
+          durationMs: 0,
+        };
+      }
+      return {
+        status: "completed",
+        results: [
+          { machine: "develop.implementation", status: "ok", data: {} },
+          { machine: "develop.quality_review", status: "ok", data: {} },
+          {
+            machine: "develop.pr_creation",
+            status: "ok",
+            data: { prUrl: "https://example.test/pr/2", branch: "feat/2" },
+          },
+        ],
+        runId: "run-2",
+        durationMs: 0,
+      };
+    }
+
+    throw new Error(`Unexpected machine sequence start: ${machineName}`);
+  };
+
+  try {
+    const result = await runDevelopPipeline(opts, ctx);
+    assert.equal(result.status, "completed");
+    assert.equal(phase3Calls, 2);
+
+    const critique = readFileSync(critiquePath, "utf8");
+    assert.match(critique, /## Retry Feedback/);
+    assert.match(critique, /\*\*develop\.quality_review failed/);
+    assert.match(critique, /tests failed: 2 failing cases/);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
