@@ -8,6 +8,7 @@ import { SandboxConfigSchema } from "../src/config.js";
 import {
   buildPrBodyFromIssue,
   buildSecretsWithFallback,
+  detectRemoteType,
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
@@ -99,6 +100,29 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   const defaults = SandboxConfigSchema.parse({});
   const result = resolvePassEnv({});
   assert.deepEqual(result, defaults.passEnv);
+  assert.ok(result.includes("GITLAB_TOKEN"));
+});
+
+test("detectRemoteType identifies GitLab HTTPS remotes", () => {
+  const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
+  const setOrigin = spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://gitlab.com/acme/repo.git"],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  assert.equal(setOrigin.status, 0);
+  assert.equal(detectRemoteType(repoDir), "gitlab");
+});
+
+test("detectRemoteType identifies GitHub SSH remotes", () => {
+  const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
+  const setOrigin = spawnSync(
+    "git",
+    ["remote", "add", "origin", "git@github.com:acme/repo.git"],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  assert.equal(setOrigin.status, 0);
+  assert.equal(detectRemoteType(repoDir), "github");
 });
 
 test("resolvePassEnv returns config sandbox.passEnv when set", () => {

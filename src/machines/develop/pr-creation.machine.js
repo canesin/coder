@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   buildPrBodyFromIssue,
   computeGitWorktreeFingerprint,
+  detectRemoteType,
   runPpcommit,
   stripAgentNoise,
 } from "../../helpers.js";
@@ -18,7 +19,7 @@ import { artifactPaths, ensureBranch, resolveRepoRoot } from "./_shared.js";
 export default defineMachine({
   name: "develop.pr_creation",
   description:
-    "Create pull request: commit changes, push to remote, create PR via gh CLI.",
+    "Create pull request: commit changes, push to remote, create PR/MR via gh or glab.",
   inputSchema: z.object({
     type: z.string().default("feat"),
     semanticName: z.string().default(""),
@@ -111,12 +112,8 @@ export default defineMachine({
       : state.branch;
     const baseBranch = input.base || state.baseBranch || null;
 
-    // Detect GitLab remote
-    const remoteResult = spawnSync("git", ["remote", "get-url", "origin"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    const isGitLab = /gitlab/i.test((remoteResult.stdout || "").trim());
+    // Detect hosting platform from origin remote URL.
+    const isGitLab = detectRemoteType(repoRoot) === "gitlab";
 
     // Push to remote
     const push = spawnSync(
