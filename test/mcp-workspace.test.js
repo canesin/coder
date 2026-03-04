@@ -88,9 +88,26 @@ test("resolveWorkspaceForMcp allows non-existent child path inside root", () => 
   const target = path.join(root, "a", "b", "c");
   try {
     const resolved = resolveWorkspaceForMcp(target, root);
-    assert.equal(resolved, path.resolve(target));
+    assert.equal(resolved, realpathSync(root));
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveWorkspaceForMcp returns validated parent for dangling symlink to outside root", () => {
+  const tempRoot = makeDir("coder-mcp-root-");
+  const outsideRoot = makeDir("coder-mcp-outside-");
+  const safeWorkspace = path.join(tempRoot, "safe-workspace");
+  mkdirSync(safeWorkspace, { recursive: true });
+  const evilSymlink = path.join(safeWorkspace, "evilSymlink");
+  const nonExistentOutsideTarget = path.join(outsideRoot, "nonExistentFile");
+  symlinkSync(nonExistentOutsideTarget, evilSymlink);
+  try {
+    const resolved = resolveWorkspaceForMcp(evilSymlink, tempRoot);
+    assert.equal(resolved, realpathSync(safeWorkspace));
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
   }
 });
 
