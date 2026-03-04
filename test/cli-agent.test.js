@@ -4,6 +4,7 @@ import os from "node:os";
 import test from "node:test";
 
 import { CliAgent, resolveAgentName } from "../src/agents/cli-agent.js";
+import { AgentPool } from "../src/agents/pool.js";
 
 const tmpDir = os.tmpdir();
 
@@ -290,4 +291,24 @@ test("executeWithRetry retries when isTransientResult flags a successful respons
   assert.equal(calls, 2);
   assert.equal(res.exitCode, 0);
   assert.match(res.stdout, /recommended_index/);
+});
+
+test("AgentPool.setRepoRoot: preserves agent whose colon-containing cwd matches new repoRoot", async () => {
+  const config = {
+    models: { gemini: null, claude: null },
+    mcp: { strictStartup: false },
+    claude: { skipPermissions: false },
+    verbose: false,
+  };
+  const colonPath = "/tmp/path:with:colon";
+  const pool = new AgentPool({ config, workspaceDir: tmpDir, repoRoot: tmpDir });
+
+  let killCalled = 0;
+  const mockAgent = { kill: async () => { killCalled++; } };
+  pool._agents.set(`cli:test-agent:${colonPath}`, mockAgent);
+
+  await pool.setRepoRoot(colonPath);
+
+  assert.equal(killCalled, 0, "agent whose cwd matches the new repoRoot must not be killed");
+  assert.ok(pool._agents.has(`cli:test-agent:${colonPath}`));
 });

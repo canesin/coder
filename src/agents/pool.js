@@ -285,10 +285,11 @@ export class AgentPool {
     for (const [key, agent] of this._agents) {
       const parts = key.split(":");
       // cli agents keyed as cli:name:cwd — kill those pointing at a different repo root
+      const agentCwd = parts.slice(2).join(":");
       if (
         parts[0] === "cli" &&
-        parts[2] !== repoRoot &&
-        parts[2] !== this.workspaceDir
+        agentCwd !== repoRoot &&
+        agentCwd !== this.workspaceDir
       ) {
         stale.push({ key, agent });
       }
