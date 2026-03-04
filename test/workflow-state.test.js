@@ -294,7 +294,11 @@ test("concurrent saveState calls from different workspaces maintain isolation", 
   for (let i = 0; i < 5; i++) {
     writes.push(
       saveState(ws1, {
-        selected: { source: "github", id: `ws1-id-${i}`, title: `WS1 Issue ${i}` },
+        selected: {
+          source: "github",
+          id: `ws1-id-${i}`,
+          title: `WS1 Issue ${i}`,
+        },
         selectedProject: null,
         linearProjects: null,
         repoPath: ".",
@@ -316,7 +320,11 @@ test("concurrent saveState calls from different workspaces maintain isolation", 
     );
     writes.push(
       saveState(ws2, {
-        selected: { source: "github", id: `ws2-id-${i}`, title: `WS2 Issue ${i}` },
+        selected: {
+          source: "github",
+          id: `ws2-id-${i}`,
+          title: `WS2 Issue ${i}`,
+        },
         selectedProject: null,
         linearProjects: null,
         repoPath: ".",
