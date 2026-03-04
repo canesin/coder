@@ -37,5 +37,5 @@ export function resolveWorkspaceForMcp(workspace, defaultWorkspace) {
         "Set CODER_ALLOW_ANY_WORKSPACE=1 to allow arbitrary paths.",
     );
   }
-  return target;
+  return targetPath;
 }
