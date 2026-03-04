@@ -287,6 +287,65 @@ test("concurrent saveState calls serialize without errors", async () => {
   rmSync(ws, { recursive: true, force: true });
 });
 
+test("concurrent saveState calls from different workspaces maintain isolation", async () => {
+  const ws1 = makeTmpDir();
+  const ws2 = makeTmpDir();
+  const writes = [];
+  for (let i = 0; i < 5; i++) {
+    writes.push(
+      saveState(ws1, {
+        selected: { source: "github", id: `ws1-id-${i}`, title: `WS1 Issue ${i}` },
+        selectedProject: null,
+        linearProjects: null,
+        repoPath: ".",
+        baseBranch: "main",
+        branch: null,
+        questions: null,
+        answers: null,
+        steps: {},
+        claudeSessionId: null,
+        lastError: null,
+        reviewFingerprint: null,
+        reviewedAt: null,
+        prUrl: null,
+        prBranch: null,
+        prBase: null,
+        scratchpadPath: null,
+        lastWipPushAt: null,
+      }),
+    );
+    writes.push(
+      saveState(ws2, {
+        selected: { source: "github", id: `ws2-id-${i}`, title: `WS2 Issue ${i}` },
+        selectedProject: null,
+        linearProjects: null,
+        repoPath: ".",
+        baseBranch: "main",
+        branch: null,
+        questions: null,
+        answers: null,
+        steps: {},
+        claudeSessionId: null,
+        lastError: null,
+        reviewFingerprint: null,
+        reviewedAt: null,
+        prUrl: null,
+        prBranch: null,
+        prBase: null,
+        scratchpadPath: null,
+        lastWipPushAt: null,
+      }),
+    );
+  }
+  await Promise.all(writes);
+  const loaded1 = await loadState(ws1);
+  const loaded2 = await loadState(ws2);
+  assert.equal(loaded1.selected.id, "ws1-id-4");
+  assert.equal(loaded2.selected.id, "ws2-id-4");
+  rmSync(ws1, { recursive: true, force: true });
+  rmSync(ws2, { recursive: true, force: true });
+});
+
 test("concurrent saveWorkflowSnapshot calls serialize without errors", async () => {
   const ws = makeTmpDir();
   const machine = createWorkflowLifecycleMachine();
