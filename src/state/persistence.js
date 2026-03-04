@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import {
   access,
   appendFile,
@@ -5,7 +6,6 @@ import {
   readFile,
   writeFile,
 } from "node:fs/promises";
-import fs from "node:fs";
 import path from "node:path";
 import { runSqliteAsync, sqlEscape, sqliteAvailable } from "../sqlite.js";
 
@@ -61,13 +61,18 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
       const parts = [];
       for (;;) {
         const parent = path.dirname(ancestor);
-        if (parent === ancestor) { resolvedPath = absPath; break; }
+        if (parent === ancestor) {
+          resolvedPath = absPath;
+          break;
+        }
         parts.unshift(path.basename(ancestor));
         ancestor = parent;
         try {
           resolvedPath = path.join(fs.realpathSync(ancestor), ...parts);
           break;
-        } catch { /* keep walking up */ }
+        } catch {
+          /* keep walking up */
+        }
       }
     }
     const rel = path.relative(this.workspaceDir, resolvedPath);
