@@ -27,7 +27,8 @@ function resolveExistingRealPathOrParent(targetPath) {
 export function resolveWorkspaceForMcp(workspace, defaultWorkspace) {
   const rootPath = path.resolve(defaultWorkspace);
   const targetPath = path.resolve(workspace || defaultWorkspace);
-  if (process.env.CODER_ALLOW_ANY_WORKSPACE === "1") return targetPath;
+  if (process.env.CODER_ALLOW_ANY_WORKSPACE === "1")
+    return resolveExistingRealPathOrParent(targetPath);
 
   const root = realpathSync(rootPath);
   const target = resolveExistingRealPathOrParent(targetPath);

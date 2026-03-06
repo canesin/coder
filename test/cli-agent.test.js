@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { CliAgent, resolveAgentName } from "../src/agents/cli-agent.js";
@@ -290,4 +292,70 @@ test("executeWithRetry retries when isTransientResult flags a successful respons
   assert.equal(calls, 2);
   assert.equal(res.exitCode, 0);
   assert.match(res.stdout, /recommended_index/);
+});
+
+test("activeRuns stores the actual runPromise, not eager Promise.resolve()", async (t) => {
+  let resolveDevelop;
+  const blockingPromise = new Promise((r) => {
+    resolveDevelop = r;
+  });
+
+  t.mock.module("../src/workflows/develop.workflow.js", {
+    namedExports: { runDevelopLoop: () => blockingPromise },
+  });
+  t.mock.module("../src/workflows/research.workflow.js", {
+    namedExports: {
+      runResearchPipeline: () => Promise.resolve({ status: "completed" }),
+    },
+  });
+  t.mock.module("../src/workflows/design.workflow.js", {
+    namedExports: {
+      runDesignPipeline: () => Promise.resolve({ status: "completed" }),
+    },
+  });
+
+  const { activeRuns, registerWorkflowTools } = await import(
+    "../src/mcp/tools/workflows.js"
+  );
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-activeRuns-"));
+
+  // Capture the promise value stored at activeRuns.set call time (before any mutation)
+  let capturedPromise = null;
+  t.mock.method(activeRuns, "set", function (key, value) {
+    if (value?.startedAt !== undefined) {
+      capturedPromise = value.promise;
+    }
+    return Map.prototype.set.call(this, key, value);
+  });
+
+  const handlers = {};
+  const stubServer = {
+    registerTool: (name, _opts, fn) => {
+      handlers[name] = fn;
+    },
+  };
+  registerWorkflowTools(stubServer, ws);
+
+  await handlers.coder_workflow({ action: "start", workflow: "develop" });
+
+  assert.ok(
+    capturedPromise instanceof Promise,
+    "activeRuns.set was called with a promise",
+  );
+
+  // The promise stored at set time must be the IIFE (pending), not eager Promise.resolve()
+  const SENTINEL = Symbol("pending");
+  const raced = await Promise.race([
+    capturedPromise,
+    Promise.resolve(SENTINEL),
+  ]);
+  assert.equal(
+    raced,
+    SENTINEL,
+    "promise stored in activeRuns.set should be pending (not the eager Promise.resolve())",
+  );
+
+  resolveDevelop({ status: "completed" });
+  await capturedPromise.catch(() => {});
+  rmSync(ws, { recursive: true, force: true });
 });
