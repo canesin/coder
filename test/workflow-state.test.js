@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createActor } from "xstate";
+import { loadCheckpoint, saveCheckpoint } from "../src/state/machine-state.js";
 import {
   createWorkflowLifecycleMachine,
   loadLoopState,
@@ -383,5 +384,45 @@ test("concurrent saveWorkflowSnapshot calls serialize without errors", async () 
   assert.equal(loaded.runId, "run-4");
 
   actor.stop();
+  rmSync(ws, { recursive: true, force: true });
+});
+
+test("saveCheckpoint handles writeFileSync errors gracefully", () => {
+  const ws = makeTmpDir();
+  // Ensure the .coder directory exists and is read-only to force an error
+  const coderDir = path.join(ws, ".coder");
+  chmodSync(coderDir, 0o444);
+
+  const checkpoint = {
+    runId: "test-run",
+    workflow: "test",
+    steps: [],
+    currentStep: 0,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Should not throw
+  saveCheckpoint(ws, checkpoint);
+
+  // Cleanup permissions so we can delete the dir
+  chmodSync(coderDir, 0o777);
+  rmSync(ws, { recursive: true, force: true });
+});
+
+test("saveCheckpoint writes checkpoint file successfully", () => {
+  const ws = makeTmpDir();
+  const checkpoint = {
+    runId: "test-run-ok",
+    workflow: "test",
+    steps: [],
+    currentStep: 0,
+    updatedAt: new Date().toISOString(),
+  };
+
+  saveCheckpoint(ws, checkpoint);
+
+  const loaded = loadCheckpoint(ws, "test-run-ok");
+  assert.deepEqual(loaded, checkpoint);
+
   rmSync(ws, { recursive: true, force: true });
 });

@@ -199,7 +199,11 @@ function assertGitleaksInstalled() {
     return;
   }
   if (res.error) {
-    throw new Error(`gitleaks version check failed: ${res.error.message}`);
+    if (res.status === 0 && res.error.code === "EPERM") {
+      // Some environments report EPERM on successful spawnSync; allow it.
+    } else {
+      throw new Error(`gitleaks version check failed: ${res.error.message}`);
+    }
   }
   if (res.status !== 0) {
     throw new Error(
