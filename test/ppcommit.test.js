@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -265,36 +270,50 @@ test("ppcommit all: clean repo passes", async () => {
 
 // --- gitleaks ENOENT tests (spawned subprocess for fresh module state) ---
 
-test("ppcommit: gitleaks missing from PATH produces actionable error", async () => {
+test("ppcommit: gitleaks missing from PATH produces actionable error", () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
-  const nodeBin = path.dirname(process.execPath);
-  const restrictedPath = `${nodeBin}:/usr/bin:/bin`;
-  const originalPath = process.env.PATH;
-  process.env.PATH = restrictedPath;
-
+  // Use minimal PATH that excludes gitleaks. CI installs to /usr/local/bin;
+  // node is invoked via process.execPath (absolute), so we don't need node in PATH.
+  const restrictedPath = "/usr/bin:/bin";
+  const ppcommitPath = path.resolve(
+    import.meta.dirname,
+    "..",
+    "src",
+    "ppcommit.js",
+  );
+  const runnerPath = path.join(
+    os.tmpdir(),
+    `coder-ppcommit-gitleaks-test-${process.pid}.mjs`,
+  );
+  const runnerCode = `
+import { runPpcommitNative } from "${pathToFileURL(ppcommitPath).href}";
+try {
+  await runPpcommitNative(process.env.CODER_PPCOMMIT_REPO, { blockSecrets: true });
+  process.stdout.write("NO_ERROR");
+} catch (e) {
+  process.stdout.write(e.message || String(e));
+}
+`;
+  writeFileSync(runnerPath, runnerCode, "utf8");
   try {
-    const srcPath = path.resolve(
-      import.meta.dirname,
-      "..",
-      "src",
-      "ppcommit.js",
-    );
-    const moduleUrl = new URL(`?t=${Date.now()}`, pathToFileURL(srcPath)).href;
-    const { runPpcommitNative } = await import(moduleUrl);
-    let out = "";
-    try {
-      await runPpcommitNative(repo, { blockSecrets: true });
-      out = "NO_ERROR";
-    } catch (e) {
-      out = e.message;
-    }
-
+    const res = spawnSync(process.execPath, [runnerPath], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: restrictedPath,
+        CODER_PPCOMMIT_REPO: repo,
+      },
+      timeout: 10_000,
+    });
+    const out = (res.stdout || "") + (res.stderr || "");
     assert.doesNotMatch(out, /NO_ERROR/, "should have thrown an error");
     assert.match(out, /gitleaks binary not found in PATH/);
     assert.match(out, /gitleaks\/gitleaks/);
     assert.match(out, /blockSecrets/);
   } finally {
-    process.env.PATH = originalPath;
+    try {
+      unlinkSync(runnerPath);
+    } catch {}
   }
 });
