@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   runPpcommitAll,
@@ -35,7 +36,7 @@ test("ppcommit: skip via config", async () => {
     "// TODO: should be ignored\n",
     "utf8",
   );
-  const r = await runPpcommitNative(repo, { skip: true });
+  const r = await runPpcommitNative(repo, { blockSecrets: false, skip: true });
   assert.equal(r.exitCode, 0);
   assert.match(r.stdout, /skipped/i);
 });
@@ -213,7 +214,10 @@ test("ppcommit branch: skip via config", async () => {
   );
   run("git", ["add", "a.js"], repo);
   run("git", ["commit", "-m", "add a.js"], repo);
-  const r = await runPpcommitBranch(repo, "main", { skip: true });
+  const r = await runPpcommitBranch(repo, "main", {
+    blockSecrets: false,
+    skip: true,
+  });
   assert.equal(r.exitCode, 0);
   assert.match(r.stdout, /skipped/i);
 });
@@ -264,27 +268,33 @@ test("ppcommit all: clean repo passes", async () => {
 test("ppcommit: gitleaks missing from PATH produces actionable error", async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
-  const srcUrl = new URL("../src/ppcommit.js", import.meta.url);
-  srcUrl.search = `?cachebust=${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const { runPpcommitNative } = await import(srcUrl.href);
-
-  // Include node + git dirs but exclude gitleaks
   const nodeBin = path.dirname(process.execPath);
   const restrictedPath = `${nodeBin}:/usr/bin:/bin`;
   const originalPath = process.env.PATH;
-  let out = "";
+  process.env.PATH = restrictedPath;
 
   try {
-    process.env.PATH = restrictedPath;
-    await runPpcommitNative(repo, { blockSecrets: true });
-    out = "NO_ERROR";
-  } catch (e) {
-    out = e?.message || "";
+    const srcPath = path.resolve(
+      import.meta.dirname,
+      "..",
+      "src",
+      "ppcommit.js",
+    );
+    const moduleUrl = new URL(`?t=${Date.now()}`, pathToFileURL(srcPath)).href;
+    const { runPpcommitNative } = await import(moduleUrl);
+    let out = "";
+    try {
+      await runPpcommitNative(repo, { blockSecrets: true });
+      out = "NO_ERROR";
+    } catch (e) {
+      out = e.message;
+    }
+
+    assert.doesNotMatch(out, /NO_ERROR/, "should have thrown an error");
+    assert.match(out, /gitleaks binary not found in PATH/);
+    assert.match(out, /gitleaks\/gitleaks/);
+    assert.match(out, /blockSecrets/);
   } finally {
     process.env.PATH = originalPath;
   }
-  assert.doesNotMatch(out, /NO_ERROR/, "should have thrown an error");
-  assert.match(out, /gitleaks binary not found in PATH/);
-  assert.match(out, /gitleaks\/gitleaks/);
-  assert.match(out, /blockSecrets/);
 });
