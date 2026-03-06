@@ -183,7 +183,10 @@ function assertGitleaksInstalled() {
     encoding: "utf8",
     timeout: 5000,
   });
-  if (res.error?.code === "ENOENT") {
+  if (
+    res.error?.code &&
+    ["ENOENT", "EACCES", "EPERM"].includes(res.error.code)
+  ) {
     throw new Error(
       `gitleaks binary not found in PATH.\n` +
         `  PATH searched: ${process.env.PATH}\n` +

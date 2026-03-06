@@ -70,7 +70,7 @@ function loadLocalIssues(issuesDir) {
           const content = readFileSync(mdPath, "utf8");
           const heading = content.match(/^#\s+(.+)/m);
           title = heading
-            ? heading[1].replace(/^ISSUE-\d+\s*[—–-]\s*/, "").trim()
+            ? heading[1].replace(/^ISSUE-\d+\s*[\u2014\u2013-]\s*/, "").trim()
             : entry.id;
         } catch {
           title = entry.id;
@@ -150,38 +150,55 @@ function fetchGithubIssues(cwd) {
  * @returns {object[]}
  */
 function fetchGitlabIssues(cwd) {
-  const res = spawnSync(
-    "glab",
-    ["issue", "list", "--output", "json", "--state", "opened"],
-    { cwd, encoding: "utf8", timeout: 15000 },
-  );
-  if (res.error) {
-    throw new Error(`glab: ${res.error.message}`);
-  }
-  if (res.status !== 0) {
-    throw new Error(
-      formatCommandFailure("glab issue list failed", {
-        exitCode: res.status ?? 1,
-        stderr: res.stderr || "",
-        stdout: res.stdout || "",
-      }),
+  // glab issue list --output json is not available in glab v1.x;
+  // use `glab api` which returns proper JSON with full pagination support.
+  // Slim the response to only fields the AI needs to avoid ARG_MAX (E2BIG).
+  const allIssues = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = spawnSync(
+      "glab",
+      ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
+      { cwd, encoding: "utf8", timeout: 15000 },
     );
+    if (res.error) {
+      throw new Error(`glab: ${res.error.message}`);
+    }
+    if (res.status !== 0) {
+      throw new Error(
+        formatCommandFailure("glab issue list failed", {
+          exitCode: res.status ?? 1,
+          stderr: res.stderr || "",
+          stdout: res.stdout || "",
+        }),
+      );
+    }
+    if (!res.stdout) break;
+    let parsed;
+    try {
+      parsed = JSON.parse(res.stdout);
+    } catch {
+      throw new Error(
+        `glab returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `glab returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+      );
+    }
+    // Keep only the fields needed for issue selection to avoid E2BIG when
+    // the full payload is embedded in a bash heredoc prompt.
+    const slim = parsed.map((i) => ({
+      iid: i.iid,
+      title: i.title,
+      description: (i.description || "").slice(0, 500),
+      labels: (i.labels || []).map((l) => (typeof l === "string" ? l : l.name)),
+      web_url: i.web_url,
+    }));
+    allIssues.push(...slim);
+    if (parsed.length < 100) break;
   }
-  if (!res.stdout) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(res.stdout);
-  } catch {
-    throw new Error(
-      `glab returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
-    );
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error(
-      `glab returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
-    );
-  }
-  return parsed;
+  return allIssues;
 }
 
 export default defineMachine({
@@ -311,18 +328,7 @@ export default defineMachine({
     ) {
       ctx.log({ event: "step0_list_projects" });
       try {
-        const projPrompt = `Use your Linear MCP to list all teams I have access to.
-
-Return ONLY valid JSON in this schema:
-{
-  "projects": [
-    {
-      "id": "string (team ID)",
-      "name": "string (team name)",
-      "key": "string (team key, e.g. ENG)"
-    }
-  ]
-}`;
+        const projPrompt = `Use your Linear MCP to list all teams I have access to.\n\nReturn ONLY valid JSON in this schema:\n{\n  "projects": [\n    {\n      "id": "string (team ID)",\n      "name": "string (team name)",\n      "key": "string (team key, e.g. ENG)"\n    }\n  ]\n}`;
         const projRes = await agent.executeWithRetry(projPrompt, {
           structured: true,
           timeoutMs: ctx.config.workflow.timeouts.issueSelection,
@@ -397,10 +403,7 @@ Return ONLY valid JSON in this schema:
         issues.length > 0
           ? `Here are the open GitHub issues for this repo (fetched via gh CLI):\n${JSON.stringify(issues, null, 2)}`
           : "No open GitHub issues found.";
-      listPrompt = `${issueList}
-
-Use "github" as the source value and "#<number>" as the id (e.g. "#42").
-${TAIL}`;
+      listPrompt = `${issueList}\n\nUse "github" as the source value and "#<number>" as the id (e.g. "#42").\n${TAIL}`;
     } else if (issueSource === "gitlab") {
       const issues = fetchGitlabIssues(ctx.workspaceDir);
       ctx.log({
@@ -412,10 +415,7 @@ ${TAIL}`;
         issues.length > 0
           ? `Here are the open GitLab issues for this repo (fetched via glab CLI):\n${JSON.stringify(issues, null, 2)}`
           : "No open GitLab issues found.";
-      listPrompt = `${issueList}
-
-Use "gitlab" as the source value and "#<iid>" as the id (e.g. "#42").
-${TAIL}`;
+      listPrompt = `${issueList}\n\nUse "gitlab" as the source value and "#<iid>" as the id (e.g. "#42").\n${TAIL}`;
     } else {
       // linear — agent fetches via MCP
       let projectFilterClause = "";
@@ -424,10 +424,7 @@ ${TAIL}`;
       } else if (input.projectFilter) {
         projectFilterClause = `\nOnly include issues from projects matching "${input.projectFilter}".`;
       }
-      listPrompt = `Use your Linear MCP to list open issues.${projectFilterClause}
-
-Use "linear" as the source value and the Linear issue identifier as the id (e.g. "ENG-42").
-${TAIL}`;
+      listPrompt = `Use your Linear MCP to list open issues.${projectFilterClause}\n\nUse "linear" as the source value and the Linear issue identifier as the id (e.g. "ENG-42").\n${TAIL}`;
     }
 
     const res = await agent.executeWithRetry(listPrompt, {
