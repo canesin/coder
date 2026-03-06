@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import {
   access,
   appendFile,
@@ -51,7 +52,30 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
   }
 
   _relPath(absPath) {
-    const rel = path.relative(this.workspaceDir, absPath);
+    let resolvedPath;
+    try {
+      resolvedPath = fs.realpathSync(absPath);
+    } catch {
+      // File doesn't exist; resolve nearest existing ancestor to catch symlink dirs.
+      let ancestor = absPath;
+      const parts = [];
+      for (;;) {
+        const parent = path.dirname(ancestor);
+        if (parent === ancestor) {
+          resolvedPath = absPath;
+          break;
+        }
+        parts.unshift(path.basename(ancestor));
+        ancestor = parent;
+        try {
+          resolvedPath = path.join(fs.realpathSync(ancestor), ...parts);
+          break;
+        } catch {
+          /* keep walking up */
+        }
+      }
+    }
+    const rel = path.relative(this.workspaceDir, resolvedPath);
     if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
     return rel;
   }
