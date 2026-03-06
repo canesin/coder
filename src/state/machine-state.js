@@ -29,8 +29,12 @@ export function checkpointPathFor(workspaceDir, runId) {
 
 export function saveCheckpoint(workspaceDir, checkpoint) {
   const p = checkpointPathFor(workspaceDir, checkpoint.runId);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(checkpoint, null, 2) + "\n");
+  try {
+    mkdirSync(path.dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify(checkpoint, null, 2) + "\n");
+  } catch (err) {
+    console.error(`[coder] failed to save checkpoint ${p}: ${err.message}`);
+  }
 }
 
 export function loadCheckpoint(workspaceDir, runId) {
