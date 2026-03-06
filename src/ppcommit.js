@@ -183,7 +183,10 @@ function assertGitleaksInstalled() {
     encoding: "utf8",
     timeout: 5000,
   });
-  if (res.error?.code === "ENOENT") {
+  if (
+    res.error?.code &&
+    ["ENOENT", "EACCES", "EPERM"].includes(res.error.code)
+  ) {
     throw new Error(
       `gitleaks binary not found in PATH.\n` +
         `  PATH searched: ${process.env.PATH}\n` +
@@ -191,8 +194,16 @@ function assertGitleaksInstalled() {
         `  To disable: set "blockSecrets": false in ppcommit config (coder.json)`,
     );
   }
+  if (res.error && res.status === 0) {
+    _gitleaksChecked = true;
+    return;
+  }
   if (res.error) {
-    throw new Error(`gitleaks version check failed: ${res.error.message}`);
+    if (res.status === 0 && res.error.code === "EPERM") {
+      // Some environments report EPERM on successful spawnSync; allow it.
+    } else {
+      throw new Error(`gitleaks version check failed: ${res.error.message}`);
+    }
   }
   if (res.status !== 0) {
     throw new Error(

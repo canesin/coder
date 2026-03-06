@@ -82,9 +82,26 @@ test("resolveWorkspaceForMcp allows non-existent child path inside root", () => 
   const target = path.join(root, "a", "b", "c");
   try {
     const resolved = resolveWorkspaceForMcp(target, root);
-    assert.equal(resolved, path.resolve(target));
+    assert.equal(resolved, target);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveWorkspaceForMcp returns validated parent for dangling symlink to outside root", () => {
+  const tempRoot = makeDir("coder-mcp-root-");
+  const outsideRoot = makeDir("coder-mcp-outside-");
+  const safeWorkspace = path.join(tempRoot, "safe-workspace");
+  mkdirSync(safeWorkspace, { recursive: true });
+  const evilSymlink = path.join(safeWorkspace, "evilSymlink");
+  const nonExistentOutsideTarget = path.join(outsideRoot, "nonExistentFile");
+  symlinkSync(nonExistentOutsideTarget, evilSymlink);
+  try {
+    const resolved = resolveWorkspaceForMcp(evilSymlink, tempRoot);
+    assert.equal(resolved, evilSymlink);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
   }
 });
 
@@ -99,5 +116,19 @@ test("resolveWorkspaceForMcp bypasses boundary check when env override is set", 
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("resolveWorkspaceForMcp returns symlink path (not real path) for symlink within root", () => {
+  const root = makeDir("coder-mcp-root-");
+  const realDir = path.join(root, "real-target");
+  mkdirSync(realDir, { recursive: true });
+  const symlinkPath = path.join(root, "symlink-to-real-target");
+  symlinkSync(realDir, symlinkPath, "dir");
+  try {
+    const resolved = resolveWorkspaceForMcp(symlinkPath, root);
+    assert.equal(resolved, symlinkPath);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
