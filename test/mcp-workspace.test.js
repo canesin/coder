@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -99,5 +105,19 @@ test("resolveWorkspaceForMcp bypasses boundary check when env override is set", 
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("resolveWorkspaceForMcp returns real path for symlink within root", () => {
+  const root = makeDir("coder-mcp-root-");
+  const realDir = path.join(root, "real-target");
+  mkdirSync(realDir, { recursive: true });
+  const symlinkPath = path.join(root, "symlink-to-real-target");
+  symlinkSync(realDir, symlinkPath, "dir");
+  try {
+    const resolved = resolveWorkspaceForMcp(symlinkPath, root);
+    assert.equal(resolved, realpathSync(realDir));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

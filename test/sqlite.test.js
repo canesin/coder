@@ -11,6 +11,8 @@ import {
   sqliteAvailable,
 } from "../src/sqlite.js";
 
+const hasSqlite = sqliteAvailable();
+
 test("sqlEscape handles quoting, NUL bytes, and null/undefined coercion", () => {
   // single-quote escaping
   assert.equal(sqlEscape("it's"), "it''s");
@@ -32,7 +34,7 @@ test("sqliteAvailable returns a boolean and caches result", () => {
   assert.equal(result1, result2);
 });
 
-test("runSqliteAsync resolves valid SQL", async () => {
+test("runSqliteAsync resolves valid SQL", { skip: !hasSqlite }, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {
@@ -48,45 +50,53 @@ test("runSqliteAsync resolves valid SQL", async () => {
   }
 });
 
-test("runSqliteAsync rejects on invalid SQL", async () => {
-  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
-  const dbPath = path.join(tmpDir, "test.db");
-  try {
-    await assert.rejects(() => runSqliteAsync(dbPath, "INVALID SQL HERE;"), {
-      message: /sqlite3 failed/,
-    });
-  } finally {
-    rmSync(tmpDir, { recursive: true, force: true });
-  }
-});
+test(
+  "runSqliteAsync rejects on invalid SQL",
+  { skip: !hasSqlite },
+  async () => {
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
+    const dbPath = path.join(tmpDir, "test.db");
+    try {
+      await assert.rejects(() => runSqliteAsync(dbPath, "INVALID SQL HERE;"), {
+        message: /sqlite3 failed/,
+      });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  },
+);
 
-test("runSqliteAsync times out and throws SqliteTimeoutError", async () => {
-  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
-  const dbPath = path.join(tmpDir, "test.db");
-  try {
-    // Recursive CTE that runs long enough to trigger a short timeout
-    const slowSql = `
+test(
+  "runSqliteAsync times out and throws SqliteTimeoutError",
+  { skip: !hasSqlite },
+  async () => {
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
+    const dbPath = path.join(tmpDir, "test.db");
+    try {
+      // Recursive CTE that runs long enough to trigger a short timeout
+      const slowSql = `
       WITH RECURSIVE cnt(x) AS (
         VALUES(1) UNION ALL SELECT x+1 FROM cnt WHERE x < 999999999
       ) SELECT count(*) FROM cnt;
     `;
-    await assert.rejects(
-      () => runSqliteAsync(dbPath, slowSql, { timeoutMs: 200 }),
-      (err) => {
-        assert.ok(err instanceof SqliteTimeoutError);
-        assert.ok(err instanceof Error);
-        assert.ok(err.message.includes("timed out"));
-        assert.equal(err.code, "SQLITE_TIMEOUT");
-        assert.equal(err.dbPath, dbPath);
-        assert.equal(err.timeoutMs, 200);
-        assert.equal(err.graceMs, 5000);
-        return true;
-      },
-    );
-  } finally {
-    rmSync(tmpDir, { recursive: true, force: true });
-  }
-});
+      await assert.rejects(
+        () => runSqliteAsync(dbPath, slowSql, { timeoutMs: 200 }),
+        (err) => {
+          assert.ok(err instanceof SqliteTimeoutError);
+          assert.ok(err instanceof Error);
+          assert.ok(err.message.includes("timed out"));
+          assert.equal(err.code, "SQLITE_TIMEOUT");
+          assert.equal(err.dbPath, dbPath);
+          assert.equal(err.timeoutMs, 200);
+          assert.equal(err.graceMs, 5000);
+          return true;
+        },
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("runSqliteAsyncIgnoreErrors swallows errors", async () => {
   // Should not throw for bad SQL
