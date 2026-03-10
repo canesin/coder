@@ -53,37 +53,35 @@ test("computeGitWorktreeFingerprint changes when untracked file content changes"
   assert.notEqual(fp2, fp3);
 });
 
-test(
-  "computeGitWorktreeFingerprint handles unreadable untracked file without throwing",
-  { skip: process.platform === "win32" || process.getuid?.() === 0 },
-  () => {
-    const repo = makeRepo();
-    const filePath = path.join(repo, "secret.txt");
-    writeFileSync(filePath, "cannot read me\n", "utf8");
-    chmodSync(filePath, 0o000);
-    try {
-      const fp1 = computeGitWorktreeFingerprint(repo);
-      const fp2 = computeGitWorktreeFingerprint(repo);
-      assert.equal(fp1, fp2);
+test("computeGitWorktreeFingerprint handles unreadable untracked file without throwing", {
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, () => {
+  const repo = makeRepo();
+  const filePath = path.join(repo, "secret.txt");
+  writeFileSync(filePath, "cannot read me\n", "utf8");
+  chmodSync(filePath, 0o000);
+  try {
+    const fp1 = computeGitWorktreeFingerprint(repo);
+    const fp2 = computeGitWorktreeFingerprint(repo);
+    assert.equal(fp1, fp2);
 
-      // Reconstruct expected digest with ERR:EACCES sentinel
-      const gitOut = (args) =>
-        spawnSync("git", args, { cwd: repo, encoding: "utf8" }).stdout || "";
-      const h = createHash("sha256");
-      h.update("status\0");
-      h.update(gitOut(["status", "--porcelain=v1", "-z"]));
-      h.update("\0diff\0");
-      h.update(gitOut(["diff", "--no-ext-diff"]));
-      h.update("\0diff_cached\0");
-      h.update(gitOut(["diff", "--cached", "--no-ext-diff"]));
-      h.update("\0untracked\0");
-      h.update("secret.txt\nERR:EACCES\n");
-      assert.equal(fp1, h.digest("hex"));
-    } finally {
-      chmodSync(filePath, 0o644);
-    }
-  },
-);
+    // Reconstruct expected digest with ERR:EACCES sentinel
+    const gitOut = (args) =>
+      spawnSync("git", args, { cwd: repo, encoding: "utf8" }).stdout || "";
+    const h = createHash("sha256");
+    h.update("status\0");
+    h.update(gitOut(["status", "--porcelain=v1", "-z"]));
+    h.update("\0diff\0");
+    h.update(gitOut(["diff", "--no-ext-diff"]));
+    h.update("\0diff_cached\0");
+    h.update(gitOut(["diff", "--cached", "--no-ext-diff"]));
+    h.update("\0untracked\0");
+    h.update("secret.txt\nERR:EACCES\n");
+    assert.equal(fp1, h.digest("hex"));
+  } finally {
+    chmodSync(filePath, 0o644);
+  }
+});
 
 test("computeGitWorktreeFingerprint handles special characters and spaces in paths", () => {
   const repo = makeRepo();
