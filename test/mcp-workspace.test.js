@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -83,6 +89,20 @@ test("resolveWorkspaceForMcp allows non-existent child path inside root", () => 
   try {
     const resolved = resolveWorkspaceForMcp(target, root);
     assert.equal(resolved, path.resolve(target));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveWorkspaceForMcp returns resolved realpath for symlink inside root", () => {
+  const root = makeDir("coder-mcp-root-");
+  const realSub = path.join(root, "real-sub");
+  mkdirSync(realSub, { recursive: true });
+  const link = path.join(root, "link-to-sub");
+  symlinkSync(realSub, link, "dir");
+  try {
+    const resolved = resolveWorkspaceForMcp(link, root);
+    assert.equal(resolved, realpathSync(realSub));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

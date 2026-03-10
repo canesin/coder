@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import {
   access,
   appendFile,
@@ -51,7 +52,14 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
   }
 
   _relPath(absPath) {
-    const rel = path.relative(this.workspaceDir, absPath);
+    let realBase, realTarget;
+    try {
+      realBase = realpathSync(this.workspaceDir);
+      realTarget = realpathSync(absPath);
+    } catch {
+      return null;
+    }
+    const rel = path.relative(realBase, realTarget);
     if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
     return rel;
   }
