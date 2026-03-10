@@ -34,6 +34,23 @@ test("makeJsonlLogger writes redacted payloads", async () => {
   assert.doesNotMatch(content, /topsecret|alsosecret/);
 });
 
+test("makeJsonlLogger closes previous stream when called twice with same name", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-logging-dup-"));
+  const logger1 = makeJsonlLogger(ws, "agent");
+  logger1({ event: "first" });
+
+  // Create second logger with same name — should close the first stream
+  const logger2 = makeJsonlLogger(ws, "agent");
+  logger2({ event: "second" });
+  await closeAllLoggers();
+
+  const content = readFileSync(path.join(logsDir(ws), "agent.jsonl"), "utf8");
+  const lines = content.trim().split("\n");
+  assert.ok(lines.length >= 2, "both events should be written");
+  assert.match(lines[0], /first/);
+  assert.match(lines[1], /second/);
+});
+
 test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => {
   const event = sanitizeLogEvent({
     nested: { authorization: "Bearer supersecretvalue" },

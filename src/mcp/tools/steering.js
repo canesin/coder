@@ -37,6 +37,7 @@ export function registerSteeringTools(server, defaultWorkspace) {
       },
     },
     async ({ workspace, force }) => {
+      let pool = null;
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
         const config = resolveConfig(ws);
@@ -58,7 +59,7 @@ export function registerSteeringTools(server, defaultWorkspace) {
 
         // Use gemini agent for generation (fast, cheap)
         const secrets = buildSecrets(resolvePassEnv(config));
-        const pool = new AgentPool({
+        pool = new AgentPool({
           config,
           workspaceDir: ws,
           verbose: false,
@@ -72,7 +73,6 @@ export function registerSteeringTools(server, defaultWorkspace) {
         });
 
         if (!result?.stdout) {
-          await pool.killAll();
           return {
             content: [
               {
@@ -87,7 +87,6 @@ export function registerSteeringTools(server, defaultWorkspace) {
         const parsed = parseSteeringResponse(result.stdout);
         const sections = Object.keys(parsed);
         if (sections.length === 0) {
-          await pool.killAll();
           return {
             content: [
               {
@@ -100,7 +99,6 @@ export function registerSteeringTools(server, defaultWorkspace) {
         }
 
         const written = writeSteeringFiles(ws, parsed);
-        await pool.killAll();
 
         return {
           content: [
@@ -120,6 +118,8 @@ export function registerSteeringTools(server, defaultWorkspace) {
           ],
           isError: true,
         };
+      } finally {
+        if (pool) await pool.killAll();
       }
     },
   );
@@ -144,11 +144,12 @@ export function registerSteeringTools(server, defaultWorkspace) {
       },
     },
     async ({ workspace }) => {
+      let pool = null;
       try {
         const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
         const config = resolveConfig(ws);
         const secrets = buildSecrets(resolvePassEnv(config));
-        const pool = new AgentPool({
+        pool = new AgentPool({
           config,
           workspaceDir: ws,
           verbose: false,
@@ -162,7 +163,6 @@ export function registerSteeringTools(server, defaultWorkspace) {
         });
 
         if (!result?.stdout) {
-          await pool.killAll();
           return {
             content: [
               {
@@ -177,7 +177,6 @@ export function registerSteeringTools(server, defaultWorkspace) {
         const parsed = parseSteeringResponse(result.stdout);
         const sections = Object.keys(parsed);
         if (sections.length === 0) {
-          await pool.killAll();
           return {
             content: [
               {
@@ -190,7 +189,6 @@ export function registerSteeringTools(server, defaultWorkspace) {
         }
 
         const written = writeSteeringFiles(ws, parsed);
-        await pool.killAll();
 
         return {
           content: [
@@ -210,6 +208,8 @@ export function registerSteeringTools(server, defaultWorkspace) {
           ],
           isError: true,
         };
+      } finally {
+        if (pool) await pool.killAll();
       }
     },
   );

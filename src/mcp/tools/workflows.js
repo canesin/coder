@@ -676,14 +676,7 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             runId: nextRunId,
           });
 
-          // Store run entry with agentPool so cancel can kill agents
-          activeRuns.set(nextRunId, {
-            cancelToken,
-            agentPool,
-            workspace: ws,
-            promise: Promise.resolve(),
-            startedAt: new Date().toISOString(),
-          });
+          const runStartedAt = new Date().toISOString();
 
           const workflowCtx = {
             workspaceDir: ws,
@@ -788,7 +781,14 @@ export function registerWorkflowTools(server, defaultWorkspace) {
             }
           })();
 
-          activeRuns.get(nextRunId).promise = runPromise;
+          // Store run entry with real promise so cancel can await it
+          activeRuns.set(nextRunId, {
+            cancelToken,
+            agentPool,
+            workspace: ws,
+            promise: runPromise,
+            startedAt: runStartedAt,
+          });
 
           return {
             content: [
