@@ -254,9 +254,12 @@ function readWorkflowEvents(
     "logs",
     `${workflowName}.jsonl`,
   );
-  if (!existsSync(logPath)) return { events: [], nextSeq: 0, totalLines: 0 };
-
-  const content = readFileSync(logPath, "utf8");
+  let content;
+  try {
+    content = readFileSync(logPath, "utf8");
+  } catch {
+    return { events: [], nextSeq: 0, totalLines: 0 };
+  }
   const allLines = content.split("\n").filter((l) => l.trim());
   const totalLines = allLines.length;
   const events = [];

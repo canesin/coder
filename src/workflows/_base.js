@@ -236,6 +236,12 @@ export class WorkflowRunner {
     while (this.ctx.cancelToken.paused && !this.ctx.cancelToken.cancelled) {
       if (Date.now() - start > MAX_PAUSE_MS) {
         this.ctx.cancelToken.cancelled = true;
+        this.ctx.log({
+          event: "workflow_pause_timeout",
+          workflow: this.name,
+          runId: this.runId,
+          pausedDurationMs: Date.now() - start,
+        });
         break;
       }
       await new Promise((r) => setTimeout(r, CHECK_INTERVAL_MS));

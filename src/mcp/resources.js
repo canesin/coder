@@ -1,11 +1,17 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { loopStatePathFor, statePathFor } from "../state/workflow-state.js";
 import { loadSteeringContext } from "../steering.js";
 
-function findLatestScratchpadFile(scratchpadDir) {
-  if (!existsSync(scratchpadDir)) return null;
+function tryReadFile(filePath, fallback) {
+  try {
+    return readFileSync(filePath, "utf8");
+  } catch {
+    return fallback;
+  }
+}
 
+function findLatestScratchpadFile(scratchpadDir) {
   /** @type {{ path: string, mtimeMs: number } | null} */
   let latest = null;
   const stack = [scratchpadDir];
@@ -47,127 +53,69 @@ export function registerResources(server, defaultWorkspace) {
       description:
         "Current .coder/state.json — workflow state including steps completed, selected issue, and branch",
     },
-    async () => {
-      const statePath = statePathFor(defaultWorkspace);
-      if (!existsSync(statePath)) {
-        return {
-          contents: [
-            { uri: "coder://state", mimeType: "application/json", text: "{}" },
-          ],
-        };
-      }
-      return {
-        contents: [
-          {
-            uri: "coder://state",
-            mimeType: "application/json",
-            text: readFileSync(statePath, "utf8"),
-          },
-        ],
-      };
-    },
+    async () => ({
+      contents: [
+        {
+          uri: "coder://state",
+          mimeType: "application/json",
+          text: tryReadFile(statePathFor(defaultWorkspace), "{}"),
+        },
+      ],
+    }),
   );
 
   server.resource(
     "issue",
     "coder://issue",
     { description: "ISSUE.md contents — the drafted issue specification" },
-    async () => {
-      const issuePath = path.join(
-        defaultWorkspace,
-        ".coder",
-        "artifacts",
-        "ISSUE.md",
-      );
-      if (!existsSync(issuePath)) {
-        return {
-          contents: [
-            {
-              uri: "coder://issue",
-              mimeType: "text/markdown",
-              text: "ISSUE.md does not exist yet.",
-            },
-          ],
-        };
-      }
-      return {
-        contents: [
-          {
-            uri: "coder://issue",
-            mimeType: "text/markdown",
-            text: readFileSync(issuePath, "utf8"),
-          },
-        ],
-      };
-    },
+    async () => ({
+      contents: [
+        {
+          uri: "coder://issue",
+          mimeType: "text/markdown",
+          text: tryReadFile(
+            path.join(defaultWorkspace, ".coder", "artifacts", "ISSUE.md"),
+            "ISSUE.md does not exist yet.",
+          ),
+        },
+      ],
+    }),
   );
 
   server.resource(
     "plan",
     "coder://plan",
     { description: "PLAN.md contents — the implementation plan" },
-    async () => {
-      const planPath = path.join(
-        defaultWorkspace,
-        ".coder",
-        "artifacts",
-        "PLAN.md",
-      );
-      if (!existsSync(planPath)) {
-        return {
-          contents: [
-            {
-              uri: "coder://plan",
-              mimeType: "text/markdown",
-              text: "PLAN.md does not exist yet.",
-            },
-          ],
-        };
-      }
-      return {
-        contents: [
-          {
-            uri: "coder://plan",
-            mimeType: "text/markdown",
-            text: readFileSync(planPath, "utf8"),
-          },
-        ],
-      };
-    },
+    async () => ({
+      contents: [
+        {
+          uri: "coder://plan",
+          mimeType: "text/markdown",
+          text: tryReadFile(
+            path.join(defaultWorkspace, ".coder", "artifacts", "PLAN.md"),
+            "PLAN.md does not exist yet.",
+          ),
+        },
+      ],
+    }),
   );
 
   server.resource(
     "critique",
     "coder://critique",
     { description: "PLANREVIEW.md contents — the plan review critique" },
-    async () => {
-      const critiquePath = path.join(
-        defaultWorkspace,
-        ".coder",
-        "artifacts",
-        "PLANREVIEW.md",
-      );
-      if (!existsSync(critiquePath)) {
-        return {
-          contents: [
-            {
-              uri: "coder://critique",
-              mimeType: "text/markdown",
-              text: "PLANREVIEW.md does not exist yet.",
-            },
-          ],
-        };
-      }
-      return {
-        contents: [
-          {
-            uri: "coder://critique",
-            mimeType: "text/markdown",
-            text: readFileSync(critiquePath, "utf8"),
-          },
-        ],
-      };
-    },
+    async () => ({
+      contents: [
+        {
+          uri: "coder://critique",
+          mimeType: "text/markdown",
+          text: tryReadFile(
+            path.join(defaultWorkspace, ".coder", "artifacts", "PLANREVIEW.md"),
+            "PLANREVIEW.md does not exist yet.",
+          ),
+        },
+      ],
+    }),
   );
 
   server.resource(
@@ -177,29 +125,15 @@ export function registerResources(server, defaultWorkspace) {
       description:
         "Current .coder/loop-state.json — develop workflow progress including issue queue and per-issue results",
     },
-    async () => {
-      const loopPath = loopStatePathFor(defaultWorkspace);
-      if (!existsSync(loopPath)) {
-        return {
-          contents: [
-            {
-              uri: "coder://loop-state",
-              mimeType: "application/json",
-              text: "{}",
-            },
-          ],
-        };
-      }
-      return {
-        contents: [
-          {
-            uri: "coder://loop-state",
-            mimeType: "application/json",
-            text: readFileSync(loopPath, "utf8"),
-          },
-        ],
-      };
-    },
+    async () => ({
+      contents: [
+        {
+          uri: "coder://loop-state",
+          mimeType: "application/json",
+          text: tryReadFile(loopStatePathFor(defaultWorkspace), "{}"),
+        },
+      ],
+    }),
   );
 
   server.resource(
@@ -214,22 +148,13 @@ export function registerResources(server, defaultWorkspace) {
       const scratchpadDir = path.join(defaultWorkspace, ".coder", "scratchpad");
       let scratchpadPath = null;
 
-      if (existsSync(statePath)) {
-        try {
-          const state = JSON.parse(readFileSync(statePath, "utf8"));
-          if (
-            typeof state?.scratchpadPath === "string" &&
-            state.scratchpadPath
-          ) {
-            const candidate = path.resolve(
-              defaultWorkspace,
-              state.scratchpadPath,
-            );
-            if (existsSync(candidate)) scratchpadPath = candidate;
-          }
-        } catch {
-          // best-effort
+      try {
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        if (typeof state?.scratchpadPath === "string" && state.scratchpadPath) {
+          scratchpadPath = path.resolve(defaultWorkspace, state.scratchpadPath);
         }
+      } catch {
+        // best-effort
       }
 
       if (!scratchpadPath) {
@@ -248,13 +173,13 @@ export function registerResources(server, defaultWorkspace) {
         };
       }
 
+      const text = tryReadFile(
+        scratchpadPath,
+        "No scratchpad file exists yet under .coder/scratchpad.",
+      );
       return {
         contents: [
-          {
-            uri: "coder://scratchpad",
-            mimeType: "text/markdown",
-            text: readFileSync(scratchpadPath, "utf8"),
-          },
+          { uri: "coder://scratchpad", mimeType: "text/markdown", text },
         ],
       };
     },
