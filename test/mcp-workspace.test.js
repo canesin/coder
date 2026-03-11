@@ -43,8 +43,10 @@ test("resolveWorkspaceForMcp rejects workspace outside root", () => {
   const root = makeDir("coder-mcp-root-");
   const outside = makeDir("coder-mcp-outside-");
   try {
-    assert.throws(() => resolveWorkspaceForMcp(outside, root), {
-      message: /Workspace must be within server root/,
+    withEnv("CODER_ALLOW_ANY_WORKSPACE", undefined, () => {
+      assert.throws(() => resolveWorkspaceForMcp(outside, root), {
+        message: /Workspace must be within server root/,
+      });
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -58,8 +60,10 @@ test("resolveWorkspaceForMcp rejects symlink escape target", () => {
   const escapeLink = path.join(root, "escape");
   symlinkSync(outside, escapeLink, "dir");
   try {
-    assert.throws(() => resolveWorkspaceForMcp(escapeLink, root), {
-      message: /Workspace must be within server root/,
+    withEnv("CODER_ALLOW_ANY_WORKSPACE", undefined, () => {
+      assert.throws(() => resolveWorkspaceForMcp(escapeLink, root), {
+        message: /Workspace must be within server root/,
+      });
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -74,8 +78,10 @@ test("resolveWorkspaceForMcp rejects non-existent child under symlink escape", (
   symlinkSync(outside, escapeLink, "dir");
   const target = path.join(escapeLink, "new-child");
   try {
-    assert.throws(() => resolveWorkspaceForMcp(target, root), {
-      message: /Workspace must be within server root/,
+    withEnv("CODER_ALLOW_ANY_WORKSPACE", undefined, () => {
+      assert.throws(() => resolveWorkspaceForMcp(target, root), {
+        message: /Workspace must be within server root/,
+      });
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -101,8 +107,10 @@ test("resolveWorkspaceForMcp returns resolved realpath for symlink inside root",
   const link = path.join(root, "link-to-sub");
   symlinkSync(realSub, link, "dir");
   try {
-    const resolved = resolveWorkspaceForMcp(link, root);
-    assert.equal(resolved, realpathSync(realSub));
+    withEnv("CODER_ALLOW_ANY_WORKSPACE", undefined, () => {
+      const resolved = resolveWorkspaceForMcp(link, root);
+      assert.equal(resolved, realpathSync(realSub));
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
