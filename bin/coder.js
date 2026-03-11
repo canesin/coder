@@ -751,10 +751,16 @@ async function runPpcommitCli() {
 
 function runVersionCli() {
   const pkgDir = path.resolve(new URL("..", import.meta.url).pathname);
-  const pkg = JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8"));
+  const pkg = JSON.parse(
+    readFileSync(path.join(pkgDir, "package.json"), "utf8"),
+  );
 
   const git = (args) => {
-    const r = spawnSync("git", args, { cwd: pkgDir, encoding: "utf8", timeout: 5000 });
+    const r = spawnSync("git", args, {
+      cwd: pkgDir,
+      encoding: "utf8",
+      timeout: 5000,
+    });
     return r.status === 0 ? r.stdout.trim() : null;
   };
 
@@ -788,6 +794,11 @@ const subcommand = process.argv[2];
 
 if (!subcommand || subcommand === "--help" || subcommand === "-h") {
   process.stdout.write(usage());
+  process.exit(0);
+}
+
+if (subcommand === "--version" || subcommand === "-V") {
+  runVersionCli();
   process.exit(0);
 }
 
