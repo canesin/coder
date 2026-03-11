@@ -79,11 +79,13 @@ export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
   openStreams.set(p, stream);
 
   return (event) => {
+    const activeStream = openStreams.get(p);
+    if (!activeStream) return;
     const safeEvent = sanitizeLogEvent(event);
     const entry = { ts: new Date().toISOString(), ...safeEvent };
     if (runId) entry.runId = runId;
     const line = JSON.stringify(entry);
-    stream.write(line + "\n");
+    activeStream.write(line + "\n");
   };
 }
 

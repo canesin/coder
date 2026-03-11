@@ -36,6 +36,30 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function makeIssueState(id, title = `Issue ${id}`) {
+  return {
+    selected: { source: "github", id: String(id), title },
+    selectedProject: null,
+    linearProjects: null,
+    repoPath: ".",
+    baseBranch: "main",
+    branch: null,
+    questions: null,
+    answers: null,
+    steps: {},
+    claudeSessionId: null,
+    reviewerSessionId: null,
+    lastError: null,
+    reviewFingerprint: null,
+    reviewedAt: null,
+    prUrl: null,
+    prBranch: null,
+    prBase: null,
+    scratchpadPath: null,
+    lastWipPushAt: null,
+  };
+}
+
 test("statePathFor returns expected path", () => {
   assert.equal(statePathFor("/foo"), path.join("/foo", ".coder", "state.json"));
 });
@@ -269,28 +293,7 @@ test("concurrent saveState calls serialize without errors", async () => {
   const ws = makeTmpDir();
   const writes = [];
   for (let i = 0; i < 5; i++) {
-    writes.push(
-      saveState(ws, {
-        selected: { source: "github", id: String(i), title: `Issue ${i}` },
-        selectedProject: null,
-        linearProjects: null,
-        repoPath: ".",
-        baseBranch: "main",
-        branch: null,
-        questions: null,
-        answers: null,
-        steps: {},
-        claudeSessionId: null,
-        lastError: null,
-        reviewFingerprint: null,
-        reviewedAt: null,
-        prUrl: null,
-        prBranch: null,
-        prBase: null,
-        scratchpadPath: null,
-        lastWipPushAt: null,
-      }),
-    );
+    writes.push(saveState(ws, makeIssueState(i)));
   }
   await Promise.all(writes);
   const loaded = await loadState(ws);
@@ -298,6 +301,35 @@ test("concurrent saveState calls serialize without errors", async () => {
   // Last write wins — id should be "4"
   assert.equal(loaded.selected.id, "4");
   rmSync(ws, { recursive: true, force: true });
+});
+
+test("concurrent saveState calls for different workspaces do not share a write chain", async () => {
+  const ws1 = makeTmpDir();
+  const ws2 = makeTmpDir();
+  const startedAt = Date.now();
+  const finishedAt = {};
+  const bigState = makeIssueState("big", "x".repeat(128 * 1024 * 1024));
+
+  const slowWrite = saveState(ws1, bigState).then(() => {
+    finishedAt.big = Date.now() - startedAt;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const fastWrite = saveState(ws2, makeIssueState("small")).then(() => {
+    finishedAt.small = Date.now() - startedAt;
+  });
+
+  await Promise.all([slowWrite, fastWrite]);
+
+  assert.ok(finishedAt.small < finishedAt.big, `${JSON.stringify(finishedAt)}`);
+
+  const [state1, state2] = await Promise.all([loadState(ws1), loadState(ws2)]);
+  assert.equal(state1.selected?.id, "big");
+  assert.equal(state2.selected?.id, "small");
+
+  rmSync(ws1, { recursive: true, force: true });
+  rmSync(ws2, { recursive: true, force: true });
 });
 
 test("concurrent saveWorkflowSnapshot calls serialize without errors", async () => {

@@ -66,3 +66,28 @@ test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => 
   assert.match(event.array[0], /access_token=\[REDACTED\]/);
   assert.match(event.array[0], /token=\[REDACTED\]/);
 });
+
+test("stale logger stops writing after closeAllLoggers", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-logging-"));
+  const log1 = makeJsonlLogger(ws, "stale");
+  log1({ event: "first" });
+  const log2 = makeJsonlLogger(ws, "stale");
+  log2({ event: "second" });
+
+  await closeAllLoggers();
+
+  const logPath = path.join(logsDir(ws), "stale.jsonl");
+  const before = readFileSync(logPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+
+  log1({ event: "after-close" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const after = readFileSync(logPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  assert.equal(after.length, before.length);
+});
