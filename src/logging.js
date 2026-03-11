@@ -1,7 +1,15 @@
 import { createWriteStream, mkdirSync } from "node:fs";
 import path from "node:path";
 
-/** @type {Map<string, import("node:fs").WriteStream>} */
+/**
+ * @typedef {{
+ *   closing: boolean,
+ *   stream: import("node:fs").WriteStream | null,
+ *   writeChain: Promise<void>,
+ * }} LoggerState
+ */
+
+/** @type {Map<string, LoggerState>} */
 const openStreams = new Map();
 
 const REDACTED = "[REDACTED]";
@@ -63,39 +71,90 @@ export function ensureLogsDir(workspaceDir) {
   mkdirSync(logsDir(workspaceDir), { recursive: true });
 }
 
-export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
-  ensureLogsDir(workspaceDir);
-  const p = path.join(logsDir(workspaceDir), `${name}.jsonl`);
-
-  const existing = openStreams.get(p);
-  if (existing) existing.end();
-
+function createLogStream(p, name) {
   const stream = createWriteStream(p, { flags: "a" });
   stream.on("error", (err) => {
     process.stderr.write(`Logger error (${name}): ${err.message}\n`);
   });
-  openStreams.set(p, stream);
+  return stream;
+}
+
+function endStream(stream) {
+  if (!stream || stream.destroyed || stream.writableFinished) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    stream.end(resolve);
+  });
+}
+
+function writeLine(stream, line) {
+  return new Promise((resolve, reject) => {
+    stream.write(line + "\n", (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
+  ensureLogsDir(workspaceDir);
+  const p = path.join(logsDir(workspaceDir), `${name}.jsonl`);
+
+  let state = openStreams.get(p);
+  if (state) {
+    state.writeChain = state.writeChain
+      .catch(() => {})
+      .then(async () => {
+        const previous = state.stream;
+        state.stream = null;
+        await endStream(previous);
+        if (openStreams.get(p) !== state) return;
+        state.stream = createLogStream(p, name);
+      });
+  } else {
+    state = {
+      closing: false,
+      stream: createLogStream(p, name),
+      writeChain: Promise.resolve(),
+    };
+    openStreams.set(p, state);
+  }
 
   return (event) => {
-    const activeStream = openStreams.get(p);
-    if (!activeStream) return;
     const safeEvent = sanitizeLogEvent(event);
     const entry = { ts: new Date().toISOString(), ...safeEvent };
     if (runId) entry.runId = runId;
     const line = JSON.stringify(entry);
-    activeStream.write(line + "\n");
+
+    const activeState = openStreams.get(p);
+    if (!activeState || activeState.closing) return;
+
+    activeState.writeChain = activeState.writeChain
+      .catch(() => {})
+      .then(async () => {
+        if (openStreams.get(p) !== activeState) return;
+        const activeStream = activeState.stream;
+        if (!activeStream) return;
+        await writeLine(activeStream, line);
+      });
   };
 }
 
 export function closeAllLoggers() {
   const promises = [];
-  for (const [key, stream] of openStreams) {
+  for (const [key, state] of openStreams) {
+    state.closing = true;
     promises.push(
-      new Promise((resolve) => {
-        stream.end(resolve);
-      }),
+      state.writeChain
+        .catch(() => {})
+        .then(async () => {
+          const stream = state.stream;
+          state.stream = null;
+          await endStream(stream);
+          openStreams.delete(key);
+        }),
     );
-    openStreams.delete(key);
   }
   return Promise.all(promises);
 }
