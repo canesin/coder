@@ -269,9 +269,9 @@ test("ppcommit: gitleaks missing from PATH produces actionable error", async () 
       process.stdout.write(e.message);
     }
   `;
-  // Include node + git dirs but exclude gitleaks
-  const nodeBin = path.dirname(process.execPath);
-  const restrictedPath = `${nodeBin}:/usr/bin:/bin`;
+  // Exclude gitleaks (often in same dir as node, e.g. ~/.local/bin).
+  // We spawn node via process.execPath (full path), so PATH need not include it.
+  const restrictedPath = "/usr/bin:/bin";
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
     timeout: 15000,
@@ -310,8 +310,8 @@ test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
         process.stdout.write(e.message);
       }
     `;
-  const nodeBin = path.dirname(process.execPath);
-  const restrictedPath = `${binDir}:${nodeBin}:/usr/bin:/bin`;
+  // binDir is first (non-executable gitleaks); exclude node's dir to avoid real gitleaks
+  const restrictedPath = `${binDir}:/usr/bin:/bin`;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
     timeout: 15000,
