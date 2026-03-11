@@ -51,7 +51,11 @@ function buildStandaloneContext(workspaceDir, overrides = {}) {
  * Tool name: `coder_{machine.name.replace(/\./g, "_")}`
  * e.g. machine "develop.planning" -> tool "coder_develop_planning"
  */
-export function registerMachineTools(server, defaultWorkspace) {
+export function registerMachineTools(
+  server,
+  defaultWorkspace,
+  { httpMode = false } = {},
+) {
   const machines = listMachines();
 
   for (const machine of machines) {
@@ -62,7 +66,9 @@ export function registerMachineTools(server, defaultWorkspace) {
       workspace: z
         .string()
         .optional()
-        .describe("Workspace directory (default: cwd)"),
+        .describe(
+          "Workspace directory — ALWAYS pass your project root path. Required in HTTP mode.",
+        ),
     };
 
     // Extract shape from the machine's inputSchema if it's a ZodObject
@@ -82,7 +88,13 @@ export function registerMachineTools(server, defaultWorkspace) {
       async (params) => {
         let ctx;
         try {
-          const ws = resolveWorkspaceForMcp(params.workspace, defaultWorkspace);
+          const ws = resolveWorkspaceForMcp(
+            params.workspace,
+            defaultWorkspace,
+            {
+              httpMode,
+            },
+          );
           const { workspace: _ws, ...machineInput } = params;
           ctx = buildStandaloneContext(ws, machineInput);
 

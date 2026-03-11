@@ -121,3 +121,87 @@ test("resolveWorkspaceForMcp bypasses boundary check when env override is set", 
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+// --- HTTP mode: workspace required & must be absolute ---
+
+test("httpMode throws when workspace is missing", () => {
+  const root = makeDir("coder-mcp-root-");
+  try {
+    assert.throws(
+      () => resolveWorkspaceForMcp(undefined, root, { httpMode: true }),
+      { code: "WORKSPACE_REQUIRED" },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("httpMode throws when workspace is empty string", () => {
+  const root = makeDir("coder-mcp-root-");
+  try {
+    assert.throws(() => resolveWorkspaceForMcp("", root, { httpMode: true }), {
+      code: "WORKSPACE_REQUIRED",
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("httpMode throws when workspace is relative path", () => {
+  const root = makeDir("coder-mcp-root-");
+  try {
+    assert.throws(() => resolveWorkspaceForMcp(".", root, { httpMode: true }), {
+      code: "WORKSPACE_NOT_ABSOLUTE",
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("httpMode throws when workspace is relative subdir", () => {
+  const root = makeDir("coder-mcp-root-");
+  try {
+    assert.throws(
+      () => resolveWorkspaceForMcp("repo/subdir", root, { httpMode: true }),
+      { code: "WORKSPACE_NOT_ABSOLUTE" },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("httpMode accepts absolute workspace path", () => {
+  const root = makeDir("coder-mcp-root-");
+  const workspace = path.join(root, "project");
+  mkdirSync(workspace, { recursive: true });
+  try {
+    const resolved = resolveWorkspaceForMcp(workspace, root, {
+      httpMode: true,
+    });
+    assert.equal(resolved, path.resolve(workspace));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stdio mode allows missing workspace (httpMode=false)", () => {
+  const root = makeDir("coder-mcp-root-");
+  try {
+    const resolved = resolveWorkspaceForMcp(undefined, root, {
+      httpMode: false,
+    });
+    assert.equal(resolved, path.resolve(root));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("httpMode defaults to false when options omitted", () => {
+  const root = makeDir("coder-mcp-root-");
+  try {
+    const resolved = resolveWorkspaceForMcp(undefined, root);
+    assert.equal(resolved, path.resolve(root));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

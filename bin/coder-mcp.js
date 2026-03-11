@@ -107,7 +107,7 @@ function parseCliArgs(argv) {
   };
 }
 
-function buildServer(defaultWorkspace) {
+function buildServer(defaultWorkspace, { httpMode = false } = {}) {
   const server = new McpServer(
     { name: "coder", version: PKG_VERSION },
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
@@ -117,17 +117,17 @@ function buildServer(defaultWorkspace) {
   registerResearchMachines();
   registerDesignMachines();
   registerSharedMachines();
-  registerMachineTools(server, defaultWorkspace);
-  registerWorkflowTools(server, defaultWorkspace);
-  registerStatusTools(server, defaultWorkspace);
-  registerSteeringTools(server, defaultWorkspace);
+  registerMachineTools(server, defaultWorkspace, { httpMode });
+  registerWorkflowTools(server, defaultWorkspace, { httpMode });
+  registerStatusTools(server, defaultWorkspace, { httpMode });
+  registerSteeringTools(server, defaultWorkspace, { httpMode });
   registerResources(server, defaultWorkspace);
   registerPrompts(server);
   return server;
 }
 
 async function runStdio(workspace) {
-  const server = buildServer(workspace);
+  const server = buildServer(workspace, { httpMode: false });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
@@ -210,7 +210,7 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
           return;
         }
 
-        const mcpServer = buildServer(workspace);
+        const mcpServer = buildServer(workspace, { httpMode: true });
         // onsessioninitialized must be a constructor option — the Node.js
         // StreamableHTTPServerTransport wrapper does not forward property
         // setters for it (MCP SDK bug).

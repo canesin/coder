@@ -109,7 +109,11 @@ async function getStatus(workspaceDir) {
   };
 }
 
-export function registerStatusTools(server, defaultWorkspace) {
+export function registerStatusTools(
+  server,
+  defaultWorkspace,
+  { httpMode = false } = {},
+) {
   server.registerTool(
     "coder_status",
     {
@@ -120,7 +124,9 @@ export function registerStatusTools(server, defaultWorkspace) {
         workspace: z
           .string()
           .optional()
-          .describe("Workspace directory (default: cwd)"),
+          .describe(
+            "Workspace directory — ALWAYS pass your project root path. Required in HTTP mode.",
+          ),
       },
       annotations: {
         readOnlyHint: true,
@@ -131,7 +137,9 @@ export function registerStatusTools(server, defaultWorkspace) {
     },
     async ({ workspace }) => {
       try {
-        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace);
+        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace, {
+          httpMode,
+        });
         const status = await getStatus(ws);
         return {
           content: [{ type: "text", text: JSON.stringify(status, null, 2) }],

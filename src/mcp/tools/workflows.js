@@ -344,7 +344,11 @@ async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
   };
 }
 
-export function registerWorkflowTools(server, defaultWorkspace) {
+export function registerWorkflowTools(
+  server,
+  defaultWorkspace,
+  { httpMode = false } = {},
+) {
   server.registerTool(
     "coder_workflow",
     {
@@ -362,7 +366,9 @@ export function registerWorkflowTools(server, defaultWorkspace) {
         workspace: z
           .string()
           .optional()
-          .describe("Workspace directory (default: cwd)"),
+          .describe(
+            "Workspace directory — ALWAYS pass your project root path. Required in HTTP mode.",
+          ),
         runId: z
           .string()
           .optional()
@@ -495,7 +501,18 @@ export function registerWorkflowTools(server, defaultWorkspace) {
     },
     async (params) => {
       try {
-        const ws = resolveWorkspaceForMcp(params.workspace, defaultWorkspace);
+        let resolvedWorkspace = params.workspace;
+        if (
+          !resolvedWorkspace &&
+          params.runId &&
+          ["cancel", "pause", "resume"].includes(params.action)
+        ) {
+          const run = activeRuns.get(params.runId);
+          if (run?.workspace) resolvedWorkspace = run.workspace;
+        }
+        const ws = resolveWorkspaceForMcp(resolvedWorkspace, defaultWorkspace, {
+          httpMode,
+        });
         const { action, workflow } = params;
 
         if (action === "status") {
