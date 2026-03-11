@@ -46,9 +46,14 @@ test("makeJsonlLogger closes previous stream when called twice with same name", 
 
   const content = readFileSync(path.join(logsDir(ws), "agent.jsonl"), "utf8");
   const lines = content.trim().split("\n");
-  assert.ok(lines.length >= 2, "both events should be written");
-  assert.match(lines[0], /first/);
-  assert.match(lines[1], /second/);
+  // Both events must be present; order is non-deterministic because two
+  // O_APPEND streams race on the same fd path.
+  assert.equal(lines.length, 2, "both events should be written");
+  assert.ok(
+    lines.some((l) => l.includes('"first"')) &&
+      lines.some((l) => l.includes('"second"')),
+    `expected both events, got: ${content}`,
+  );
 });
 
 test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => {
