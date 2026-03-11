@@ -150,38 +150,57 @@ function fetchGithubIssues(cwd) {
  * @returns {object[]}
  */
 function fetchGitlabIssues(cwd) {
-  const res = spawnSync(
-    "glab",
-    ["issue", "list", "--output", "json", "--state", "opened"],
-    { cwd, encoding: "utf8", timeout: 15000 },
-  );
-  if (res.error) {
-    throw new Error(`glab: ${res.error.message}`);
-  }
-  if (res.status !== 0) {
-    throw new Error(
-      formatCommandFailure("glab issue list failed", {
-        exitCode: res.status ?? 1,
-        stderr: res.stderr || "",
-        stdout: res.stdout || "",
-      }),
+  const allIssues = [];
+
+  for (let page = 1; page <= 10; page++) {
+    const res = spawnSync(
+      "glab",
+      ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
+      { cwd, encoding: "utf8", timeout: 15000 },
     );
-  }
-  if (!res.stdout) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(res.stdout);
-  } catch {
-    throw new Error(
-      `glab returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+    if (res.error) {
+      throw new Error(`glab: ${res.error.message}`);
+    }
+    if (res.status !== 0) {
+      throw new Error(
+        formatCommandFailure("glab issue list failed", {
+          exitCode: res.status ?? 1,
+          stderr: res.stderr || "",
+          stdout: res.stdout || "",
+        }),
+      );
+    }
+    if (!res.stdout) break;
+    let parsed;
+    try {
+      parsed = JSON.parse(res.stdout);
+    } catch {
+      throw new Error(
+        `glab returned invalid JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `glab returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
+      );
+    }
+
+    allIssues.push(
+      ...parsed.map((issue) => ({
+        iid: issue.iid,
+        title: issue.title,
+        description: (issue.description || "").slice(0, 500),
+        labels: (issue.labels || []).map((label) =>
+          typeof label === "string" ? label : label.name || String(label),
+        ),
+        web_url: issue.web_url,
+      })),
     );
+
+    if (parsed.length < 100) break;
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error(
-      `glab returned non-array JSON (exit 0): ${res.stdout.slice(0, 200)}`,
-    );
-  }
-  return parsed;
+
+  return allIssues;
 }
 
 export default defineMachine({
