@@ -65,6 +65,9 @@ Subcommands:
   coder ppcommit [--base <branch>]
         Run ppcommit checks on the repository.
 
+  coder version
+        Show version, git branch, and commit (if installed from source).
+
   coder serve [--transport stdio|http] [--port <port>]
         Start the MCP server (delegates to coder-mcp).
 `;
@@ -744,6 +747,34 @@ async function runPpcommitCli() {
   process.exit(result.exitCode);
 }
 
+// --- coder version ---
+
+function runVersionCli() {
+  const pkgDir = path.resolve(new URL("..", import.meta.url).pathname);
+  const pkg = JSON.parse(
+    readFileSync(path.join(pkgDir, "package.json"), "utf8"),
+  );
+
+  const git = (args) => {
+    const r = spawnSync("git", args, {
+      cwd: pkgDir,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    return r.status === 0 ? r.stdout.trim() : null;
+  };
+
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const commit = git(["rev-parse", "--short", "HEAD"]);
+  const dirty = git(["status", "--porcelain"]) ? " (dirty)" : "";
+
+  if (branch && commit) {
+    process.stdout.write(`${pkg.version} (${branch}@${commit}${dirty})\n`);
+  } else {
+    process.stdout.write(`${pkg.version}\n`);
+  }
+}
+
 // --- coder serve ---
 
 function runServeCli() {
@@ -763,6 +794,11 @@ const subcommand = process.argv[2];
 
 if (!subcommand || subcommand === "--help" || subcommand === "-h") {
   process.stdout.write(usage());
+  process.exit(0);
+}
+
+if (subcommand === "--version" || subcommand === "-V") {
+  runVersionCli();
   process.exit(0);
 }
 
@@ -811,6 +847,9 @@ switch (subcommand) {
       process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
       process.exitCode = 1;
     });
+    break;
+  case "version":
+    runVersionCli();
     break;
   case "serve":
     runServeCli();
