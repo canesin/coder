@@ -705,7 +705,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           };
 
           // Fire and forget — run in background
-          const runPromise = (async () => {
+          const runPromise = Promise.resolve().then(async () => {
             try {
               let result;
               if (workflow === "develop") {
@@ -792,7 +792,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               activeRuns.delete(nextRunId);
               await agentPool.killAll();
             }
-          })();
+          });
 
           // Store run entry with real promise so cancel can await it
           activeRuns.set(nextRunId, {
