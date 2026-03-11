@@ -506,16 +506,20 @@ export async function runDevelopLoop(opts, ctx) {
     source: listResult.data.source || "remote",
   });
 
-  // Initialize loop state — merge terminal statuses from prior run
+  // Initialize loop state — merge terminal statuses from prior run.
+  // When destructiveReset is true, only preserve "completed" (don't re-process
+  // successes) but reset "failed"/"skipped" to "pending" so they are retried.
   const loopState = await loadLoopState(ctx.workspaceDir);
   const priorQueue = loopState.issueQueue || [];
   const priorById = new Map(priorQueue.map((q) => [q.id, q]));
+  const terminalStatuses = destructiveReset
+    ? ["completed"]
+    : ["completed", "failed", "skipped"];
 
   loopState.status = "running";
   loopState.issueQueue = issues.map((iss) => {
     const prior = priorById.get(iss.id);
-    const isTerminal =
-      prior && ["completed", "failed", "skipped"].includes(prior.status);
+    const isTerminal = prior && terminalStatuses.includes(prior.status);
     return {
       ...iss,
       dependsOn: iss.dependsOn || iss.depends_on || [],
@@ -550,10 +554,12 @@ export async function runDevelopLoop(opts, ctx) {
   let failed = 0;
   let skipped = 0;
 
-  // Seed outcomeMap from ALL terminal issues in the prior run (includes
-  // issues no longer in the active list, e.g. closed/merged)
+  // Seed outcomeMap from terminal issues in the prior run (includes
+  // issues no longer in the active list, e.g. closed/merged).
+  // Respects destructiveReset: failed/skipped are not seeded so their
+  // dependents don't inherit stale failure outcomes.
   for (const prior of priorQueue) {
-    if (["completed", "failed", "skipped"].includes(prior.status)) {
+    if (terminalStatuses.includes(prior.status)) {
       outcomeMap.set(prior.id, {
         status: prior.status,
         branch: prior.branch || undefined,
