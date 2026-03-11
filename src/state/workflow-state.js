@@ -21,6 +21,8 @@ const WORKFLOW_STATE_SCHEMA_VERSION = 2;
 const _writeChains = new Map();
 /** @type {Map<string, Promise<void>>} */
 const _sqliteWriteChains = new Map();
+/** @type {null | ((filePath: string, data: unknown) => Promise<void> | void)} */
+let _beforeAtomicWriteJsonForTests = null;
 
 function getWriteChain(key) {
   return _writeChains.get(key) || Promise.resolve();
@@ -50,6 +52,15 @@ async function atomicWriteJson(filePath, data) {
       `Failed to write state ${filePath} [${op}]${code}: ${err.message}`,
     );
   }
+}
+
+async function writeJson(filePath, data) {
+  await _beforeAtomicWriteJsonForTests?.(filePath, data);
+  await atomicWriteJson(filePath, data);
+}
+
+export function __setBeforeAtomicWriteJsonForTests(fn) {
+  _beforeAtomicWriteJsonForTests = fn || null;
 }
 
 async function _persistSnapshotToSqliteInner(sqlitePath, payload) {
@@ -124,7 +135,7 @@ export async function saveWorkflowSnapshot(
   };
   let writeErr;
   const chain = getWriteChain(workspaceDir)
-    .then(() => atomicWriteJson(statePath, payload))
+    .then(() => writeJson(statePath, payload))
     .catch((e) => {
       writeErr = e;
     });
@@ -159,7 +170,7 @@ export async function saveWorkflowTerminalState(
   };
   let writeErr;
   const chain = getWriteChain(workspaceDir)
-    .then(() => atomicWriteJson(statePath, payload))
+    .then(() => writeJson(statePath, payload))
     .catch((e) => {
       writeErr = e;
     });
@@ -365,7 +376,7 @@ export async function saveLoopState(
   }
   let writeErr;
   const chain = getWriteChain(workspaceDir)
-    .then(() => atomicWriteJson(p, loopState))
+    .then(() => writeJson(p, loopState))
     .catch((e) => {
       writeErr = e;
     });
@@ -525,7 +536,7 @@ export async function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
   let writeErr;
   const chain = getWriteChain(workspaceDir)
-    .then(() => atomicWriteJson(p, state))
+    .then(() => writeJson(p, state))
     .catch((e) => {
       writeErr = e;
     });

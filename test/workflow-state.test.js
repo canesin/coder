@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { createActor } from "xstate";
 import {
+  __setBeforeAtomicWriteJsonForTests,
   createWorkflowLifecycleMachine,
   loadLoopState,
   loadState,
@@ -21,6 +22,18 @@ function makeTmpDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-wf-state-"));
   mkdirSync(path.join(dir, ".coder"), { recursive: true });
   return dir;
+}
+
+function deferred() {
+  /** @type {(value?: void | PromiseLike<void>) => void} */
+  let resolve;
+  /** @type {(reason?: unknown) => void} */
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 test("statePathFor returns expected path", () => {
@@ -317,4 +330,80 @@ test("concurrent saveWorkflowSnapshot calls serialize without errors", async () 
 
   actor.stop();
   rmSync(ws, { recursive: true, force: true });
+});
+
+test("cross-workspace concurrent writes are isolated", async (t) => {
+  const wsA = makeTmpDir();
+  const wsB = makeTmpDir();
+  const wsAPath = statePathFor(wsA);
+  const writeBlocked = deferred();
+  const writeStarted = deferred();
+  let wsBResolved = false;
+
+  __setBeforeAtomicWriteJsonForTests(async (filePath) => {
+    if (filePath !== wsAPath) return;
+    writeStarted.resolve();
+    await writeBlocked.promise;
+  });
+  t.after(() => __setBeforeAtomicWriteJsonForTests(null));
+
+  const writeA = saveState(wsA, {
+    selected: { source: "github", id: "A-0", title: "Issue A-0" },
+    selectedProject: null,
+    linearProjects: null,
+    repoPath: ".",
+    baseBranch: "main",
+    branch: null,
+    questions: null,
+    answers: null,
+    steps: {},
+    claudeSessionId: null,
+    lastError: null,
+    reviewFingerprint: null,
+    reviewedAt: null,
+    prUrl: null,
+    prBranch: null,
+    prBase: null,
+    scratchpadPath: null,
+    lastWipPushAt: null,
+  });
+  await writeStarted.promise;
+
+  const writeB = saveState(wsB, {
+    selected: { source: "github", id: "B-0", title: "Issue B-0" },
+    selectedProject: null,
+    linearProjects: null,
+    repoPath: ".",
+    baseBranch: "main",
+    branch: null,
+    questions: null,
+    answers: null,
+    steps: {},
+    claudeSessionId: null,
+    lastError: null,
+    reviewFingerprint: null,
+    reviewedAt: null,
+    prUrl: null,
+    prBranch: null,
+    prBase: null,
+    scratchpadPath: null,
+    lastWipPushAt: null,
+  }).then(() => {
+    wsBResolved = true;
+  });
+
+  await assert.doesNotReject(writeB);
+  assert.equal(wsBResolved, true);
+
+  writeBlocked.resolve();
+  await assert.doesNotReject(writeA);
+
+  const [stateA, stateB] = await Promise.all([loadState(wsA), loadState(wsB)]);
+  assert.ok(stateA.selected);
+  assert.ok(stateB.selected);
+  assert.equal(stateA.selected.id, "A-0");
+  assert.equal(stateB.selected.id, "B-0");
+
+  rmSync(wsA, { recursive: true, force: true });
+  rmSync(wsB, { recursive: true, force: true });
 });
