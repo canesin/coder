@@ -154,5 +154,6 @@ export async function runResearchPipeline(opts, ctx) {
       },
     ],
     {},
+    { resumeFromRunId: opts.resumeFromRunId },
   );
 }

@@ -11,6 +11,8 @@ import {
   sqliteAvailable,
 } from "../src/sqlite.js";
 
+const hasSqlite = sqliteAvailable();
+
 test("sqlEscape handles quoting, NUL bytes, and null/undefined coercion", () => {
   // single-quote escaping
   assert.equal(sqlEscape("it's"), "it''s");
@@ -32,7 +34,7 @@ test("sqliteAvailable returns a boolean and caches result", () => {
   assert.equal(result1, result2);
 });
 
-test("runSqliteAsync resolves valid SQL", async () => {
+test("runSqliteAsync resolves valid SQL", { skip: !hasSqlite }, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {
@@ -48,7 +50,9 @@ test("runSqliteAsync resolves valid SQL", async () => {
   }
 });
 
-test("runSqliteAsync rejects on invalid SQL", async () => {
+test("runSqliteAsync rejects on invalid SQL", {
+  skip: !hasSqlite,
+}, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {
@@ -60,7 +64,9 @@ test("runSqliteAsync rejects on invalid SQL", async () => {
   }
 });
 
-test("runSqliteAsync times out and throws SqliteTimeoutError", async () => {
+test("runSqliteAsync times out and throws SqliteTimeoutError", {
+  skip: !hasSqlite,
+}, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {

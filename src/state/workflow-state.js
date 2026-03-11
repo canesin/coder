@@ -567,6 +567,22 @@ export async function loadState(workspaceDir) {
   }
 }
 
+/**
+ * Load issue state from an arbitrary file path (e.g. backup state.json).
+ * Returns null on parse/schema failure.
+ *
+ * @param {string} filePath - Absolute path to state JSON file
+ * @returns {Promise<z.infer<typeof IssueStateSchema> | null>}
+ */
+export async function loadStateFromPath(filePath) {
+  try {
+    const raw = JSON.parse(await readFile(filePath, "utf8"));
+    return IssueStateSchema.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export async function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
   let writeErr;

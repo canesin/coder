@@ -17,6 +17,17 @@ export default defineMachine({
     "Create PLAN.md: research codebase, evaluate approaches, write structured implementation plan.",
   inputSchema: z.object({
     priorCritique: z.string().optional().default(""),
+    activeBranches: z
+      .array(
+        z.object({
+          branch: z.string(),
+          issueId: z.string(),
+          title: z.string(),
+          diffStat: z.string(),
+        }),
+      )
+      .optional()
+      .default([]),
   }),
 
   async execute(input, ctx) {
@@ -181,6 +192,36 @@ Constraints:
 - Do NOT invent APIs - verify they exist in actual documentation
 - Do NOT ask questions; use repo conventions and ISSUE.md as ground truth`;
 
+    // Append active-branch awareness so the planner can detect conflicts
+    let activeBranchesSection = "";
+    if (input.activeBranches && input.activeBranches.length > 0) {
+      const branchSections = input.activeBranches
+        .map(
+          (b) =>
+            `### ${b.branch} (Issue ${b.issueId}: ${b.title})\n\`\`\`\n${b.diffStat}\n\`\`\``,
+        )
+        .join("\n\n");
+
+      activeBranchesSection = `\n\n## Active Branches (open PRs not yet merged)
+
+The following branches have open PRs from this pipeline run. Review their
+changed files and assess whether your planned changes would create merge
+conflicts (i.e., modifying the same functions, overlapping logic, or
+structural dependencies).
+
+If you determine your changes would conflict with an active branch, add
+this section at the END of ${paths.plan}:
+
+## CONFLICT_DETECTED
+- branch: <conflicting-branch-name>
+- reason: <concrete explanation of why changes conflict>
+
+Only flag actual conflicts — two branches touching the same file is fine
+if they modify different, independent sections.
+
+${branchSections}`;
+    }
+
     // Allow one retry when the planner violates the no-source-edit constraint.
     // Retries resume the existing session so the agent has the violation as context.
     let constraintNote = "";
@@ -190,7 +231,7 @@ Constraints:
       // constraint retries) are follow-up messages in the same resumed session.
       let prompt;
       if (creatingSession && attempt === 0) {
-        prompt = planPrompt;
+        prompt = planPrompt + activeBranchesSection;
         if (input.priorCritique) {
           prompt +=
             `\n\n## Previous Review Critique (MUST ADDRESS)\n\n` +

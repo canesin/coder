@@ -355,10 +355,15 @@ export function sanitizeIssueMarkdown(text) {
   const cleaned = stripAgentNoise(text, { dropLeadingOnly: true });
   const fullyCleaned = stripAgentNoise(cleaned).trim();
   if (!fullyCleaned) return "";
-  const lines = fullyCleaned.split("\n");
+  // Strip outer markdown code fence if the agent wrapped the output (e.g. Gemini).
+  const fenceMatch = fullyCleaned.match(
+    /^```(?:markdown)?\s*\n([\s\S]*?)\n?```\s*$/i,
+  );
+  const unwrapped = fenceMatch ? fenceMatch[1].trim() : fullyCleaned;
+  const lines = unwrapped.split("\n");
   const firstHeader = lines.findIndex((line) => line.trim().startsWith("#"));
   if (firstHeader > 0) return lines.slice(firstHeader).join("\n").trim();
-  return fullyCleaned;
+  return unwrapped;
 }
 
 export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {

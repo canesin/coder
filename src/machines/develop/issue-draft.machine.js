@@ -364,14 +364,23 @@ If you wrote ISSUE.md to disk via a tool, also output its full contents to stdou
               sanitizeIssueMarkdown(lines.slice(mdStart).join("\n").trimEnd()) +
               "\n";
           } else {
-            const rawPreview = (res.stdout || "")
-              .slice(0, 300)
-              .replace(/\n/g, "\\n");
-            throw new Error(
-              `${agentName} draft output did not contain valid ISSUE.md markdown. ` +
-                `Check .coder/artifacts/ISSUE.md — the agent may have written it to disk ` +
-                `without outputting it. Raw output preview: "${rawPreview}"`,
-            );
+            // Last resort: sanitizeIssueMarkdown strips code fences, so if the
+            // agent wrapped output in ```markdown...``` with bold-style section
+            // headers (no `#`), we get valid content back without a title line.
+            // Prepend a synthesized title rather than failing.
+            const candidateMd = sanitizeIssueMarkdown(res.stdout || "").trim();
+            if (candidateMd.length > 100) {
+              issueMd = `# ${input.issue.title}\n\n${candidateMd}\n`;
+            } else {
+              const rawPreview = (res.stdout || "")
+                .slice(0, 300)
+                .replace(/\n/g, "\\n");
+              throw new Error(
+                `${agentName} draft output did not contain valid ISSUE.md markdown. ` +
+                  `Check .coder/artifacts/ISSUE.md — the agent may have written it to disk ` +
+                  `without outputting it. Raw output preview: "${rawPreview}"`,
+              );
+            }
           }
         } else {
           issueMd = fallback + "\n";

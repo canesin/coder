@@ -96,5 +96,6 @@ export async function runDesignPipeline(opts, ctx) {
       },
     ],
     {},
+    { resumeFromRunId: opts.resumeFromRunId },
   );
 }

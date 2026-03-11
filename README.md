@@ -273,7 +273,7 @@ Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATU
 ## Safety
 
 - Workspace boundaries enforced — agents operate within the target repo
-- Non-destructive reset between issues (opt-in `destructiveReset`)
+- Workspace is force-cleaned at loop startup to recover from prior crashes; between issues, tracked-file reset is opt-in via `destructiveReset`
 - Health-check URLs restricted to localhost
 - One active run per workspace
 - Session TTL with automatic cleanup (HTTP mode)
