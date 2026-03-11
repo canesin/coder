@@ -64,16 +64,9 @@ export function detectRemoteType(repoDir, remoteName = "origin") {
   return "github";
 }
 
-const DEFAULT_PASS_ENV = [
-  "GOOGLE_API_KEY",
-  "GEMINI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "OPENAI_API_KEY",
-  "GITHUB_TOKEN",
-  "GITLAB_TOKEN",
-  "LINEAR_API_KEY",
-];
+// Single source of truth for sandbox passEnv defaults (shared with config.js)
+import { DEFAULT_PASS_ENV } from "./pass-env.js";
+export { DEFAULT_PASS_ENV };
 
 /**
  * Build the effective passEnv list from config.

@@ -285,6 +285,7 @@ export class AgentPool {
     for (const [key, agent] of this._agents) {
       // cli agents keyed as cli:name:cwd — extract cwd safely (may contain colons)
       if (!key.startsWith("cli:")) continue;
+      // Skip past "cli:" (4 chars) then find the next ":" to split name from cwd
       const cwd = key.slice(key.indexOf(":", 4) + 1);
       if (cwd !== repoRoot && cwd !== this.workspaceDir) {
         stale.push({ key, agent });

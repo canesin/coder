@@ -30,6 +30,15 @@ function getWriteChain(key) {
 
 function setWriteChain(key, promise) {
   _writeChains.set(key, promise);
+  // Prune the entry once the chain settles to avoid unbounded Map growth
+  promise.then(
+    () => {
+      if (_writeChains.get(key) === promise) _writeChains.delete(key);
+    },
+    () => {
+      if (_writeChains.get(key) === promise) _writeChains.delete(key);
+    },
+  );
 }
 
 function nowIso() {
@@ -92,6 +101,11 @@ async function persistSnapshotToSqlite(sqlitePath, payload) {
     .then(() => _persistSnapshotToSqliteInner(sqlitePath, payload))
     .catch(() => {});
   _sqliteWriteChains.set(sqlitePath, chain);
+  // Prune the entry once the chain settles to avoid unbounded Map growth
+  chain.then(() => {
+    if (_sqliteWriteChains.get(sqlitePath) === chain)
+      _sqliteWriteChains.delete(sqlitePath);
+  });
   await chain;
 }
 
@@ -124,7 +138,6 @@ export async function saveWorkflowSnapshot(
 ) {
   if (!runId || !snapshot) return null;
   const statePath = workflowStatePathFor(workspaceDir);
-  if (await readGuardRunId(statePath, guardRunId)) return null;
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,
@@ -134,13 +147,21 @@ export async function saveWorkflowSnapshot(
     updatedAt: nowIso(),
   };
   let writeErr;
+  let guarded = false;
   const chain = getWriteChain(workspaceDir)
-    .then(() => writeJson(statePath, payload))
+    .then(async () => {
+      if (await readGuardRunId(statePath, guardRunId)) {
+        guarded = true;
+        return;
+      }
+      await writeJson(statePath, payload);
+    })
     .catch((e) => {
       writeErr = e;
     });
   setWriteChain(workspaceDir, chain);
   await chain;
+  if (guarded) return null;
   if (writeErr) throw writeErr;
   await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
@@ -159,7 +180,6 @@ export async function saveWorkflowTerminalState(
 ) {
   if (!runId || !state) return null;
   const statePath = workflowStatePathFor(workspaceDir);
-  if (await readGuardRunId(statePath, guardRunId)) return null;
   const payload = {
     version: WORKFLOW_STATE_SCHEMA_VERSION,
     workflow,
@@ -169,13 +189,21 @@ export async function saveWorkflowTerminalState(
     updatedAt: nowIso(),
   };
   let writeErr;
+  let guarded = false;
   const chain = getWriteChain(workspaceDir)
-    .then(() => writeJson(statePath, payload))
+    .then(async () => {
+      if (await readGuardRunId(statePath, guardRunId)) {
+        guarded = true;
+        return;
+      }
+      await writeJson(statePath, payload);
+    })
     .catch((e) => {
       writeErr = e;
     });
   setWriteChain(workspaceDir, chain);
   await chain;
+  if (guarded) return null;
   if (writeErr) throw writeErr;
   await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
@@ -368,20 +396,27 @@ export async function saveLoopState(
   { guardRunId = "" } = {},
 ) {
   const p = loopStatePathFor(workspaceDir);
-  if (guardRunId) {
-    try {
-      const existing = JSON.parse(await readFile(p, "utf8"));
-      if (existing.runId && existing.runId !== guardRunId) return;
-    } catch {}
-  }
   let writeErr;
+  let guarded = false;
   const chain = getWriteChain(workspaceDir)
-    .then(() => writeJson(p, loopState))
+    .then(async () => {
+      if (guardRunId) {
+        try {
+          const existing = JSON.parse(await readFile(p, "utf8"));
+          if (existing.runId && existing.runId !== guardRunId) {
+            guarded = true;
+            return;
+          }
+        } catch {}
+      }
+      await writeJson(p, loopState);
+    })
     .catch((e) => {
       writeErr = e;
     });
   setWriteChain(workspaceDir, chain);
   await chain;
+  if (guarded) return;
   if (writeErr) throw writeErr;
 }
 

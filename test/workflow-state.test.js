@@ -379,48 +379,10 @@ test("cross-workspace concurrent writes are isolated", async (t) => {
   });
   t.after(() => __setBeforeAtomicWriteJsonForTests(null));
 
-  const writeA = saveState(wsA, {
-    selected: { source: "github", id: "A-0", title: "Issue A-0" },
-    selectedProject: null,
-    linearProjects: null,
-    repoPath: ".",
-    baseBranch: "main",
-    branch: null,
-    questions: null,
-    answers: null,
-    steps: {},
-    claudeSessionId: null,
-    lastError: null,
-    reviewFingerprint: null,
-    reviewedAt: null,
-    prUrl: null,
-    prBranch: null,
-    prBase: null,
-    scratchpadPath: null,
-    lastWipPushAt: null,
-  });
+  const writeA = saveState(wsA, makeIssueState("A-0", "Issue A-0"));
   await writeStarted.promise;
 
-  const writeB = saveState(wsB, {
-    selected: { source: "github", id: "B-0", title: "Issue B-0" },
-    selectedProject: null,
-    linearProjects: null,
-    repoPath: ".",
-    baseBranch: "main",
-    branch: null,
-    questions: null,
-    answers: null,
-    steps: {},
-    claudeSessionId: null,
-    lastError: null,
-    reviewFingerprint: null,
-    reviewedAt: null,
-    prUrl: null,
-    prBranch: null,
-    prBase: null,
-    scratchpadPath: null,
-    lastWipPushAt: null,
-  }).then(() => {
+  const writeB = saveState(wsB, makeIssueState("B-0", "Issue B-0")).then(() => {
     wsBResolved = true;
   });
 

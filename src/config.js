@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import merge from "deepmerge";
 import { z } from "zod";
+import { DEFAULT_PASS_ENV } from "./pass-env.js";
 
 const modelNameRegex = /^[a-zA-Z0-9._/-]+$/;
 
@@ -201,18 +202,7 @@ export const AgentFallbackSchema = z
   .prefault({});
 
 export const SandboxConfigSchema = z.object({
-  passEnv: z
-    .array(z.string())
-    .default([
-      "GOOGLE_API_KEY",
-      "GEMINI_API_KEY",
-      "ANTHROPIC_API_KEY",
-      "CLAUDE_CODE_OAUTH_TOKEN",
-      "OPENAI_API_KEY",
-      "GITHUB_TOKEN",
-      "GITLAB_TOKEN",
-      "LINEAR_API_KEY",
-    ]),
+  passEnv: z.array(z.string()).default([...DEFAULT_PASS_ENV]),
   passEnvPatterns: z.array(z.string()).default([]),
 });
 

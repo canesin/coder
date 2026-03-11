@@ -688,6 +688,8 @@ export async function runDevelopLoop(opts, ctx) {
         loopState.issueQueue[i].status = "completed";
         loopState.issueQueue[i].branch = branch;
         loopState.issueQueue[i].prUrl = prResult?.data?.prUrl;
+        loopState.issueQueue[i].error = null;
+        loopState.issueQueue[i].completedAt = new Date().toISOString();
         outcomeMap.set(issue.id, { status: "completed", branch });
         completed++;
         results.push({
@@ -834,7 +836,8 @@ export async function runDevelopLoop(opts, ctx) {
       );
 
       results.push({
-        ...issues[j],
+        id: entry.id,
+        title: entry.title,
         status: "skipped",
         error: entry.error,
       });
