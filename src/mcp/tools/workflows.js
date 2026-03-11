@@ -22,7 +22,6 @@ import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
-import { resolveWorkspaceForMcp } from "../workspace.js";
 
 const HEARTBEAT_STALE_MS = 900_000;
 
@@ -344,11 +343,7 @@ async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
   };
 }
 
-export function registerWorkflowTools(
-  server,
-  defaultWorkspace,
-  { httpMode = false } = {},
-) {
+export function registerWorkflowTools(server, resolveWorkspace) {
   server.registerTool(
     "coder_workflow",
     {
@@ -510,9 +505,7 @@ export function registerWorkflowTools(
           const run = activeRuns.get(params.runId);
           if (run?.workspace) resolvedWorkspace = run.workspace;
         }
-        const ws = resolveWorkspaceForMcp(resolvedWorkspace, defaultWorkspace, {
-          httpMode,
-        });
+        const ws = resolveWorkspace(resolvedWorkspace);
         const { action, workflow } = params;
 
         if (action === "status") {

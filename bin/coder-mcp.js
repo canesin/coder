@@ -46,6 +46,7 @@ import { registerMachineTools } from "../src/mcp/tools/machines.js";
 import { registerStatusTools } from "../src/mcp/tools/status.js";
 import { registerSteeringTools } from "../src/mcp/tools/steering.js";
 import { registerWorkflowTools } from "../src/mcp/tools/workflows.js";
+import { createWorkspaceResolver } from "../src/mcp/workspace.js";
 import { registerDesignMachines } from "../src/workflows/design.workflow.js";
 import { registerDevelopMachines } from "../src/workflows/develop.workflow.js";
 import { registerResearchMachines } from "../src/workflows/research.workflow.js";
@@ -112,15 +113,18 @@ function buildServer(defaultWorkspace, { httpMode = false } = {}) {
     { name: "coder", version: PKG_VERSION },
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
   );
+  const resolveWorkspace = createWorkspaceResolver(defaultWorkspace, {
+    httpMode,
+  });
 
   registerDevelopMachines();
   registerResearchMachines();
   registerDesignMachines();
   registerSharedMachines();
-  registerMachineTools(server, defaultWorkspace, { httpMode });
-  registerWorkflowTools(server, defaultWorkspace, { httpMode });
-  registerStatusTools(server, defaultWorkspace, { httpMode });
-  registerSteeringTools(server, defaultWorkspace, { httpMode });
+  registerMachineTools(server, resolveWorkspace);
+  registerWorkflowTools(server, resolveWorkspace);
+  registerStatusTools(server, resolveWorkspace);
+  registerSteeringTools(server, resolveWorkspace);
   registerResources(server, defaultWorkspace);
   registerPrompts(server);
   return server;

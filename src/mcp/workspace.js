@@ -24,6 +24,18 @@ function resolveExistingRealPathOrParent(targetPath) {
   }
 }
 
+/**
+ * Create a workspace resolver with defaultWorkspace and httpMode baked in.
+ * Returns a single-arg function: (workspace?) => resolvedPath
+ */
+export function createWorkspaceResolver(
+  defaultWorkspace,
+  { httpMode = false } = {},
+) {
+  return (workspace) =>
+    resolveWorkspaceForMcp(workspace, defaultWorkspace, { httpMode });
+}
+
 export function resolveWorkspaceForMcp(
   workspace,
   defaultWorkspace,

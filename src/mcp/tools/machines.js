@@ -6,7 +6,6 @@ import { resolveConfig } from "../../config.js";
 import { buildSecrets, resolvePassEnv } from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
 import { listMachines } from "../../machines/_registry.js";
-import { resolveWorkspaceForMcp } from "../workspace.js";
 
 /**
  * Build a workflow context for standalone machine execution (not part of a workflow).
@@ -51,11 +50,7 @@ function buildStandaloneContext(workspaceDir, overrides = {}) {
  * Tool name: `coder_{machine.name.replace(/\./g, "_")}`
  * e.g. machine "develop.planning" -> tool "coder_develop_planning"
  */
-export function registerMachineTools(
-  server,
-  defaultWorkspace,
-  { httpMode = false } = {},
-) {
+export function registerMachineTools(server, resolveWorkspace) {
   const machines = listMachines();
 
   for (const machine of machines) {
@@ -88,13 +83,7 @@ export function registerMachineTools(
       async (params) => {
         let ctx;
         try {
-          const ws = resolveWorkspaceForMcp(
-            params.workspace,
-            defaultWorkspace,
-            {
-              httpMode,
-            },
-          );
+          const ws = resolveWorkspace(params.workspace);
           const { workspace: _ws, ...machineInput } = params;
           ctx = buildStandaloneContext(ws, machineInput);
 

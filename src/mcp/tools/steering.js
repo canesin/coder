@@ -9,13 +9,7 @@ import {
   steeringDirFor,
   writeSteeringFiles,
 } from "../../steering.js";
-import { resolveWorkspaceForMcp } from "../workspace.js";
-
-export function registerSteeringTools(
-  server,
-  defaultWorkspace,
-  { httpMode = false } = {},
-) {
+export function registerSteeringTools(server, resolveWorkspace) {
   server.registerTool(
     "coder_steering_generate",
     {
@@ -45,9 +39,7 @@ export function registerSteeringTools(
     async ({ workspace, force }) => {
       let pool = null;
       try {
-        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace, {
-          httpMode,
-        });
+        const ws = resolveWorkspace(workspace);
         const config = resolveConfig(ws);
 
         // Check if steering files already exist
@@ -156,9 +148,7 @@ export function registerSteeringTools(
     async ({ workspace }) => {
       let pool = null;
       try {
-        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace, {
-          httpMode,
-        });
+        const ws = resolveWorkspace(workspace);
         const config = resolveConfig(ws);
         const secrets = buildSecrets(resolvePassEnv(config));
         pool = new AgentPool({

@@ -3,7 +3,6 @@ import path from "node:path";
 import { z } from "zod";
 import { resolveConfig } from "../../config.js";
 import { loadState } from "../../state/workflow-state.js";
-import { resolveWorkspaceForMcp } from "../workspace.js";
 
 function readActivityFile(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "activity.json");
@@ -109,11 +108,7 @@ async function getStatus(workspaceDir) {
   };
 }
 
-export function registerStatusTools(
-  server,
-  defaultWorkspace,
-  { httpMode = false } = {},
-) {
+export function registerStatusTools(server, resolveWorkspace) {
   server.registerTool(
     "coder_status",
     {
@@ -137,9 +132,7 @@ export function registerStatusTools(
     },
     async ({ workspace }) => {
       try {
-        const ws = resolveWorkspaceForMcp(workspace, defaultWorkspace, {
-          httpMode,
-        });
+        const ws = resolveWorkspace(workspace);
         const status = await getStatus(ws);
         return {
           content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
