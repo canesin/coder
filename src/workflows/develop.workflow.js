@@ -688,6 +688,8 @@ export async function runDevelopLoop(opts, ctx) {
         loopState.issueQueue[i].status = "completed";
         loopState.issueQueue[i].branch = branch;
         loopState.issueQueue[i].prUrl = prResult?.data?.prUrl;
+        loopState.issueQueue[i].error = null;
+        loopState.issueQueue[i].completedAt = new Date().toISOString();
         outcomeMap.set(issue.id, { status: "completed", branch });
         completed++;
         results.push({
