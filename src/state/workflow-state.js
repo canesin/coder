@@ -17,8 +17,9 @@ import {
 
 const WORKFLOW_STATE_SCHEMA_VERSION = 2;
 
-let _writeChain = Promise.resolve();
-let _sqliteWriteChain = Promise.resolve();
+// A single CLI process should only touch a small number of workspaces / DBs.
+const _writeChains = new Map();
+const _sqliteWriteChains = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -67,10 +68,12 @@ ON CONFLICT(run_id) DO UPDATE SET
 
 async function persistSnapshotToSqlite(sqlitePath, payload) {
   if (!sqlitePath || !sqliteAvailable()) return;
-  _sqliteWriteChain = _sqliteWriteChain
+  let writeChain = _sqliteWriteChains.get(sqlitePath) ?? Promise.resolve();
+  writeChain = writeChain
     .then(() => _persistSnapshotToSqliteInner(sqlitePath, payload))
     .catch(() => {});
-  await _sqliteWriteChain;
+  _sqliteWriteChains.set(sqlitePath, writeChain);
+  await writeChain;
 }
 
 async function fileExists(p) {
@@ -112,12 +115,14 @@ export async function saveWorkflowSnapshot(
     updatedAt: nowIso(),
   };
   let writeErr;
-  _writeChain = _writeChain
+  let writeChain = _writeChains.get(workspaceDir) ?? Promise.resolve();
+  writeChain = writeChain
     .then(() => atomicWriteJson(statePath, payload))
     .catch((e) => {
       writeErr = e;
     });
-  await _writeChain;
+  _writeChains.set(workspaceDir, writeChain);
+  await writeChain;
   if (writeErr) throw writeErr;
   await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
@@ -146,12 +151,14 @@ export async function saveWorkflowTerminalState(
     updatedAt: nowIso(),
   };
   let writeErr;
-  _writeChain = _writeChain
+  let writeChain = _writeChains.get(workspaceDir) ?? Promise.resolve();
+  writeChain = writeChain
     .then(() => atomicWriteJson(statePath, payload))
     .catch((e) => {
       writeErr = e;
     });
-  await _writeChain;
+  _writeChains.set(workspaceDir, writeChain);
+  await writeChain;
   if (writeErr) throw writeErr;
   await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
@@ -351,12 +358,14 @@ export async function saveLoopState(
     } catch {}
   }
   let writeErr;
-  _writeChain = _writeChain
+  let writeChain = _writeChains.get(workspaceDir) ?? Promise.resolve();
+  writeChain = writeChain
     .then(() => atomicWriteJson(p, loopState))
     .catch((e) => {
       writeErr = e;
     });
-  await _writeChain;
+  _writeChains.set(workspaceDir, writeChain);
+  await writeChain;
   if (writeErr) throw writeErr;
 }
 
@@ -510,11 +519,13 @@ export async function loadState(workspaceDir) {
 export async function saveState(workspaceDir, state) {
   const p = statePathFor(workspaceDir);
   let writeErr;
-  _writeChain = _writeChain
+  let writeChain = _writeChains.get(workspaceDir) ?? Promise.resolve();
+  writeChain = writeChain
     .then(() => atomicWriteJson(p, state))
     .catch((e) => {
       writeErr = e;
     });
-  await _writeChain;
+  _writeChains.set(workspaceDir, writeChain);
+  await writeChain;
   if (writeErr) throw writeErr;
 }
