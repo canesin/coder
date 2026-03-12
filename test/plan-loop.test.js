@@ -249,12 +249,13 @@ test("runPlanLoop: stops at maxRounds even with repeated REVISE", async () => {
   }
 });
 
-test("runPlanLoop: UNKNOWN verdict stops after 1 round", async () => {
+test("runPlanLoop: UNKNOWN verdict triggers revision then APPROVED stops", async () => {
   const tmp = makeTmp();
   try {
     const ctx = makeCtx(tmp);
     const runner = makeRunner(ctx);
     let planCount = 0;
+    let reviewCount = 0;
 
     const mockPlan = {
       name: "develop.planning",
@@ -266,9 +267,13 @@ test("runPlanLoop: UNKNOWN verdict stops after 1 round", async () => {
     const mockReview = {
       name: "develop.plan_review",
       async run() {
+        reviewCount++;
         return {
           status: "ok",
-          data: { critiqueMd: "?", verdict: "UNKNOWN" },
+          data: {
+            critiqueMd: reviewCount === 1 ? "unparseable" : "ok",
+            verdict: reviewCount === 1 ? "UNKNOWN" : "APPROVED",
+          },
           durationMs: 0,
         };
       },
@@ -280,7 +285,8 @@ test("runPlanLoop: UNKNOWN verdict stops after 1 round", async () => {
     });
 
     assert.equal(result.status, "completed");
-    assert.equal(planCount, 1);
+    assert.equal(planCount, 2);
+    assert.equal(reviewCount, 2);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

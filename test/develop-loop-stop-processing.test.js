@@ -94,9 +94,8 @@ function completedRunnerResult(runId = "run-test") {
   };
 }
 
-test("hard failure aborts queue and emits issue_skipped hooks for auto-skipped items", async () => {
+test("independent issues continue after failure (no blanket abort)", async () => {
   const ws = makeTmpWorkspace();
-  const hookLog = path.join(ws, "hook-events.log");
   const originalRun = WorkflowRunner.prototype.run;
 
   try {
@@ -144,6 +143,81 @@ test("hard failure aborts queue and emits issue_skipped hooks for auto-skipped i
       return completedRunnerResult("run-hard-fail");
     };
 
+    const ctx = makeCtx(ws);
+    const result = await runDevelopLoop(
+      { issueSource: "local", localIssuesDir: issuesDir },
+      ctx,
+    );
+
+    // B and C are independent — they should be processed, not skipped
+    assert.deepEqual(issueDraftCalls, ["A", "B", "C"]);
+    assert.equal(result.completed, 2);
+    assert.equal(result.failed, 1);
+    assert.equal(result.skipped, 0);
+
+    const finalState = await loadLoopState(ws);
+    const issueA = finalState.issueQueue.find((issue) => issue.id === "A");
+    const issueB = finalState.issueQueue.find((issue) => issue.id === "B");
+    const issueC = finalState.issueQueue.find((issue) => issue.id === "C");
+    assert.equal(issueA.status, "failed");
+    assert.equal(issueB.status, "completed");
+    assert.equal(issueC.status, "completed");
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("dependency chain: dependents skipped, independent issues continue", async () => {
+  const ws = makeTmpWorkspace();
+  const hookLog = path.join(ws, "hook-events.log");
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    // A fails, B depends on A → skipped, C is independent → completes
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+      { id: "B", title: "Issue B", difficulty: 2, dependsOn: ["A"] },
+      { id: "C", title: "Issue C", difficulty: 3 },
+    ]);
+    const issueDraftCalls = [];
+    let currentIssueId = null;
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (machineName === "develop.issue_draft") {
+        currentIssueId = steps[0]?.inputMapper?.()?.issue?.id;
+        issueDraftCalls.push(currentIssueId);
+      }
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-dep-skip",
+          durationMs: 0,
+        };
+      }
+      if (machineName === "develop.implementation" && currentIssueId === "A") {
+        return {
+          status: "failed",
+          error: "fatal build failure",
+          results: [
+            {
+              machine: "develop.quality_review",
+              status: "error",
+              error: "fatal build failure",
+            },
+          ],
+          runId: "run-dep-skip",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-dep-skip");
+    };
+
     const hookCmd = `printf '%s\\n' "$CODER_HOOK_ISSUE_ID" >> ${JSON.stringify(hookLog)}`;
     const ctx = makeCtx(ws, {
       config: {
@@ -161,10 +235,10 @@ test("hard failure aborts queue and emits issue_skipped hooks for auto-skipped i
       ctx,
     );
 
-    assert.deepEqual(issueDraftCalls, ["A"]);
-    assert.equal(result.completed, 0);
+    // A failed, B skipped (depends on A), C completed (independent)
     assert.equal(result.failed, 1);
-    assert.equal(result.skipped, 2);
+    assert.equal(result.skipped, 1);
+    assert.equal(result.completed, 1);
 
     const finalState = await loadLoopState(ws);
     const issueA = finalState.issueQueue.find((issue) => issue.id === "A");
@@ -172,15 +246,16 @@ test("hard failure aborts queue and emits issue_skipped hooks for auto-skipped i
     const issueC = finalState.issueQueue.find((issue) => issue.id === "C");
     assert.equal(issueA.status, "failed");
     assert.equal(issueB.status, "skipped");
-    assert.equal(issueC.status, "skipped");
+    assert.equal(issueC.status, "completed");
 
+    // Only B should have been skipped via hook
     const hookIds = existsSync(hookLog)
       ? readFileSync(hookLog, "utf8")
           .split("\n")
           .map((line) => line.trim())
           .filter(Boolean)
       : [];
-    assert.deepEqual(hookIds.sort(), ["B", "C"]);
+    assert.deepEqual(hookIds, ["B"]);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
     rmSync(ws, { recursive: true, force: true });

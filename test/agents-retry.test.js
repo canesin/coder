@@ -231,3 +231,110 @@ test("isRateLimitError detects 429, rate limit, resource_exhausted, quota", () =
   assert.equal(isRateLimitError("regular error"), false);
   assert.equal(isRateLimitError(""), false);
 });
+
+// --- Bug 1: fallback receives no resumeId; primary retried on auth error ---
+
+test("fallback agent receives no resumeId or sessionId", async () => {
+  let fallbackOpts = null;
+
+  const config = CoderConfigSchema.parse({
+    agents: {
+      retry: { retries: 1, backoffMs: 0 },
+      fallback: { planner: "codex" },
+    },
+  });
+  const pool = makePool(config);
+
+  const primaryMock = makeMockAgent([
+    { exitCode: 1, stdout: "", stderr: "primary failed" },
+  ]);
+  const fallbackMock = {
+    async execute(_prompt, opts) {
+      fallbackOpts = opts;
+      return { exitCode: 0, stdout: "ok", stderr: "" };
+    },
+    async executeStructured(prompt, opts) {
+      return this.execute(prompt, opts);
+    },
+    async executeWithRetry(prompt, opts) {
+      return this.execute(prompt, opts);
+    },
+    async kill() {},
+  };
+
+  const { agent } = pool.getAgent("planner");
+  agent._primary = primaryMock;
+  agent._fallback = fallbackMock;
+
+  await agent.execute("test prompt", {
+    resumeId: "sess-123",
+    sessionId: "sid-456",
+    timeoutMs: 5000,
+  });
+
+  assert.ok(fallbackOpts, "fallback should have been called");
+  assert.equal(fallbackOpts.resumeId, undefined, "resumeId must be stripped");
+  assert.equal(fallbackOpts.sessionId, undefined, "sessionId must be stripped");
+  assert.equal(fallbackOpts.timeoutMs, 5000, "other opts preserved");
+});
+
+test("primary retried without session on auth error before falling to fallback", async () => {
+  const calls = [];
+
+  const config = CoderConfigSchema.parse({
+    agents: {
+      retry: { retries: 1, backoffMs: 0 },
+      fallback: { planner: "codex" },
+    },
+  });
+  const pool = makePool(config);
+
+  const primaryMock = {
+    async execute(_prompt, opts) {
+      calls.push({ agent: "primary", hasResumeId: !!opts?.resumeId });
+      if (opts?.resumeId) {
+        const err = new Error("auth error");
+        err.name = "CommandFatalStderrError";
+        err.category = "auth";
+        throw err;
+      }
+      return { exitCode: 0, stdout: "ok from primary retry", stderr: "" };
+    },
+    async executeStructured(prompt, opts) {
+      return this.execute(prompt, opts);
+    },
+    async executeWithRetry(prompt, opts) {
+      return this.execute(prompt, opts);
+    },
+    async kill() {},
+  };
+  const fallbackMock = {
+    async execute(_prompt, opts) {
+      calls.push({ agent: "fallback", hasResumeId: !!opts?.resumeId });
+      return { exitCode: 0, stdout: "ok from fallback", stderr: "" };
+    },
+    async executeStructured(prompt, opts) {
+      return this.execute(prompt, opts);
+    },
+    async executeWithRetry(prompt, opts) {
+      return this.execute(prompt, opts);
+    },
+    async kill() {},
+  };
+
+  const { agent } = pool.getAgent("planner");
+  agent._primary = primaryMock;
+  agent._fallback = fallbackMock;
+
+  const result = await agent.execute("test prompt", {
+    resumeId: "sess-123",
+    sessionId: "sid-456",
+  });
+
+  // Primary was called with session (shouldRetry returns false for auth → no p-retry retries),
+  // then retried once without session and succeeded.
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], { agent: "primary", hasResumeId: true });
+  assert.deepEqual(calls[1], { agent: "primary", hasResumeId: false });
+  assert.equal(result.stdout, "ok from primary retry");
+});
