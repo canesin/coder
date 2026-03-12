@@ -280,7 +280,7 @@ export default defineMachine({
         data: {
           issues: filtered,
           recommended_index: 0,
-          source: "local",
+          source: issueIds ? "forced" : "local",
         },
       };
     }
