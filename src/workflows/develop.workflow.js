@@ -873,13 +873,6 @@ export async function runDevelopLoop(opts, ctx) {
           },
           issueEnv,
         );
-
-        results.push({
-          id: entry.id,
-          title: entry.title,
-          status: "skipped",
-          error: entry.error,
-        });
       }
 
       await saveLoopState(ctx.workspaceDir, loopState, {

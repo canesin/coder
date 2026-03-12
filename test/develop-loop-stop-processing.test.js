@@ -155,6 +155,14 @@ test("independent issues continue after failure (no blanket abort)", async () =>
     assert.equal(result.failed, 1);
     assert.equal(result.skipped, 0);
 
+    // No duplicate entries in results
+    const resultIds = result.results.map((r) => r.id);
+    assert.deepEqual(
+      resultIds,
+      [...new Set(resultIds)],
+      "results must not contain duplicates",
+    );
+
     const finalState = await loadLoopState(ws);
     const issueA = finalState.issueQueue.find((issue) => issue.id === "A");
     const issueB = finalState.issueQueue.find((issue) => issue.id === "B");
@@ -239,6 +247,14 @@ test("dependency chain: dependents skipped, independent issues continue", async 
     assert.equal(result.failed, 1);
     assert.equal(result.skipped, 1);
     assert.equal(result.completed, 1);
+
+    // No duplicate entries in results
+    const resultIds = result.results.map((r) => r.id);
+    assert.deepEqual(
+      resultIds,
+      [...new Set(resultIds)],
+      "results must not contain duplicates",
+    );
 
     const finalState = await loadLoopState(ws);
     const issueA = finalState.issueQueue.find((issue) => issue.id === "A");
