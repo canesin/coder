@@ -43,6 +43,31 @@ const CODEX_FAILURE_PATTERNS = [
 ];
 const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
 
+/**
+ * Parse first thread.started event from Codex --json JSONL stdout.
+ * @param {string} stdout - JSONL output from codex exec --json
+ * @returns {string|null} - thread_id or null
+ */
+function parseThreadStartedFromJsonl(stdout) {
+  const lines = String(stdout || "").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const obj = JSON.parse(trimmed);
+      if (
+        obj?.type === "thread.started" &&
+        typeof obj?.thread_id === "string"
+      ) {
+        return obj.thread_id;
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return null;
+}
+
 export function resolveAgentName(name) {
   const normalized = String(name || "")
     .trim()
@@ -204,7 +229,15 @@ export class CliAgent extends AgentAdapter {
     // This allows individual machine calls to succeed even when MCP health is degraded
   }
 
-  _buildCommand(prompt, { structured = false, sessionId, resumeId } = {}) {
+  _buildCommand(
+    prompt,
+    {
+      structured = false,
+      sessionId,
+      resumeId,
+      execWithJsonCapture = false,
+    } = {},
+  ) {
     if (this.steeringContext) {
       prompt = `<steering_context>\n${this.steeringContext}\n</steering_context>\n\n${prompt}`;
     }
@@ -240,12 +273,16 @@ export class CliAgent extends AgentAdapter {
     // on Linux 6.2+. Use --dangerously-bypass-approvals-and-sandbox instead — outer
     // isolation (systemd-run with NoNewPrivileges + PrivateTmp) still applies.
     if (resumeId) {
+      if (resumeId === "__last__") {
+        return `codex exec resume --last --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
+      }
       return `codex exec resume ${shellEscape(resumeId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
     }
     if (sessionId && this._checkCodexSessionSupport()) {
       return `codex exec --session ${shellEscape(sessionId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
     }
-    return `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
+    const jsonFlag = execWithJsonCapture ? " --json" : "";
+    return `codex exec${jsonFlag} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
   }
 
   async execute(prompt, opts = {}) {
@@ -272,12 +309,18 @@ export class CliAgent extends AgentAdapter {
             : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
 
-    return sandbox.commands.run(cmd, {
+    const result = await sandbox.commands.run(cmd, {
       timeoutMs: opts.timeoutMs ?? 1000 * 60 * 10,
       hangTimeoutMs,
       hangResetOnStderr,
       killOnStderrPatterns,
     });
+
+    if (isCodex && opts.execWithJsonCapture && result.stdout) {
+      const threadId = parseThreadStartedFromJsonl(result.stdout);
+      if (threadId) return { ...result, threadId };
+    }
+    return result;
   }
 
   async executeStructured(prompt, opts = {}) {

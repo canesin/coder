@@ -102,6 +102,20 @@ test("codex: resume command uses subcommand with bypass flag", () => {
   assert.ok(!cmd.includes("--full-auto"));
 });
 
+test("codex: resumeId __last__ uses --last flag", () => {
+  const agent = makeAgent("codex");
+  const cmd = agent._buildCommand("prompt", { resumeId: "__last__" });
+  assert.ok(cmd.includes("resume --last"));
+  assert.ok(!cmd.includes("'__last__'"));
+});
+
+test("codex: execWithJsonCapture adds --json flag", () => {
+  const agent = makeAgent("codex");
+  const cmd = agent._buildCommand("prompt", { execWithJsonCapture: true });
+  assert.ok(cmd.includes("codex exec --json "));
+  assert.ok(cmd.includes("--dangerously-bypass-approvals-and-sandbox"));
+});
+
 test("resolveAgentName: known agents resolve", () => {
   assert.equal(resolveAgentName("gemini"), "gemini");
   assert.equal(resolveAgentName("claude"), "claude");
@@ -259,6 +273,23 @@ test("_ensureSandbox: rejected first creation does not wipe second in-flight pro
   const result = await p2;
   assert.equal(result, sandbox2);
   assert.equal(agent._sandbox, sandbox2);
+});
+
+test("codex: execute with execWithJsonCapture parses threadId from thread.started", async () => {
+  const agent = makeAgent("codex");
+  const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+  const sandbox = makeFakeSandbox();
+  sandbox.commands.run = () =>
+    Promise.resolve({
+      exitCode: 0,
+      stdout: `{"type":"thread.started","thread_id":"${threadId}"}\n{"type":"other"}\n`,
+      stderr: "",
+    });
+  agent._provider = { create: () => Promise.resolve(sandbox) };
+
+  const res = await agent.execute("prompt", { execWithJsonCapture: true });
+  assert.equal(res.threadId, threadId);
+  assert.equal(res.exitCode, 0);
 });
 
 test("executeWithRetry retries when isTransientResult flags a successful response", async () => {

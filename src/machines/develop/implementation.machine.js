@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { discoverCodexSessionId } from "../../agents/codex-session-discovery.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
 import {
@@ -62,10 +63,14 @@ export default defineMachine({
     const execOpts = {
       timeoutMs: ctx.config.workflow.timeouts.implementation,
     };
+    const codexWithoutSession = programmerName === "codex" && !codexUsesSession;
     if (programmerName === "codex") {
       if (codexUsesSession) {
         if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
         else execOpts.sessionId = sessionOrResumeId;
+      } else {
+        if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
+        else execOpts.execWithJsonCapture = true;
       }
     } else if (sessionOrResumeId) {
       execOpts.resumeId = sessionOrResumeId;
@@ -159,6 +164,16 @@ FORBIDDEN patterns:
 - Do not bypass tests
 - Use the repo's normal commands (lint, format, test)`;
 
+    async function captureCodexSessionId(runStartTimeMs) {
+      let sid = null;
+      if (res?.threadId) sid = res.threadId;
+      if (!sid) sid = await discoverCodexSessionId(repoRoot, runStartTimeMs);
+      if (!sid) sid = "__last__";
+      state[sessionKey] = sid;
+      await saveState(ctx.workspaceDir, state);
+    }
+
+    const runStartTimeMs = codexWithoutSession ? Date.now() : 0;
     let res;
     try {
       res = await programmerAgent.execute(implPrompt, execOpts);
@@ -175,12 +190,35 @@ FORBIDDEN patterns:
         state[sessionKey] = null;
         await saveState(ctx.workspaceDir, state);
         // Fresh session loses prior planning context — acceptable per GH-89
-        res = await programmerAgent.execute(implPrompt, {
-          timeoutMs: ctx.config.workflow.timeouts.implementation,
-        });
+        const retryRunStart = codexWithoutSession ? Date.now() : 0;
+        try {
+          res = await programmerAgent.execute(implPrompt, {
+            timeoutMs: ctx.config.workflow.timeouts.implementation,
+            ...(codexWithoutSession && { execWithJsonCapture: true }),
+          });
+          if (codexWithoutSession) {
+            await captureCodexSessionId(retryRunStart);
+          }
+        } catch (retryErr) {
+          if (codexWithoutSession) {
+            const sid = await discoverCodexSessionId(repoRoot, retryRunStart);
+            state[sessionKey] = sid || "__last__";
+            await saveState(ctx.workspaceDir, state);
+          }
+          throw retryErr;
+        }
       } else {
+        if (codexWithoutSession && !hadSessionBefore) {
+          const sid = await discoverCodexSessionId(repoRoot, runStartTimeMs);
+          state[sessionKey] = sid || "__last__";
+          await saveState(ctx.workspaceDir, state);
+        }
         throw err;
       }
+    }
+
+    if (codexWithoutSession && !hadSessionBefore) {
+      await captureCodexSessionId(runStartTimeMs);
     }
     requireExitZero(programmerName, "implementation failed", res);
 
