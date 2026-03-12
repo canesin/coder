@@ -703,7 +703,10 @@ function clearStateAndArtifacts(workspaceDir) {
 
 function saveBackup(workspaceDir, state) {
   if (!state?.selected) return;
-  const key = backupKeyFor(state.selected);
+  const key = backupKeyFor({
+    ...state.selected,
+    repo_path: state.repoPath ?? state.selected?.repo_path ?? ".",
+  });
   const backupDir = path.join(workspaceDir, ".coder", "backups", key);
   mkdirSync(backupDir, { recursive: true });
   const stateDest = path.join(backupDir, "state.json");
@@ -782,19 +785,23 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
   }
   const state = await loadState(workspaceDir).catch(() => null);
   const normRepo = (p) => (p ?? ".").trim() || ".";
-  const backupDir = path.join(
-    workspaceDir,
-    ".coder",
-    "backups",
-    backupKeyFor(issue),
-  );
-  if (existsSync(path.join(backupDir, "state.json"))) {
+  const primaryKey = backupKeyFor(issue);
+  const legacyKey =
+    normRepo(issue.repo_path) !== "."
+      ? backupKeyFor({ ...issue, repo_path: "." })
+      : null;
+
+  for (const key of [primaryKey, legacyKey].filter(Boolean)) {
+    const backupDir = path.join(workspaceDir, ".coder", "backups", key);
+    if (!existsSync(path.join(backupDir, "state.json"))) continue;
+
     const restored = await loadStateFromPath(
       path.join(backupDir, "state.json"),
     ).catch(() => null);
     const backupArtifactsDir = path.join(backupDir, "artifacts");
     const repoMatch =
-      normRepo(restored?.selected?.repo_path) === normRepo(issue.repo_path);
+      normRepo(restored?.repoPath ?? restored?.selected?.repo_path) ===
+      normRepo(issue.repo_path);
     if (
       restored?.selected?.id === issue.id &&
       restored?.selected?.source === issue.source &&
@@ -802,8 +809,6 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
       artifactConsistent(workspaceDir, restored.steps, backupArtifactsDir)
     ) {
       await restoreBackup(workspaceDir, backupDir, issue, ctx);
-      // Delete backup after restore. If restore partially failed, backup is lost;
-      // errors would surface and abort the pipeline.
       rmSync(backupDir, { recursive: true, force: true });
       ctx.log({
         event: "loop_resume_detected",
@@ -814,7 +819,8 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
     }
   }
   const repoMatch =
-    normRepo(state?.selected?.repo_path) === normRepo(issue.repo_path);
+    normRepo(state?.repoPath ?? state?.selected?.repo_path) ===
+    normRepo(issue.repo_path);
   if (
     state?.selected?.id === issue.id &&
     state?.selected?.source === issue.source &&

@@ -144,6 +144,12 @@ export default defineMachine({
           readFileSync(earlyPaths.issue, "utf8"),
         );
         if (onDisk.length > 40 && onDisk.trim().startsWith("#")) {
+          const repoPath = normalizeRepoPath(
+            ctx.workspaceDir,
+            state.repoPath ?? input.repoPath ?? ".",
+          );
+          const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
+          ctx.agentPool.setRepoRoot(repoRoot);
           ctx.log({
             event: "issue_draft_skipped",
             issue: input.issue,
