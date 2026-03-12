@@ -39,7 +39,7 @@ function setupWorkspace() {
   return { tmp, artifactsDir };
 }
 
-test("Codex without --session: persists __last__ on execute failure (exitCode !== 0)", async () => {
+test("Codex without --session: persists null when capture fails on execute failure (exitCode !== 0)", async () => {
   const { tmp, artifactsDir } = setupWorkspace();
   const emptyCodexHome = mkdtempSync(path.join(os.tmpdir(), "codex-empty-"));
   const origCodexHome = process.env.CODEX_HOME;
@@ -70,11 +70,11 @@ test("Codex without --session: persists __last__ on execute failure (exitCode !=
   const result = await implementationMachine.run({}, ctx);
   assert.equal(result.status, "error");
   const state = await loadState(tmp);
-  assert.equal(state.programmerSessionId, "__last__");
+  assert.equal(state.programmerSessionId, null);
   process.env.CODEX_HOME = origCodexHome;
 });
 
-test("Codex without --session: persists __last__ when execute throws", async () => {
+test("Codex without --session: persists null when capture fails on execute throw", async () => {
   const { tmp, artifactsDir } = setupWorkspace();
   const emptyCodexHome = mkdtempSync(path.join(os.tmpdir(), "codex-empty-"));
   const origCodexHome = process.env.CODEX_HOME;
@@ -107,11 +107,11 @@ test("Codex without --session: persists __last__ when execute throws", async () 
   const result = await implementationMachine.run({}, ctx);
   assert.equal(result.status, "error");
   const state = await loadState(tmp);
-  assert.equal(state.programmerSessionId, "__last__");
+  assert.equal(state.programmerSessionId, null);
   process.env.CODEX_HOME = origCodexHome;
 });
 
-test("Codex without --session: persists __last__ when auth retry execute throws", async () => {
+test("Codex without --session: persists null when capture fails on auth retry execute throw", async () => {
   const { tmp, artifactsDir } = setupWorkspace();
   const emptyCodexHome = mkdtempSync(path.join(os.tmpdir(), "codex-empty-"));
   const origCodexHome = process.env.CODEX_HOME;
@@ -162,6 +162,6 @@ test("Codex without --session: persists __last__ when auth retry execute throws"
   const result = await implementationMachine.run({}, ctx);
   assert.equal(result.status, "error");
   const state = await loadState(tmp);
-  assert.equal(state.programmerSessionId, "__last__");
+  assert.equal(state.programmerSessionId, null);
   process.env.CODEX_HOME = origCodexHome;
 });

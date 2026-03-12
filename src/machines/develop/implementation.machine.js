@@ -168,7 +168,7 @@ FORBIDDEN patterns:
       let sid = null;
       if (res?.threadId) sid = res.threadId;
       if (!sid) sid = await discoverCodexSessionId(repoRoot, runStartTimeMs);
-      if (!sid) sid = "__last__";
+      if (!sid) sid = null;
       state[sessionKey] = sid;
       await saveState(ctx.workspaceDir, state);
     }
@@ -202,7 +202,7 @@ FORBIDDEN patterns:
         } catch (retryErr) {
           if (codexWithoutSession) {
             const sid = await discoverCodexSessionId(repoRoot, retryRunStart);
-            state[sessionKey] = sid || "__last__";
+            state[sessionKey] = sid ?? null;
             await saveState(ctx.workspaceDir, state);
           }
           throw retryErr;
@@ -210,7 +210,7 @@ FORBIDDEN patterns:
       } else {
         if (codexWithoutSession && !hadSessionBefore) {
           const sid = await discoverCodexSessionId(repoRoot, runStartTimeMs);
-          state[sessionKey] = sid || "__last__";
+          state[sessionKey] = sid ?? null;
           await saveState(ctx.workspaceDir, state);
         }
         throw err;

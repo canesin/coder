@@ -431,6 +431,47 @@ test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () 
   }
 });
 
+test("ensureCleanLoopStart: preserves legacy monorepo backup keys during prune", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const legacyBackupKey = "github-42-root";
+    const legacyBackupDir = path.join(
+      tmp,
+      ".coder",
+      "backups",
+      legacyBackupKey,
+    );
+    mkdirSync(path.join(legacyBackupDir, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(legacyBackupDir, "state.json"),
+      JSON.stringify({
+        selected: { source: "github", id: "42", repo_path: "." },
+        steps: { wrotePlan: true },
+      }),
+    );
+    writeFileSync(
+      path.join(legacyBackupDir, "artifacts", "PLAN.md"),
+      "# Legacy plan",
+    );
+
+    const ctxWithResume = {
+      config: { workflow: { resumeStepState: true } },
+    };
+    ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
+      ctx: ctxWithResume,
+      issues: [{ source: "github", id: "42", repo_path: "packages/foo" }],
+      destructiveReset: false,
+    });
+
+    assert.ok(
+      existsSync(legacyBackupDir),
+      "legacy monorepo backup (root key) must be preserved for prepareForIssue to restore",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("ensureCleanLoopStart: with resumeStepState false deletes state and artifacts", () => {
   const tmp = makeTmpRepo();
   try {

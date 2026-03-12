@@ -902,7 +902,14 @@ export function ensureCleanLoopStart(
   }
   // 3. Prune orphan backups (issues no longer in queue)
   else if (resumeEnabled && opts.issues && Array.isArray(opts.issues)) {
-    const validKeys = new Set(opts.issues.map((i) => backupKeyFor(i)));
+    const validKeys = new Set();
+    const normRepo = (p) => (p ?? ".").trim() || ".";
+    for (const i of opts.issues) {
+      validKeys.add(backupKeyFor(i));
+      if (normRepo(i.repo_path) !== ".") {
+        validKeys.add(backupKeyFor({ ...i, repo_path: "." }));
+      }
+    }
     const backupsDir = path.join(workspaceDir, ".coder", "backups");
     if (existsSync(backupsDir)) {
       try {
