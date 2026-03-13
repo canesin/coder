@@ -100,7 +100,7 @@ export const WorkflowAgentRolesSchema = z.object({
 export const WorkflowWipSchema = z.object({
   push: z.boolean().default(true),
   autoCommit: z.boolean().default(true),
-  includeUntracked: z.boolean().default(false),
+  includeUntracked: z.boolean().default(true),
   remote: z.string().default("origin"),
   failOnError: z.boolean().default(false),
 });

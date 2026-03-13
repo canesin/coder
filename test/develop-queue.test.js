@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   buildDependencyGraph,
+  getTransitiveDependents,
   orderByDependencies,
 } from "../src/github/dependencies.js";
 
@@ -221,4 +222,163 @@ test("diamond dependency: D depends on B and C, both depend on A", () => {
   assert.ok(sorted.indexOf("A") < sorted.indexOf("C"));
   assert.ok(sorted.indexOf("B") < sorted.indexOf("D"));
   assert.ok(sorted.indexOf("C") < sorted.indexOf("D"));
+});
+
+// --- getTransitiveDependents ---
+
+test("getTransitiveDependents returns direct dependents", () => {
+  const issues = [
+    { id: "A", dependsOn: [] },
+    { id: "B", dependsOn: ["A"] },
+    { id: "C", dependsOn: [] },
+  ];
+  const deps = getTransitiveDependents(issues, "A");
+  assert.ok(deps.has("B"));
+  assert.ok(!deps.has("C"));
+  assert.ok(!deps.has("A"));
+});
+
+test("getTransitiveDependents returns transitive chain", () => {
+  const issues = [
+    { id: "A", dependsOn: [] },
+    { id: "B", dependsOn: ["A"] },
+    { id: "C", dependsOn: ["B"] },
+    { id: "D", dependsOn: [] },
+  ];
+  const deps = getTransitiveDependents(issues, "A");
+  assert.ok(deps.has("B"));
+  assert.ok(deps.has("C"));
+  assert.ok(!deps.has("D"));
+});
+
+test("getTransitiveDependents handles diamond shape", () => {
+  const issues = [
+    { id: "A", dependsOn: [] },
+    { id: "B", dependsOn: ["A"] },
+    { id: "C", dependsOn: ["A"] },
+    { id: "D", dependsOn: ["B", "C"] },
+    { id: "E", dependsOn: [] },
+  ];
+  const deps = getTransitiveDependents(issues, "A");
+  assert.deepEqual([...deps].sort(), ["B", "C", "D"]);
+  assert.ok(!deps.has("E"));
+});
+
+test("getTransitiveDependents returns empty set for leaf node", () => {
+  const issues = [
+    { id: "A", dependsOn: [] },
+    { id: "B", dependsOn: ["A"] },
+  ];
+  const deps = getTransitiveDependents(issues, "B");
+  assert.equal(deps.size, 0);
+});
+
+// --- Forced order preservation ---
+
+test("forced local issues preserve order through develop loop queue", async () => {
+  const { execSync } = await import("node:child_process");
+  const { WorkflowRunner } = await import("../src/workflows/_base.js");
+  const { runDevelopLoop } = await import(
+    "../src/workflows/develop.workflow.js"
+  );
+
+  const ws = mkdtempSync(path.join(os.tmpdir(), "forced-order-"));
+  mkdirSync(path.join(ws, ".coder", "artifacts"), { recursive: true });
+  mkdirSync(path.join(ws, ".coder", "logs"), { recursive: true });
+  execSync("git init", { cwd: ws, stdio: "ignore" });
+  execSync("git config user.email test@example.com", {
+    cwd: ws,
+    stdio: "ignore",
+  });
+  execSync("git config user.name 'Test User'", { cwd: ws, stdio: "ignore" });
+  execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
+
+  // Issues in intentional order: highest difficulty first
+  const issuesDir = path.join(ws, ".coder", "local-issues");
+  const issuesSubdir = path.join(issuesDir, "issues");
+  mkdirSync(issuesSubdir, { recursive: true });
+  writeFileSync(
+    path.join(issuesDir, "manifest.json"),
+    JSON.stringify({
+      issues: [
+        { id: "Z", file: "issues/Z.md", title: "Hard", difficulty: 5 },
+        { id: "A", file: "issues/A.md", title: "Easy", difficulty: 1 },
+        { id: "M", file: "issues/M.md", title: "Med", difficulty: 3 },
+      ],
+    }),
+  );
+  for (const id of ["Z", "A", "M"]) {
+    writeFileSync(path.join(issuesSubdir, `${id}.md`), `# ${id}\n\nDetails.`);
+  }
+
+  const originalRun = WorkflowRunner.prototype.run;
+  const draftOrder = [];
+  try {
+    WorkflowRunner.prototype.run = async (steps) => {
+      const name = steps[0]?.machine?.name;
+      if (name === "develop.issue_draft") {
+        draftOrder.push(steps[0]?.inputMapper?.()?.issue?.id);
+      }
+      if (name === "develop.planning" || name === "develop.plan_review") {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "r",
+          durationMs: 0,
+        };
+      }
+      return {
+        status: "completed",
+        results: [
+          {
+            machine: "develop.pr_creation",
+            status: "ok",
+            data: { branch: "feat/test", prUrl: "https://example.test/pr" },
+          },
+        ],
+        runId: "r",
+        durationMs: 0,
+      };
+    };
+
+    const ctx = {
+      workspaceDir: ws,
+      repoPath: ".",
+      artifactsDir: path.join(ws, ".coder", "artifacts"),
+      scratchpadDir: path.join(ws, ".coder", "scratchpad"),
+      cancelToken: { cancelled: false, paused: false },
+      log: () => {},
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+        },
+      },
+      agentPool: null,
+      secrets: {},
+    };
+
+    await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        issueIds: ["Z", "A", "M"],
+      },
+      ctx,
+    );
+
+    // Without forced_order, difficulty sort would reorder to A(1), M(3), Z(5)
+    // With forced_order, original sequence Z, A, M must be preserved
+    assert.deepEqual(
+      draftOrder,
+      ["Z", "A", "M"],
+      "forced order must be preserved",
+    );
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
 });

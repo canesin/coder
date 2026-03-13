@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import path from "node:path";
-import { buildDependencyGraph } from "../github/dependencies.js";
+import {
+  buildDependencyGraph,
+  getTransitiveDependents,
+} from "../github/dependencies.js";
 import { detectDefaultBranch } from "../helpers.js";
 import { registerMachine } from "../machines/_registry.js";
 import {
@@ -125,7 +128,11 @@ export async function runPlanLoop(
     const verdict = reviewRound.results[0]?.data?.verdict;
     ctx.log({ event: "plan_review_verdict", verdict, round, maxRounds });
 
-    const needsRevision = verdict === "REVISE" || verdict === "REJECT";
+    if (verdict === "UNKNOWN") {
+      ctx.log({ event: "plan_review_unparseable", round });
+    }
+    const needsRevision =
+      verdict === "REVISE" || verdict === "REJECT" || verdict === "UNKNOWN";
     if (!needsRevision || round === maxRounds - 1) {
       if (needsRevision && round === maxRounds - 1) {
         ctx.log({
@@ -357,7 +364,7 @@ export async function runDevelopPipeline(opts, ctx) {
  * @param {Array<{ id: string, difficulty?: number, depends_on?: string[], dependsOn?: string[] }>} issues
  * @returns {{ queue: typeof issues, rationale: { method: string, cycles: string[][], depEdges: number } }}
  */
-function buildIssueQueue(issues) {
+function buildIssueQueue(issues, { source } = {}) {
   // Normalize depends_on (support both field names)
   const normalized = issues.map((iss) => ({
     ...iss,
@@ -366,6 +373,13 @@ function buildIssueQueue(issues) {
 
   const hasDeps = normalized.some((iss) => iss.dependsOn.length > 0);
   if (!hasDeps) {
+    // Forced order: preserve caller's sequence (no difficulty re-sort)
+    if (source === "forced") {
+      return {
+        queue: normalized,
+        rationale: { method: "forced_order", cycles: [], depEdges: 0 },
+      };
+    }
     // No dependencies — sort by difficulty (ascending), stable for ties
     const sorted = [...normalized].sort(
       (a, b) => (a.difficulty || 3) - (b.difficulty || 3),
@@ -482,7 +496,20 @@ export async function runDevelopLoop(opts, ctx) {
     };
   }
 
-  const rawIssues = listResult.data.issues.slice(0, maxIssues);
+  const issueListSource = listResult.data.source || "remote";
+  let rawIssues;
+  if (issueListSource === "forced") {
+    rawIssues = listResult.data.issues;
+    if (rawIssues.length > maxIssues) {
+      ctx.log({
+        event: "forced_exceeds_max",
+        count: rawIssues.length,
+        maxIssues,
+      });
+    }
+  } else {
+    rawIssues = listResult.data.issues.slice(0, maxIssues);
+  }
   if (rawIssues.length === 0) {
     return {
       status: "completed",
@@ -494,7 +521,9 @@ export async function runDevelopLoop(opts, ctx) {
   }
 
   // Build dependency-aware queue
-  const { queue: issues, rationale } = buildIssueQueue(rawIssues);
+  const { queue: issues, rationale } = buildIssueQueue(rawIssues, {
+    source: issueListSource,
+  });
 
   ctx.log({
     event: "queue_built",
@@ -503,7 +532,7 @@ export async function runDevelopLoop(opts, ctx) {
     cycles: rationale.cycles.length,
     count: issues.length,
     order: issues.map((i) => i.id),
-    source: listResult.data.source || "remote",
+    source: issueListSource,
   });
 
   // Initialize loop state — merge terminal statuses from prior run.
@@ -801,58 +830,55 @@ export async function runDevelopLoop(opts, ctx) {
     const issueStatus = await processIssue(issues[i], i);
     if (issueStatus !== "failed") continue;
 
+    // Skip only transitive dependents of the failed issue; independent issues continue.
     const failedIssueId = issues[i]?.id;
-    ctx.log({
-      event: "loop_aborted_on_failure",
-      issueId: failedIssueId,
-      reason: "issue_failed",
-    });
-
-    for (let j = 0; j < loopState.issueQueue.length; j++) {
-      const entry = loopState.issueQueue[j];
-      if (entry.status !== "pending" && entry.status !== "deferred") continue;
-
-      entry.status = "skipped";
-      entry.error = "Skipped: prior issue failed";
-      entry.completedAt = new Date().toISOString();
-      outcomeMap.set(entry.id, { status: "skipped" });
-      skipped++;
-
-      const issueEnv = {
-        CODER_HOOK_ISSUE_ID: String(entry.id || ""),
-        CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
-      };
+    const dependentIds = getTransitiveDependents(issues, failedIssueId);
+    if (dependentIds.size > 0) {
       ctx.log({
-        event: "issue_skipped",
-        issueId: entry.id,
-        reason: "aborted_after_failure",
-        failedIssueId,
+        event: "skipping_dependents",
+        issueId: failedIssueId,
+        dependents: [...dependentIds],
       });
-      runHooks(
-        ctx,
-        loopRunId,
-        "issue_skipped",
-        "",
-        {
-          status: "skipped",
-          reason: "aborted_after_failure",
-          failedIssueId,
-        },
-        issueEnv,
-      );
 
-      results.push({
-        id: entry.id,
-        title: entry.title,
-        status: "skipped",
-        error: entry.error,
+      for (let j = 0; j < loopState.issueQueue.length; j++) {
+        const entry = loopState.issueQueue[j];
+        if (!dependentIds.has(entry.id)) continue;
+        if (entry.status !== "pending" && entry.status !== "deferred") continue;
+
+        entry.status = "skipped";
+        entry.error = `Skipped: depends on failed issue ${failedIssueId}`;
+        entry.completedAt = new Date().toISOString();
+        outcomeMap.set(entry.id, { status: "skipped" });
+        skipped++;
+
+        const issueEnv = {
+          CODER_HOOK_ISSUE_ID: String(entry.id || ""),
+          CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
+        };
+        ctx.log({
+          event: "issue_skipped",
+          issueId: entry.id,
+          reason: "depends_on_failed",
+          failedIssueId,
+        });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_skipped",
+          "",
+          {
+            status: "skipped",
+            reason: "depends_on_failed",
+            failedIssueId,
+          },
+          issueEnv,
+        );
+      }
+
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
       });
     }
-
-    await saveLoopState(ctx.workspaceDir, loopState, {
-      guardRunId: loopState.runId,
-    });
-    break;
   }
 
   // Retry pass for deferred issues whose dependencies are now resolved

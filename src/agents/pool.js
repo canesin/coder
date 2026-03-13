@@ -37,9 +37,28 @@ class RetryFallbackWrapper extends AgentAdapter {
         this._primary[method](prompt, opts),
       );
     } catch (err) {
+      // On auth error with an active session, retry primary once without
+      // session state before falling through to the fallback agent.
+      if (
+        err.name === "CommandFatalStderrError" &&
+        err.category === "auth" &&
+        opts?.resumeId
+      ) {
+        const { resumeId: _, sessionId: _s, ...cleanOpts } = opts;
+        try {
+          return await this._callWithRetry(() =>
+            this._primary[method](prompt, cleanOpts),
+          );
+        } catch {
+          // fall through to fallback
+        }
+      }
+
       if (this._fallback) {
+        // Strip session-specific opts so fallback starts fresh
+        const { resumeId: _, sessionId: _s, ...fallbackOpts } = opts || {};
         return await this._callWithRetry(() =>
-          this._fallback[method](prompt, opts),
+          this._fallback[method](prompt, fallbackOpts),
         );
       }
       throw err;

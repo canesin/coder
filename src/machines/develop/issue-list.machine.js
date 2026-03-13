@@ -255,13 +255,19 @@ export default defineMachine({
         );
       }
 
-      const filtered = issueIds
-        ? local.issues.filter((iss) =>
-            issueIds.some(
-              (id) => id.toLowerCase() === String(iss.id).toLowerCase(),
-            ),
-          )
-        : local.issues;
+      let filtered;
+      if (issueIds) {
+        const idLower = issueIds.map((id) => id.toLowerCase());
+        filtered = local.issues
+          .filter((iss) => idLower.includes(String(iss.id).toLowerCase()))
+          .sort((a, b) => {
+            const ai = idLower.indexOf(String(a.id).toLowerCase());
+            const bi = idLower.indexOf(String(b.id).toLowerCase());
+            return ai - bi;
+          });
+      } else {
+        filtered = local.issues;
+      }
 
       ctx.log({
         event: "step1_local_issues",
@@ -274,7 +280,7 @@ export default defineMachine({
         data: {
           issues: filtered,
           recommended_index: 0,
-          source: "local",
+          source: issueIds ? "forced" : "local",
         },
       };
     }
@@ -284,7 +290,8 @@ export default defineMachine({
       const fetchFn =
         issueSource === "github" ? fetchGithubIssues : fetchGitlabIssues;
       const raw = fetchFn(ctx.workspaceDir);
-      const idSet = new Set(issueIds.map((id) => id.toLowerCase()));
+      const idLower = issueIds.map((id) => id.toLowerCase());
+      const idSet = new Set(idLower);
       const matched = raw
         .filter((issue) => {
           const id = `#${issue.number ?? issue.iid}`;
@@ -302,7 +309,12 @@ export default defineMachine({
           });
           return parsed.success ? parsed.data : null;
         })
-        .filter(Boolean);
+        .filter(Boolean)
+        .sort((a, b) => {
+          const ai = idLower.indexOf(String(a.id).toLowerCase());
+          const bi = idLower.indexOf(String(b.id).toLowerCase());
+          return ai - bi;
+        });
       ctx.log({
         event: "step1_forced_ids",
         source: issueSource,

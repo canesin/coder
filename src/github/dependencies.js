@@ -91,6 +91,43 @@ function topologicalSort(ids, deps, dependents) {
 }
 
 /**
+ * Get all transitive dependents of a failed issue via BFS.
+ * Returns the set of issue IDs that transitively depend on `failedId`.
+ *
+ * @param {Array<{ id: string, dependsOn?: string[] }>} issues
+ * @param {string} failedId
+ * @returns {Set<string>}
+ */
+export function getTransitiveDependents(issues, failedId) {
+  // Build dependents map: parent -> children that depend on it
+  const ids = new Set(issues.map((i) => i.id));
+  const dependents = new Map();
+  for (const id of ids) dependents.set(id, new Set());
+
+  for (const issue of issues) {
+    for (const dep of issue.dependsOn || issue.depends_on || []) {
+      if (!ids.has(dep)) continue;
+      dependents.get(dep).add(issue.id);
+    }
+  }
+
+  // BFS from failedId
+  const result = new Set();
+  const queue = [failedId];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    for (const child of dependents.get(current) || []) {
+      if (!result.has(child)) {
+        result.add(child);
+        queue.push(child);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
  * Get the issues in execution order, respecting dependencies.
  *
  * @param {Array<{ id: string, title: string, dependsOn?: string[] }>} issues
