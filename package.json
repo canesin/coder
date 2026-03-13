@@ -24,7 +24,8 @@
   ],
   "type": "module",
   "bin": {
-    "coder": "./bin/coder.js"
+    "coder": "./bin/coder.js",
+    "coder-mcp": "./bin/coder-mcp.js"
   },
   "files": [
     "bin/",

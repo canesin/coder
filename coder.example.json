@@ -1,7 +1,7 @@
 {
   "models": {
     "gemini": {
-      "model": "gemini-3.1-pro-preview",
+      "model": "gemini-3-flash-preview",
       "apiEndpoint": "https://generativelanguage.googleapis.com/v1beta",
       "apiKeyEnv": "GEMINI_API_KEY"
     },
@@ -35,12 +35,13 @@
       "planReviewer": "gemini",
       "programmer": "claude",
       "reviewer": "codex",
-      "committer": "codex"
+      "committer": "gemini",
+      "coalesce": "codex"
     },
     "wip": {
       "push": true,
       "autoCommit": true,
-      "includeUntracked": false,
+      "includeUntracked": true,
       "remote": "origin",
       "failOnError": false
     },
@@ -49,7 +50,33 @@
       "sqlitePath": ".coder/state.db"
     },
     "issueSource": "github",
-    "localIssuesDir": ""
+    "localIssuesDir": "",
+    "maxPlanRevisions": 3,
+    "hooks": [],
+    "timeouts": {
+      "issueSelection": 600000,
+      "issueDraft": 600000,
+      "planning": 2400000,
+      "planReview": 2400000,
+      "implementation": 3600000,
+      "reviewRound": 1800000,
+      "programmerFix": 2700000,
+      "committerEscalation": 3600000,
+      "finalGate": 5400000,
+      "researchStep": 600000,
+      "webSearch": 900000,
+      "pocValidation": 720000,
+      "designStep": 600000
+    }
+  },
+  "agents": {
+    "retry": {
+      "retries": 1,
+      "backoffMs": 5000,
+      "retryOnRateLimit": true,
+      "hangTimeoutMs": 300000
+    },
+    "fallback": {}
   },
   "ppcommit": {
     "preset": "strict",
@@ -58,7 +85,11 @@
   },
   "test": {
     "command": "",
-    "allowNoTests": false
+    "allowNoTests": false,
+    "setup": [],
+    "teardown": [],
+    "healthCheck": null,
+    "timeoutMs": 600000
   },
   "design": {
     "stitch": {
@@ -72,6 +103,7 @@
     "specDir": "spec/UI"
   },
   "github": {
+    "useProjects": false,
     "epicAsMilestone": true,
     "defaultLabels": []
   }
