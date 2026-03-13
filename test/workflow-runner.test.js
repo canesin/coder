@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { z } from "zod";
 import { defineMachine } from "../src/machines/_base.js";
+import { loadCheckpoint } from "../src/state/machine-state.js";
 import { runHooks, WorkflowRunner } from "../src/workflows/_base.js";
 
 function makeCtx(overrides = {}) {
@@ -366,5 +373,40 @@ test("runHooks is exported and callable directly", async () => {
     assert.ok(content.includes("workflow_complete"));
   } finally {
     if (existsSync(tmpFile)) rmSync(tmpFile);
+  }
+});
+
+test("WorkflowRunner: writes checkpoint file after each step", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "runner-checkpoint-"));
+  mkdirSync(path.join(ws, ".coder"), { recursive: true });
+  try {
+    const ctx = makeCtx({ workspaceDir: ws });
+    const runner = new WorkflowRunner({ name: "test", workflowContext: ctx });
+
+    const result = await runner.run(
+      [
+        { machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) },
+        {
+          machine: doubleMachine,
+          inputMapper: (prev) => ({ value: prev.data.sum }),
+        },
+      ],
+      {},
+    );
+
+    assert.equal(result.status, "completed");
+
+    const checkpoint = loadCheckpoint(ws, runner.runId);
+    assert.ok(checkpoint, "checkpoint file should exist");
+    assert.equal(checkpoint.workflow, "test");
+    assert.equal(checkpoint.runId, runner.runId);
+    assert.equal(checkpoint.steps.length, 2);
+    assert.equal(checkpoint.steps[0].machine, "test.add");
+    assert.equal(checkpoint.steps[0].status, "ok");
+    assert.equal(checkpoint.steps[1].machine, "test.double");
+    assert.equal(checkpoint.steps[1].status, "ok");
+    assert.equal(checkpoint.currentStep, 2);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
   }
 });

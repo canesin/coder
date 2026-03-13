@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { resolveConfig } from "../../config.js";
-import { loadState } from "../../state/workflow-state.js";
+import { loadLoopState, loadState } from "../../state/workflow-state.js";
 
 function readActivityFile(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "activity.json");
@@ -52,7 +52,7 @@ function readResearchState(workspaceDir) {
   }
 }
 
-async function getStatus(workspaceDir) {
+export async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
   const state = await loadState(workspaceDir);
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
@@ -62,7 +62,7 @@ async function getStatus(workspaceDir) {
     ? path.resolve(workspaceDir, state.scratchpadPath)
     : null;
 
-  return {
+  const result = {
     selected: state.selected || null,
     selectedProject: state.selectedProject || null,
     repoPath: state.repoPath || null,
@@ -103,9 +103,30 @@ async function getStatus(workspaceDir) {
     currentStageStartedAt: null,
     lastHeartbeatAt: null,
     activeAgent: null,
+    loopStatus: null,
+    loopRunId: null,
     mcpHealth: readMcpHealth(workspaceDir),
     researchWorkflow: readResearchState(workspaceDir),
   };
+
+  // Overlay live loop state when available
+  try {
+    const loopState = await loadLoopState(workspaceDir);
+    if (loopState.runId) {
+      result.currentStage = loopState.currentStage || result.currentStage;
+      result.currentStageStartedAt =
+        loopState.currentStageStartedAt || result.currentStageStartedAt;
+      result.lastHeartbeatAt =
+        loopState.lastHeartbeatAt || result.lastHeartbeatAt;
+      result.activeAgent = loopState.activeAgent || result.activeAgent;
+      result.loopStatus = loopState.status || null;
+      result.loopRunId = loopState.runId;
+    }
+  } catch {
+    // best-effort — don't fail status over loop state
+  }
+
+  return result;
 }
 
 export function registerStatusTools(server, resolveWorkspace) {

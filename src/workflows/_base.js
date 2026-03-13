@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { appendStepCheckpoint } from "../state/machine-state.js";
 import { pollControlSignal } from "../state/workflow-state.js";
 
 export function runHooks(
@@ -171,6 +172,24 @@ export class WorkflowRunner {
 
         this.results.push({ machine: machineName, ...result });
         this.onCheckpoint(i, result);
+
+        // Persist step checkpoint to disk (best-effort)
+        try {
+          appendStepCheckpoint(this.ctx.workspaceDir, this.runId, this.name, {
+            machine: machineName,
+            status:
+              result.status === "ok"
+                ? "ok"
+                : result.status === "error"
+                  ? "error"
+                  : "skipped",
+            data: result.data,
+            error: result.error,
+            durationMs: result.durationMs || 0,
+          });
+        } catch {
+          /* best-effort */
+        }
 
         this.ctx.log({
           event: "machine_complete",

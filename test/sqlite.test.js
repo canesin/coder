@@ -4,11 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  _detectBackend,
   runSqliteAsync,
   runSqliteAsyncIgnoreErrors,
   SqliteTimeoutError,
   sqlEscape,
   sqliteAvailable,
+  sqliteBackend,
 } from "../src/sqlite.js";
 
 test("sqlEscape handles quoting, NUL bytes, and null/undefined coercion", () => {
@@ -106,4 +108,33 @@ test("SqliteTimeoutError is an instance of Error with structured properties", ()
   assert.equal(err.dbPath, "/tmp/test.db");
   assert.equal(err.timeoutMs, 5000);
   assert.equal(err.graceMs, 3000);
+});
+
+test("sqliteBackend returns a string or null", () => {
+  const result = sqliteBackend();
+  assert.ok(
+    result === "cli" || result === "python" || result === null,
+    `Expected "cli", "python", or null, got: ${result}`,
+  );
+});
+
+test("_detectBackend result is consistent with sqliteAvailable", () => {
+  const backend = _detectBackend();
+  const available = sqliteAvailable();
+  if (backend === null) {
+    assert.equal(available, false);
+  } else {
+    assert.equal(available, true);
+  }
+});
+
+test("sqliteBackend and sqliteAvailable are consistent", () => {
+  const backend = sqliteBackend();
+  const available = sqliteAvailable();
+  if (backend === "cli" || backend === "python") {
+    assert.equal(available, true);
+  } else {
+    assert.equal(backend, null);
+    assert.equal(available, false);
+  }
 });
