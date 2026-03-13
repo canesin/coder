@@ -30,6 +30,10 @@ const GEMINI_TRANSIENT_FAILURE_PATTERNS = [
   { pattern: "fetch failed sending request", category: "transient" },
   { pattern: "Error when talking to Gemini API", category: "transient" },
 ];
+const CODEX_FAILURE_PATTERNS = [
+  { pattern: "org.freedesktop.secrets", category: "auth" },
+  { pattern: "Cannot autolaunch D-Bus", category: "auth" },
+];
 const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
 
 export function resolveAgentName(name) {
@@ -203,14 +207,21 @@ export class CliAgent extends AgentAdapter {
     const cmd = this._buildCommand(prompt, opts);
 
     const isGemini = this.name === "gemini";
-    const hangTimeoutMs = opts.hangTimeoutMs ?? 0;
-    const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
     const isClaude = this.name === "claude";
+    const isCodex = this.name === "codex";
+
+    // Hang timeout: per-call > config default > 0 (disabled)
+    const configHangTimeout = this.config.agents?.retry?.hangTimeoutMs ?? 0;
+    const hangTimeoutMs = opts.hangTimeoutMs ?? configHangTimeout;
+    const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
+
     const defaultPatterns = isGemini
       ? [...GEMINI_AUTH_FAILURE_PATTERNS, ...GEMINI_TRANSIENT_FAILURE_PATTERNS]
       : isClaude && (opts.resumeId || opts.sessionId)
         ? CLAUDE_RESUME_FAILURE_PATTERNS
-        : [];
+        : isCodex
+          ? CODEX_FAILURE_PATTERNS
+          : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
 
     return sandbox.commands.run(cmd, {

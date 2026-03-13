@@ -214,6 +214,21 @@ test("config.agents.retry schema: defaults", () => {
   assert.equal(config.agents.retry.retries, 1);
   assert.equal(config.agents.retry.backoffMs, 5000);
   assert.equal(config.agents.retry.retryOnRateLimit, true);
+  assert.equal(config.agents.retry.hangTimeoutMs, 300_000);
+});
+
+test("config.agents.retry.hangTimeoutMs can be overridden", () => {
+  const config = CoderConfigSchema.parse({
+    agents: { retry: { hangTimeoutMs: 60_000 } },
+  });
+  assert.equal(config.agents.retry.hangTimeoutMs, 60_000);
+});
+
+test("config.agents.retry.hangTimeoutMs: 0 disables hang detection", () => {
+  const config = CoderConfigSchema.parse({
+    agents: { retry: { hangTimeoutMs: 0 } },
+  });
+  assert.equal(config.agents.retry.hangTimeoutMs, 0);
 });
 
 test("config.agents.fallback schema: accepts role-to-name map", () => {

@@ -195,6 +195,7 @@ export const AgentRetrySchema = z.object({
   retries: z.number().int().min(0).default(1),
   backoffMs: z.number().int().min(0).default(5000),
   retryOnRateLimit: z.boolean().default(true),
+  hangTimeoutMs: z.number().int().min(0).default(300_000),
 });
 
 export const AgentFallbackSchema = z
