@@ -445,7 +445,7 @@ export function sanitizeIssueMarkdown(text) {
   // Drop leading startup noise (common) and then remove any remaining noise lines
   // anywhere in the document (MCP notifications can leak mid/late output).
   const cleaned = stripAgentNoise(text, { dropLeadingOnly: true });
-  let fullyCleaned = stripAgentNoise(cleaned).trim();
+  const fullyCleaned = stripAgentNoise(cleaned).trim();
   if (!fullyCleaned) return "";
   // Strip outer markdown code fence if the agent wrapped the output (e.g. Gemini).
   const fenceMatch = fullyCleaned.match(

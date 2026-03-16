@@ -1242,7 +1242,7 @@ export async function runDevelopLoop(opts, ctx) {
   }
 
   // Recover from crashes / stale state before building the queue
-  await ensureCleanLoopStart(ctx.workspaceDir, ctx);
+  await ensureCleanLoopStartRecovery(ctx.workspaceDir, ctx);
 
   const issueListSource = listResult.data.source || "remote";
   let rawIssues;
@@ -2437,12 +2437,11 @@ export async function resetForNextIssue(
 }
 
 /**
- * Ensure the loop starts from a clean state — recover from crashes, stale branches,
- * and interrupted runs.
- *
- * Called at loop start after issue listing. No-op when already clean.
+ * Async recovery entry point — resets stale in_progress, branch recovery, worktree cleanup.
+ * Called at loop start after issue listing (before queue is built).
+ * Use ensureCleanLoopStart (sync) when you have the full queue and knownBranches.
  */
-export async function ensureCleanLoopStart(workspaceDir, ctx) {
+export async function ensureCleanLoopStartRecovery(workspaceDir, ctx) {
   const repoRoot = resolveRepoRoot(workspaceDir, ".");
   if (!existsSync(repoRoot)) return;
 

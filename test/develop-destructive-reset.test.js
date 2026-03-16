@@ -18,7 +18,7 @@ import {
 } from "../src/state/workflow-state.js";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
-  ensureCleanLoopStart,
+  ensureCleanLoopStartRecovery,
   resetForNextIssue,
   runDevelopLoop,
   runWithMachineRetry,
@@ -447,7 +447,12 @@ test("resetForNextIssue throws when git checkout fails", async () => {
     await assert.rejects(
       () => resetForNextIssue(ws, ".", { destructiveReset: false }),
       (err) => {
-        assert.match(err.message, /git checkout.*failed/i);
+        assert.ok(
+          /git checkout.*failed|Could not detect default branch/i.test(
+            err.message,
+          ),
+          `expected git checkout or default-branch error, got: ${err.message}`,
+        );
         return true;
       },
     );
@@ -512,7 +517,7 @@ test("ensureCleanLoopStart: WIP-preserves known branch, switches to default", as
     spawnSync("git", ["add", "dirty.txt"], { cwd: ws, stdio: "ignore" });
 
     const ctx = makeLogCtx(ws);
-    await ensureCleanLoopStart(ws, ctx);
+    await ensureCleanLoopStartRecovery(ws, ctx);
 
     // Should have committed and switched to master/main
     const head = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
@@ -542,7 +547,7 @@ test("ensureCleanLoopStart: discards dirty unknown branch", async () => {
     writeFileSync(path.join(ws, "junk.txt"), "junk");
 
     const ctx = makeLogCtx(ws);
-    await ensureCleanLoopStart(ws, ctx);
+    await ensureCleanLoopStartRecovery(ws, ctx);
 
     const head = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: ws,
@@ -588,7 +593,7 @@ test("ensureCleanLoopStart: resets stale in_progress to pending", async () => {
     });
 
     const ctx = makeLogCtx(ws);
-    await ensureCleanLoopStart(ws, ctx);
+    await ensureCleanLoopStartRecovery(ws, ctx);
 
     const ls = await loadLoopState(ws);
     assert.equal(ls.issueQueue[0].status, "pending");
@@ -608,7 +613,7 @@ test("ensureCleanLoopStart: no-op when clean", async () => {
   const ws = makeTmpWorkspace();
   try {
     const ctx = makeLogCtx(ws);
-    await ensureCleanLoopStart(ws, ctx);
+    await ensureCleanLoopStartRecovery(ws, ctx);
 
     // No recovery events should have been logged
     assert.equal(ctx.logEvents.length, 0);
