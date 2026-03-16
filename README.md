@@ -174,7 +174,7 @@ Agents include automatic retry with configurable backoff and hang detection. If 
 | `resume` | Resume paused run |
 | `cancel` | Cooperative cancellation |
 
-XState v5 models the lifecycle: `idle → running → paused → completed/failed/cancelled`.
+XState v5 models the lifecycle: `idle → running → paused → completed/failed/cancelled/blocked`.
 
 ### State
 

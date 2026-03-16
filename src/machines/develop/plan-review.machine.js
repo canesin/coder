@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { runPlanreview, stripAgentNoise } from "../../helpers.js";
@@ -82,11 +83,14 @@ export default defineMachine({
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
     ctx.log({ event: "step3b_plan_review" });
 
+    // Use workspace scope so agent can access .coder/artifacts/ when repo_path is a subdir
     const { agentName: planReviewerName, agent: planReviewerAgent } =
-      ctx.agentPool.getAgent("planReviewer", { scope: "repo" });
+      ctx.agentPool.getAgent("planReviewer", { scope: "workspace" });
 
     if (planReviewerName === "gemini") {
-      const rc = runPlanreview(repoRoot, paths.plan, paths.critique);
+      // Use workspaceDir as cwd so Gemini can access .coder/artifacts/ when repo_path is subdir
+      const runReview = ctx._runPlanreviewForTest ?? runPlanreview;
+      const rc = runReview(ctx.workspaceDir, paths.plan, paths.critique);
       if (rc !== 0) {
         ctx.log({ event: "plan_review_nonzero", exitCode: rc });
         if (!existsSync(paths.critique)) {
@@ -115,9 +119,62 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
-      const reviewRes = await planReviewerAgent.execute(reviewPrompt, {
-        timeoutMs: ctx.config.workflow.timeouts.planReview,
-      });
+      // Session only for agents that support create/resume (claude, codex with --session).
+      // Gemini uses native runPlanreview above; codex without --session: non-resumable.
+      const planReviewSupportsSession =
+        planReviewerName === "claude" ||
+        (planReviewerName === "codex" &&
+          planReviewerAgent.codexSessionSupported?.() === true);
+      const planReviewSessionKey = "planReviewSessionId";
+      // Agent-change invalidation: always clear when agent changes (including resumable -> non-resumable).
+      if (
+        state.planReviewAgentName &&
+        state.planReviewAgentName !== planReviewerName
+      ) {
+        delete state[planReviewSessionKey];
+        state.planReviewAgentName = planReviewerName;
+        await saveState(ctx.workspaceDir, state);
+      }
+      let planReviewSessionOpts = {};
+      if (planReviewSupportsSession) {
+        const hadPlanReviewSession = !!state[planReviewSessionKey];
+        if (!state[planReviewSessionKey]) {
+          state[planReviewSessionKey] = randomUUID();
+          state.planReviewAgentName = planReviewerName;
+          await saveState(ctx.workspaceDir, state);
+        }
+        planReviewSessionOpts = hadPlanReviewSession
+          ? { resumeId: state.planReviewSessionId }
+          : { sessionId: state.planReviewSessionId };
+      }
+
+      let reviewRes;
+      try {
+        reviewRes = await planReviewerAgent.execute(reviewPrompt, {
+          ...planReviewSessionOpts,
+          timeoutMs: ctx.config.workflow.timeouts.planReview,
+        });
+      } catch (err) {
+        if (
+          planReviewSupportsSession &&
+          err.name === "CommandFatalStderrError" &&
+          err.category === "auth" &&
+          planReviewSessionOpts.resumeId
+        ) {
+          ctx.log({
+            event: "session_resume_failed",
+            sessionId: state.planReviewSessionId,
+          });
+          state[planReviewSessionKey] = randomUUID();
+          await saveState(ctx.workspaceDir, state);
+          reviewRes = await planReviewerAgent.execute(reviewPrompt, {
+            sessionId: state.planReviewSessionId,
+            timeoutMs: ctx.config.workflow.timeouts.planReview,
+          });
+        } else {
+          throw err;
+        }
+      }
       requireExitZero(planReviewerName, "plan review failed", reviewRes);
 
       if (!existsSync(paths.critique)) {

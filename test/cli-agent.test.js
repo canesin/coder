@@ -36,10 +36,10 @@ test("gemini: sessionId is ignored (no Gemini equivalent)", () => {
   assert.ok(!cmd.includes("--resume"));
 });
 
-test("gemini: resumeId maps to --resume latest", () => {
+test("gemini: resumeId maps to --resume <session-id>", () => {
   const agent = makeAgent("gemini");
   const cmd = agent._buildCommand("prompt", { resumeId: "some-id" });
-  assert.ok(cmd.includes("--resume latest"));
+  assert.ok(cmd.includes("--resume 'some-id'"));
   assert.ok(!cmd.includes("--sandbox-id"));
 });
 
@@ -64,10 +64,24 @@ test("claude: malicious sessionId is shell-escaped", () => {
   assert.ok(!cmd.includes(`--session-id '; touch`));
 });
 
-test("claude: command includes --no-session-persistence", () => {
+test("claude: command includes --no-session-persistence when no session", () => {
   const agent = makeAgent("claude");
   const cmd = agent._buildCommand("prompt", {});
   assert.ok(cmd.includes("--no-session-persistence"));
+});
+
+test("claude: omits --no-session-persistence when sessionId provided", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", { sessionId: "sess-123" });
+  assert.ok(!cmd.includes("--no-session-persistence"));
+  assert.ok(cmd.includes("--session-id"));
+});
+
+test("claude: omits --no-session-persistence when resumeId provided", () => {
+  const agent = makeAgent("claude");
+  const cmd = agent._buildCommand("prompt", { resumeId: "resume-456" });
+  assert.ok(!cmd.includes("--no-session-persistence"));
+  assert.ok(cmd.includes("--resume"));
 });
 
 test("claude: malicious resumeId is shell-escaped", () => {
@@ -100,6 +114,20 @@ test("codex: resume command uses subcommand with bypass flag", () => {
   assert.ok(cmd.includes("--dangerously-bypass-approvals-and-sandbox"));
   assert.ok(cmd.includes("--skip-git-repo-check"));
   assert.ok(!cmd.includes("--full-auto"));
+});
+
+test("codex: resumeId __last__ uses --last flag", () => {
+  const agent = makeAgent("codex");
+  const cmd = agent._buildCommand("prompt", { resumeId: "__last__" });
+  assert.ok(cmd.includes("resume --last"));
+  assert.ok(!cmd.includes("'__last__'"));
+});
+
+test("codex: execWithJsonCapture adds --json flag", () => {
+  const agent = makeAgent("codex");
+  const cmd = agent._buildCommand("prompt", { execWithJsonCapture: true });
+  assert.ok(cmd.includes("codex exec --json "));
+  assert.ok(cmd.includes("--dangerously-bypass-approvals-and-sandbox"));
 });
 
 test("resolveAgentName: known agents resolve", () => {
@@ -259,6 +287,23 @@ test("_ensureSandbox: rejected first creation does not wipe second in-flight pro
   const result = await p2;
   assert.equal(result, sandbox2);
   assert.equal(agent._sandbox, sandbox2);
+});
+
+test("codex: execute with execWithJsonCapture parses threadId from thread.started", async () => {
+  const agent = makeAgent("codex");
+  const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+  const sandbox = makeFakeSandbox();
+  sandbox.commands.run = () =>
+    Promise.resolve({
+      exitCode: 0,
+      stdout: `{"type":"thread.started","thread_id":"${threadId}"}\n{"type":"other"}\n`,
+      stderr: "",
+    });
+  agent._provider = { create: () => Promise.resolve(sandbox) };
+
+  const res = await agent.execute("prompt", { execWithJsonCapture: true });
+  assert.equal(res.threadId, threadId);
+  assert.equal(res.exitCode, 0);
 });
 
 test("executeWithRetry retries when isTransientResult flags a successful response", async () => {

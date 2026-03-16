@@ -1312,6 +1312,18 @@ export async function runPpcommitNative(repoDir, ppcommitConfig) {
       stderr: "",
     };
 
+  if (config.blockSecrets) {
+    try {
+      assertGitleaksInstalled();
+    } catch (err) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: err.message,
+      };
+    }
+  }
+
   const { ordered, newFiles } = listUncommittedFiles(repoDir);
   if (ordered.length === 0)
     return {
@@ -1340,6 +1352,18 @@ export async function runPpcommitBranch(repoDir, baseBranch, ppcommitConfig) {
       stderr: "",
     };
 
+  if (config.blockSecrets) {
+    try {
+      assertGitleaksInstalled();
+    } catch (err) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: err.message,
+      };
+    }
+  }
+
   const { ordered, newFiles, error } = listFilesSinceBase(repoDir, baseBranch);
   if (error) return { exitCode: 2, stdout: "", stderr: error };
   if (ordered.length === 0)
@@ -1367,6 +1391,18 @@ export async function runPpcommitAll(repoDir, ppcommitConfig) {
       stdout: "ppcommit checks skipped via config\n",
       stderr: "",
     };
+
+  if (config.blockSecrets) {
+    try {
+      assertGitleaksInstalled();
+    } catch (err) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: err.message,
+      };
+    }
+  }
 
   const { ordered, newFiles } = listAllFiles(repoDir);
   if (ordered.length === 0)

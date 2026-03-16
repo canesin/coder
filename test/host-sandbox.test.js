@@ -26,6 +26,30 @@ test("host sandbox aborts command on configured stderr auth-failure pattern", as
   );
 });
 
+test("host sandbox aborts on Codex session-not-found pattern (auth category)", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `echo "session not found" 1>&2; sleep 2; echo "should-not-print"`,
+        {
+          timeoutMs: 5000,
+          killOnStderrPatterns: [
+            { pattern: "session not found", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStderrError");
+      assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "session not found");
+      return true;
+    },
+  );
+});
+
 test("host sandbox aborts with transient category on matching stderr pattern", async () => {
   const provider = new HostSandboxProvider();
   const sandbox = await provider.create();

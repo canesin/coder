@@ -1,0 +1,697 @@
+import assert from "node:assert/strict";
+import { execSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:net";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { loadLoopState, saveLoopState } from "../src/state/workflow-state.js";
+import { WorkflowRunner } from "../src/workflows/_base.js";
+import { runDevelopLoop } from "../src/workflows/develop.workflow.js";
+
+function makeTmpWorkspace() {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "fix-plan-"));
+  mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
+  mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
+  execSync("git init", { cwd: tmp, stdio: "ignore" });
+  execSync("git config user.email test@example.com", {
+    cwd: tmp,
+    stdio: "ignore",
+  });
+  execSync("git config user.name 'Test User'", {
+    cwd: tmp,
+    stdio: "ignore",
+  });
+  execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+  return tmp;
+}
+
+function writeLocalManifest(workspaceDir, issues) {
+  const dir = path.join(workspaceDir, ".coder", "local-issues");
+  const issuesSubdir = path.join(dir, "issues");
+  mkdirSync(issuesSubdir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({
+      issues: issues.map((issue) => ({
+        id: issue.id,
+        file: `issues/${issue.id}.md`,
+        title: issue.title,
+        difficulty: issue.difficulty || 3,
+        dependsOn: issue.dependsOn || [],
+      })),
+    }),
+  );
+  for (const issue of issues) {
+    writeFileSync(
+      path.join(issuesSubdir, `${issue.id}.md`),
+      `# ${issue.id} — ${issue.title}\n\nDetails.`,
+    );
+  }
+  return dir;
+}
+
+function makeCtx(workspaceDir, overrides = {}) {
+  const logEvents = [];
+  return {
+    workspaceDir,
+    repoPath: ".",
+    artifactsDir: path.join(workspaceDir, ".coder", "artifacts"),
+    scratchpadDir: path.join(workspaceDir, ".coder", "scratchpad"),
+    cancelToken: { cancelled: false, paused: false },
+    log: (event) => logEvents.push(event),
+    config: {
+      workflow: {
+        maxMachineRetries: 0,
+        retryBackoffMs: 0,
+        hooks: [],
+        issueSource: "local",
+        localIssuesDir: "",
+      },
+    },
+    agentPool: null,
+    secrets: {},
+    logEvents,
+    ...overrides,
+  };
+}
+
+function completedRunnerResult(runId = "run-test") {
+  return {
+    status: "completed",
+    results: [
+      {
+        machine: "develop.pr_creation",
+        status: "ok",
+        data: { branch: "feat/test", prUrl: "https://example.test/pr" },
+      },
+    ],
+    runId,
+    durationMs: 0,
+  };
+}
+
+test("infra failure with infraDetection enabled yields deferred and run status blocked", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      if (machineName === "develop.implementation") {
+        return {
+          status: "failed",
+          error: "ECONNREFUSED: connection refused to 127.0.0.1:5432",
+          results: [],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+          infraDetection: true,
+        },
+      },
+    });
+
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "blocked");
+    assert.equal(result.deferred, 1);
+
+    const finalState = await loadLoopState(ws);
+    const issueA = finalState.issueQueue.find((q) => q.id === "A");
+    assert.equal(issueA.status, "deferred");
+    assert.equal(issueA.deferredReason, "infra");
+    assert.match(issueA.error, /ECONNREFUSED|connection refused/);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("infra failure with infraDetection disabled yields failed not deferred", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      if (machineName === "develop.implementation") {
+        return {
+          status: "failed",
+          error: "ECONNREFUSED: connection refused",
+          results: [],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+          infraDetection: false,
+        },
+      },
+    });
+
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failed, 1);
+
+    const finalState = await loadLoopState(ws);
+    const issueA = finalState.issueQueue.find((q) => q.id === "A");
+    assert.equal(issueA.status, "failed");
+    assert.equal(issueA.deferredReason, undefined);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("infra/plan_blocked deferred issues are excluded from same-run retry pass", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+  const processedIds = [];
+  let implementationCallCount = 0;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+      { id: "B", title: "Issue B", difficulty: 2 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      const issueId = steps[0]?.inputMapper?.()?.issue?.id;
+      if (machineName === "develop.issue_draft") {
+        processedIds.push(issueId);
+      }
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      if (machineName === "develop.implementation") {
+        implementationCallCount++;
+        if (implementationCallCount === 1) {
+          return {
+            status: "failed",
+            error: "ECONNREFUSED: connection refused",
+            results: [],
+            runId: "run-1",
+            durationMs: 0,
+          };
+        }
+      }
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+          infraDetection: true,
+        },
+      },
+    });
+
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    const finalState = await loadLoopState(ws);
+    const issueA = finalState.issueQueue.find((q) => q.id === "A");
+    const issueB = finalState.issueQueue.find((q) => q.id === "B");
+    assert.equal(issueA.status, "deferred");
+    assert.equal(issueA.deferredReason, "infra");
+    assert.equal(issueB.status, "completed");
+    assert.equal(result.deferred, 1);
+    assert.equal(
+      processedIds.filter((id) => id === "A").length,
+      1,
+      "A should not be retried in deferred pass (infra excluded)",
+    );
+    const deferredRetryLog = ctx.logEvents.find(
+      (e) => e.event === "deferred_retry_pass",
+    );
+    assert.ok(
+      !deferredRetryLog?.ids?.includes("A"),
+      "deferred retry pass must exclude infra-deferred issue A",
+    );
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("preflight command check fails before loop processes any issue", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+  let pipelineStarted = false;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub() {
+      pipelineStarted = true;
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+          preflight: {
+            checks: [{ type: "command", cmd: "false" }],
+          },
+        },
+      },
+    });
+
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "failed");
+    assert.match(result.error, /Pre-flight check failed|command failed/);
+    assert.equal(pipelineStarted, false);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("preflight command check passes and loop proceeds", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+          preflight: {
+            checks: [{ type: "command", cmd: "true" }],
+          },
+        },
+      },
+    });
+
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.completed, 1);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("preflight tcp check fails when port refuses", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+  let pipelineStarted = false;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub() {
+      pipelineStarted = true;
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+          preflight: {
+            checks: [{ type: "tcp", host: "127.0.0.1", port: 65534 }],
+          },
+        },
+      },
+    });
+
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "failed");
+    assert.match(result.error, /Pre-flight|TCP|refused|timed out/);
+    assert.equal(pipelineStarted, false);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("preflight tcp check passes when port accepts", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+  const server = createServer(() => {});
+  await new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const port = server.address().port;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+          preflight: {
+            checks: [{ type: "tcp", host: "127.0.0.1", port }],
+          },
+        },
+      },
+    });
+
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.completed, 1);
+  } finally {
+    server.close();
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("git_tracking deferred when git pull fails with stale upstream ref", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "fix-plan-stale-ref-"));
+  const bareDir = path.join(tmp, "bare");
+  const ws = path.join(tmp, "ws");
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    mkdirSync(bareDir, { recursive: true });
+    mkdirSync(ws, { recursive: true });
+    mkdirSync(path.join(ws, ".coder", "artifacts"), { recursive: true });
+    mkdirSync(path.join(ws, ".coder", "logs"), { recursive: true });
+
+    execSync("git init --bare", { cwd: bareDir, stdio: "ignore" });
+    execSync("git init -b main", { cwd: ws, stdio: "ignore" });
+    execSync("git config user.email test@example.com", {
+      cwd: ws,
+      stdio: "ignore",
+    });
+    execSync("git config user.name 'Test User'", { cwd: ws, stdio: "ignore" });
+    execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
+    execSync(`git remote add origin ${bareDir}`, { cwd: ws, stdio: "ignore" });
+    execSync("git push -u origin main", { cwd: ws, stdio: "ignore" });
+
+    const mainRef = path.join(bareDir, "refs", "heads", "main");
+    if (existsSync(mainRef)) rmSync(mainRef);
+
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws);
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "blocked");
+    assert.equal(result.deferred, 1);
+
+    const finalState = await loadLoopState(ws);
+    const issueA = finalState.issueQueue.find((q) => q.id === "A");
+    assert.equal(issueA.status, "deferred");
+    assert.equal(issueA.deferredReason, "git_tracking");
+    assert.match(issueA.error, /upstream ref not found|set-upstream-to/);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("start after blocked run processes deferred issues (blocked treated as terminal)", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+  const processedIds = [];
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    await saveLoopState(ws, {
+      runId: "prior-blocked-run",
+      goal: "test",
+      status: "blocked",
+      projectFilter: null,
+      maxIssues: null,
+      issueQueue: [
+        {
+          source: "local",
+          id: "A",
+          title: "Issue A",
+          status: "deferred",
+          deferredReason: "git_tracking",
+          error: "Upstream ref not found",
+          branch: null,
+          prUrl: null,
+          startedAt: "2025-01-01T00:00:00.000Z",
+          completedAt: null,
+          dependsOn: [],
+        },
+      ],
+      currentIndex: 0,
+      currentStage: null,
+      currentStageStartedAt: null,
+      lastHeartbeatAt: null,
+      runnerPid: null,
+      activeAgent: null,
+      startedAt: "2025-01-01T00:00:00.000Z",
+      completedAt: "2025-01-01T00:01:00.000Z",
+    });
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      const issueId = steps[0]?.inputMapper?.()?.issue?.id;
+      if (machineName === "develop.issue_draft") {
+        processedIds.push(issueId);
+      }
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-2",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-2");
+    };
+
+    const ctx = makeCtx(ws);
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.completed, 1);
+    assert.ok(
+      processedIds.includes("A"),
+      "blocked-run deferred issue A should be retried on next start",
+    );
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  __resetSqliteAvailabilityForTests,
   runSqliteAsync,
   runSqliteAsyncIgnoreErrors,
   SqliteTimeoutError,
@@ -11,6 +12,8 @@ import {
   sqliteAvailable,
   sqliteBackend,
 } from "../src/sqlite.js";
+
+const hasSqlite = sqliteAvailable();
 
 test("sqlEscape handles quoting, NUL bytes, and null/undefined coercion", () => {
   // single-quote escaping
@@ -27,13 +30,21 @@ test("sqlEscape handles quoting, NUL bytes, and null/undefined coercion", () => 
 });
 
 test("sqliteAvailable returns a boolean and caches result", () => {
+  __resetSqliteAvailabilityForTests();
   const result1 = sqliteAvailable();
   const result2 = sqliteAvailable();
   assert.equal(typeof result1, "boolean");
   assert.equal(result1, result2);
 });
 
-test("runSqliteAsync resolves valid SQL", async () => {
+test("__resetSqliteAvailabilityForTests clears cache", () => {
+  sqliteAvailable();
+  __resetSqliteAvailabilityForTests();
+  const after = sqliteAvailable();
+  assert.equal(typeof after, "boolean");
+});
+
+test("runSqliteAsync resolves valid SQL", { skip: !hasSqlite }, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {
@@ -49,7 +60,9 @@ test("runSqliteAsync resolves valid SQL", async () => {
   }
 });
 
-test("runSqliteAsync rejects on invalid SQL", async () => {
+test("runSqliteAsync rejects on invalid SQL", {
+  skip: !hasSqlite,
+}, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {
@@ -61,7 +74,9 @@ test("runSqliteAsync rejects on invalid SQL", async () => {
   }
 });
 
-test("runSqliteAsync times out and throws SqliteTimeoutError", async () => {
+test("runSqliteAsync times out and throws SqliteTimeoutError", {
+  skip: !hasSqlite,
+}, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-sqlite-"));
   const dbPath = path.join(tmpDir, "test.db");
   try {

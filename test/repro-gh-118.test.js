@@ -207,7 +207,11 @@ test("prior failed issue is not re-processed, dependent is skipped", async () =>
 
     const ctx = makeCtx(ws);
     const result = await runDevelopLoop(
-      { issueSource: "local", localIssuesDir: issuesDir },
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        preserveFailedIssues: true,
+      },
       ctx,
     );
 

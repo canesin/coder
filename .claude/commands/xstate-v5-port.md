@@ -440,7 +440,7 @@ test("completedAt is set on every terminal path", () => {
   const paths = getSimplePaths(machine, {
     events: traversalEvents,
     serializeState,
-    toState: (s) => ["completed", "failed", "cancelled"].includes(s.value),
+    toState: (s) => ["completed", "failed", "cancelled", "blocked"].includes(s.value),
   });
   assert.ok(paths.length > 0, "should have terminal paths");
   for (const p of paths) {
@@ -471,7 +471,7 @@ test("error is set on all failed paths, null on completed/cancelled", () => {
 
 ```js
 test("terminal states are immutable", () => {
-  const terminalStates = ["completed", "failed", "cancelled"];
+  const terminalStates = ["completed", "failed", "cancelled", "blocked"];
   const paths = getShortestPaths(machine, { events: traversalEvents, serializeState });
   // Build poison list from ALL event types the machine handles
   const poison = [
@@ -526,7 +526,7 @@ Graph tests cover structural reachability and invariants but NOT:
 1. **`TypeError: events is not iterable`** — you passed `events` as an object `{ EVENT: [...] }`. Must be a function `() => [...]` or a flat array `[...]`.
 2. **Thousands of paths / huge output** — you forgot `serializeState`. Every context-modifying self-loop (HEARTBEAT, SYNC, STAGE) creates a new "unique" state.
 3. **Path count changes unexpectedly** — adding a self-loop event to `traversalEvents` that doesn't change state value still creates a new context permutation. Either add it to `traversalEvents` (if you want it tested) and accept the higher count, or omit context-only events from traversal and test them manually.
-4. **`isFinal is not defined`** — there's no built-in helper. Use a hardcoded array: `const terminalStates = ["completed", "failed", "cancelled"]` and filter with `.includes()`.
+4. **`isFinal is not defined`** — there's no built-in helper. Use a hardcoded array: `const terminalStates = ["completed", "failed", "cancelled", "blocked"]` and filter with `.includes()`.
 
 ---
 

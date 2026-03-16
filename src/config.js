@@ -246,12 +246,41 @@ export const CoderConfigSchema = z.object({
       wip: WorkflowWipSchema.prefault({}),
       scratchpad: WorkflowScratchpadSchema.prefault({}),
       timeouts: WorkflowTimeoutsSchema.prefault({}),
+      conflictDetection: z.boolean().default(true),
+      resumeStepState: z.boolean().default(true),
+      /** When true, treat connection-refused–style errors as infra (deferred). Default false to avoid misclassifying product bugs. */
+      infraDetection: z.boolean().default(false),
       maxPlanRevisions: z.number().int().min(1).max(10).default(3),
       issueSource: z
         .enum(["github", "linear", "gitlab", "local"])
         .default("github"),
       localIssuesDir: z.string().default(""),
       hooks: z.array(HookSchema).default([]),
+      preflight: z
+        .object({
+          checks: z
+            .array(
+              z.union([
+                z.object({
+                  type: z.literal("tcp"),
+                  host: z.string().default("127.0.0.1"),
+                  port: z.number().int().positive(),
+                }),
+                z.object({
+                  type: z.literal("command"),
+                  cmd: z.string().min(1),
+                }),
+                z.object({
+                  type: z.literal("url"),
+                  url: z.string().url(),
+                  retries: z.number().int().positive().optional(),
+                  intervalMs: z.number().int().positive().optional(),
+                }),
+              ]),
+            )
+            .default([]),
+        })
+        .optional(),
     })
     .prefault({}),
   design: DesignConfigSchema.prefault({}),

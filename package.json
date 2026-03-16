@@ -45,7 +45,7 @@
     "lint:fix": "biome check --write ./bin ./src ./test package.json",
     "format": "biome format --write ./bin ./src ./test package.json",
     "format:check": "biome format ./bin ./src ./test package.json",
-    "test": "NODE_ENV=test node --test test/*.test.js",
+    "test": "NODE_ENV=test node --experimental-test-module-mocks --test test/*.test.js",
     "prepublishOnly": "npm run lint && npm test"
   },
   "engines": {

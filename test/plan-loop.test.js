@@ -242,7 +242,8 @@ test("runPlanLoop: stops at maxRounds even with repeated REVISE", async () => {
       maxRounds: 3,
     });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "failed");
+    assert.equal(result.planReviewExhausted, true);
     assert.equal(planCount, 3);
   } finally {
     rmSync(tmp, { recursive: true, force: true });

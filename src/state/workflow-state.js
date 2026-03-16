@@ -304,6 +304,7 @@ export function createWorkflowLifecycleMachine() {
           COMPLETE: { target: "completed", actions: "stampCompletedAt" },
           FAIL: { target: "failed", actions: "markFailed" },
           CANCELLED: { target: "cancelled", actions: "stampCompletedAt" },
+          BLOCKED: { target: "blocked", actions: "stampCompletedAt" },
         },
       },
       paused: {
@@ -314,6 +315,7 @@ export function createWorkflowLifecycleMachine() {
           COMPLETE: { target: "completed", actions: "stampCompletedAt" },
           FAIL: { target: "failed", actions: "markFailed" },
           CANCELLED: { target: "cancelled", actions: "stampCompletedAt" },
+          BLOCKED: { target: "blocked", actions: "stampCompletedAt" },
         },
       },
       cancelling: {
@@ -322,16 +324,26 @@ export function createWorkflowLifecycleMachine() {
           COMPLETE: { target: "completed", actions: "stampCompletedAt" },
           FAIL: { target: "failed", actions: "markFailed" },
           CANCELLED: { target: "cancelled", actions: "stampCompletedAt" },
+          BLOCKED: { target: "blocked", actions: "stampCompletedAt" },
         },
       },
       completed: { type: "final" },
       failed: { type: "final" },
       cancelled: { type: "final" },
+      blocked: { type: "final" },
     },
   });
 }
 
 // --- Loop state (for develop workflow's multi-issue loop) ---
+
+/** Terminal run statuses — used for start-path cleanup, schema, and lifecycle. Keep synchronized. */
+export const TERMINAL_RUN_STATUSES = [
+  "completed",
+  "failed",
+  "cancelled",
+  "blocked",
+];
 
 const LoopIssueResultSchema = z
   .object({
@@ -354,6 +366,8 @@ const LoopIssueResultSchema = z
     startedAt: z.string().nullable().default(null),
     completedAt: z.string().nullable().default(null),
     dependsOn: z.array(z.string()).default([]),
+    lastFailedRunId: z.string().nullable().default(null),
+    deferredReason: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -361,7 +375,15 @@ const LoopStateSchema = z.object({
   runId: z.string().nullable().default(null),
   goal: z.string().default(""),
   status: z
-    .enum(["idle", "running", "paused", "completed", "failed", "cancelled"])
+    .enum([
+      "idle",
+      "running",
+      "paused",
+      "completed",
+      "failed",
+      "cancelled",
+      "blocked",
+    ])
     .default("idle"),
   projectFilter: z.string().nullable().default(null),
   maxIssues: z.number().int().nullable().default(null),
@@ -518,8 +540,16 @@ const IssueStateSchema = z
     answers: z.array(z.string()).nullable().default(null),
     issuesPayload: z.any().optional(),
     steps: StepsSchema,
-    claudeSessionId: z.string().nullable().default(null),
+    planningSessionId: z.string().nullable().default(null),
+    implementationSessionId: z.string().nullable().default(null),
+    programmerFixSessionId: z.string().nullable().default(null),
+    planReviewSessionId: z.string().nullable().default(null),
     reviewerSessionId: z.string().nullable().default(null),
+    plannerAgentName: z.string().nullable().default(null),
+    implementationAgentName: z.string().nullable().default(null),
+    planReviewAgentName: z.string().nullable().default(null),
+    programmerFixAgentName: z.string().nullable().default(null),
+    reviewerAgentName: z.string().nullable().default(null),
     lastError: z.string().nullable().default(null),
     reviewFingerprint: z.string().nullable().default(null),
     reviewedAt: z.string().nullable().default(null),
@@ -541,8 +571,16 @@ const DEFAULT_ISSUE_STATE = {
   questions: null,
   answers: null,
   steps: {},
-  claudeSessionId: null,
+  planningSessionId: null,
+  implementationSessionId: null,
+  programmerFixSessionId: null,
+  planReviewSessionId: null,
   reviewerSessionId: null,
+  plannerAgentName: null,
+  implementationAgentName: null,
+  planReviewAgentName: null,
+  programmerFixAgentName: null,
+  reviewerAgentName: null,
   lastError: null,
   reviewFingerprint: null,
   reviewedAt: null,
@@ -564,6 +602,22 @@ export async function loadState(workspaceDir) {
     return IssueStateSchema.parse(raw);
   } catch {
     return { ...DEFAULT_ISSUE_STATE };
+  }
+}
+
+/**
+ * Load issue state from an arbitrary file path (e.g. backup state.json).
+ * Returns null on parse/schema failure.
+ *
+ * @param {string} filePath - Absolute path to state JSON file
+ * @returns {Promise<z.infer<typeof IssueStateSchema> | null>}
+ */
+export async function loadStateFromPath(filePath) {
+  try {
+    const raw = JSON.parse(await readFile(filePath, "utf8"));
+    return IssueStateSchema.parse(raw);
+  } catch {
+    return null;
   }
 }
 

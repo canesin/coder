@@ -17,6 +17,17 @@ export default defineMachine({
     "Create PLAN.md: research codebase, evaluate approaches, write structured implementation plan.",
   inputSchema: z.object({
     priorCritique: z.string().optional().default(""),
+    activeBranches: z
+      .array(
+        z.object({
+          branch: z.string(),
+          issueId: z.string(),
+          title: z.string(),
+          diffStat: z.string(),
+        }),
+      )
+      .optional()
+      .default([]),
   }),
 
   async execute(input, ctx) {
@@ -40,8 +51,9 @@ export default defineMachine({
     ensureBranch(repoRoot, state.branch);
 
     ctx.log({ event: "step3a_create_plan" });
+    // Use workspace scope so agent can access .coder/artifacts/ when repo_path is a subdir
     const { agentName: plannerName, agent: plannerAgent } =
-      ctx.agentPool.getAgent("planner", { scope: "repo" });
+      ctx.agentPool.getAgent("planner", { scope: "workspace" });
 
     const artifactFiles = [
       "ISSUE.md",
@@ -119,9 +131,9 @@ export default defineMachine({
         action: "creating_fresh_session",
       });
     }
-    const creatingSession = !state.claudeSessionId || agentChanged;
+    const creatingSession = !state.planningSessionId || agentChanged;
     if (creatingSession) {
-      state.claudeSessionId = randomUUID();
+      state.planningSessionId = randomUUID();
       state.plannerAgentName = plannerName;
       await saveState(ctx.workspaceDir, state);
     }
@@ -181,6 +193,36 @@ Constraints:
 - Do NOT invent APIs - verify they exist in actual documentation
 - Do NOT ask questions; use repo conventions and ISSUE.md as ground truth`;
 
+    // Append active-branch awareness so the planner can detect conflicts
+    let activeBranchesSection = "";
+    if (input.activeBranches && input.activeBranches.length > 0) {
+      const branchSections = input.activeBranches
+        .map(
+          (b) =>
+            `### ${b.branch} (Issue ${b.issueId}: ${b.title})\n\`\`\`\n${b.diffStat}\n\`\`\``,
+        )
+        .join("\n\n");
+
+      activeBranchesSection = `\n\n## Active Branches (open PRs not yet merged)
+
+The following branches have open PRs from this pipeline run. Review their
+changed files and assess whether your planned changes would create merge
+conflicts (i.e., modifying the same functions, overlapping logic, or
+structural dependencies).
+
+If you determine your changes would conflict with an active branch, add
+this section at the END of ${paths.plan}:
+
+## CONFLICT_DETECTED
+- branch: <conflicting-branch-name>
+- reason: <concrete explanation of why changes conflict>
+
+Only flag actual conflicts — two branches touching the same file is fine
+if they modify different, independent sections.
+
+${branchSections}`;
+    }
+
     // Allow one retry when the planner violates the no-source-edit constraint.
     // Retries resume the existing session so the agent has the violation as context.
     let constraintNote = "";
@@ -190,7 +232,7 @@ Constraints:
       // constraint retries) are follow-up messages in the same resumed session.
       let prompt;
       if (creatingSession && attempt === 0) {
-        prompt = planPrompt;
+        prompt = planPrompt + activeBranchesSection;
         if (input.priorCritique) {
           prompt +=
             `\n\n## Previous Review Critique (MUST ADDRESS)\n\n` +
@@ -210,8 +252,8 @@ Constraints:
 
       const sessionOpts =
         creatingSession && attempt === 0
-          ? { sessionId: state.claudeSessionId }
-          : { resumeId: state.claudeSessionId };
+          ? { sessionId: state.planningSessionId }
+          : { resumeId: state.planningSessionId };
 
       let res;
       try {
@@ -228,9 +270,9 @@ Constraints:
           ) {
             ctx.log({
               event: "session_resume_failed",
-              sessionId: state.claudeSessionId,
+              sessionId: state.planningSessionId,
             });
-            state.claudeSessionId = randomUUID();
+            state.planningSessionId = randomUUID();
             await saveState(ctx.workspaceDir, state);
             // Fresh session needs full planPrompt even during REVISE/constraint rounds
             const retryPrompt =
@@ -238,7 +280,7 @@ Constraints:
                 ? prompt
                 : `${planPrompt}\n\n${prompt}`;
             res = await plannerAgent.execute(retryPrompt, {
-              sessionId: state.claudeSessionId,
+              sessionId: state.planningSessionId,
               timeoutMs: ctx.config.workflow.timeouts.planning,
             });
           } else {
@@ -247,7 +289,7 @@ Constraints:
         }
         requireExitZero(plannerName, "plan generation failed", res);
       } catch (err) {
-        state.claudeSessionId = null;
+        state.planningSessionId = null;
         await saveState(ctx.workspaceDir, state);
         throw err;
       }

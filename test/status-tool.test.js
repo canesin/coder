@@ -31,8 +31,8 @@ test("getStatus returns loop state fields when loop state exists", async () => {
     });
 
     const status = await getStatus(ws);
-    assert.equal(status.loopRunId, "test-run-123");
-    assert.equal(status.loopStatus, "running");
+    assert.equal(status.runId, "test-run-123");
+    assert.equal(status.runStatus, "running");
     assert.equal(status.currentStage, "implementation");
     assert.equal(status.lastHeartbeatAt, "2025-01-01T00:00:00.000Z");
     assert.equal(status.activeAgent, "implementer");
@@ -45,8 +45,8 @@ test("getStatus returns nulls when no loop state exists", async () => {
   const ws = makeTmpWorkspace();
   try {
     const status = await getStatus(ws);
-    assert.equal(status.loopRunId, null);
-    assert.equal(status.loopStatus, null);
+    assert.equal(status.runId, null);
+    assert.equal(status.runStatus, null);
     assert.equal(status.currentStage, null);
     assert.equal(status.lastHeartbeatAt, null);
     assert.equal(status.activeAgent, null);

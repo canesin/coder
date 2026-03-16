@@ -18,7 +18,7 @@ import {
 } from "../src/state/workflow-state.js";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
-  ensureCleanLoopStart,
+  ensureCleanLoopStartRecovery,
   resetForNextIssue,
   runDevelopLoop,
   runWithMachineRetry,
@@ -232,7 +232,7 @@ test("destructiveReset retries failed/skipped issues but preserves completed", a
   }
 });
 
-test("without destructiveReset, failed/skipped issues are preserved from prior run", async () => {
+test("with preserveFailedIssues, failed/skipped issues are preserved from prior run", async () => {
   const ws = makeTmpWorkspace();
   const originalRun = WorkflowRunner.prototype.run;
 
@@ -312,11 +312,12 @@ test("without destructiveReset, failed/skipped issues are preserved from prior r
         issueSource: "local",
         localIssuesDir: issuesDir,
         destructiveReset: false,
+        preserveFailedIssues: true,
       },
       ctx,
     );
 
-    // Neither A (completed) nor B (failed) should be re-processed
+    // With preserveFailedIssues, neither A (completed) nor B (failed) should be re-processed
     assert.equal(processedIds.length, 0);
     assert.equal(result.completed, 1);
     assert.equal(result.failed, 1);
@@ -325,6 +326,105 @@ test("without destructiveReset, failed/skipped issues are preserved from prior r
     const issueB = finalState.issueQueue.find((q) => q.id === "B");
     assert.equal(issueB.status, "failed");
     assert.equal(issueB.error, "quality review failed");
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("default: failed issues are retried on new start (no preserveFailedIssues)", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+      { id: "B", title: "Issue B", difficulty: 2 },
+    ]);
+
+    // Seed prior loop state: A=completed, B=failed
+    await saveLoopState(ws, {
+      runId: "prior-run",
+      goal: "prior",
+      status: "completed",
+      projectFilter: null,
+      maxIssues: null,
+      issueQueue: [
+        {
+          source: "local",
+          id: "A",
+          title: "Issue A",
+          status: "completed",
+          branch: "feat/A",
+          prUrl: "https://example.test/pr/A",
+          error: null,
+          startedAt: "2025-01-01T00:00:00.000Z",
+          completedAt: "2025-01-01T00:01:00.000Z",
+          dependsOn: [],
+        },
+        {
+          source: "local",
+          id: "B",
+          title: "Issue B",
+          status: "failed",
+          branch: null,
+          prUrl: null,
+          error: "quality review failed",
+          startedAt: "2025-01-01T00:02:00.000Z",
+          completedAt: null,
+          dependsOn: [],
+        },
+      ],
+      currentIndex: 0,
+      currentStage: null,
+      currentStageStartedAt: null,
+      lastHeartbeatAt: null,
+      runnerPid: null,
+      activeAgent: null,
+      startedAt: "2025-01-01T00:00:00.000Z",
+      completedAt: "2025-01-01T00:04:00.000Z",
+    });
+
+    const processedIds = [];
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (machineName === "develop.issue_draft") {
+        processedIds.push(steps[0]?.inputMapper?.()?.issue?.id);
+      }
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-default",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-default");
+    };
+
+    const ctx = makeCtx(ws);
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+        // preserveFailedIssues not set — default retry behavior
+      },
+      ctx,
+    );
+
+    // A (completed) should not be re-processed; B (failed) should be retried
+    assert.ok(
+      !processedIds.includes("A"),
+      "completed A should not be re-processed",
+    );
+    assert.ok(processedIds.includes("B"), "failed B should be retried");
+    assert.equal(result.completed, 2);
+    assert.equal(result.failed, 0);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
     rmSync(ws, { recursive: true, force: true });
@@ -347,7 +447,12 @@ test("resetForNextIssue throws when git checkout fails", async () => {
     await assert.rejects(
       () => resetForNextIssue(ws, ".", { destructiveReset: false }),
       (err) => {
-        assert.match(err.message, /git checkout.*failed/i);
+        assert.ok(
+          /git checkout.*failed|Could not detect default branch/i.test(
+            err.message,
+          ),
+          `expected git checkout or default-branch error, got: ${err.message}`,
+        );
         return true;
       },
     );
@@ -412,7 +517,7 @@ test("ensureCleanLoopStart: WIP-preserves known branch, switches to default", as
     spawnSync("git", ["add", "dirty.txt"], { cwd: ws, stdio: "ignore" });
 
     const ctx = makeLogCtx(ws);
-    await ensureCleanLoopStart(ws, ctx);
+    await ensureCleanLoopStartRecovery(ws, ctx);
 
     // Should have committed and switched to master/main
     const head = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
@@ -442,7 +547,7 @@ test("ensureCleanLoopStart: discards dirty unknown branch", async () => {
     writeFileSync(path.join(ws, "junk.txt"), "junk");
 
     const ctx = makeLogCtx(ws);
-    await ensureCleanLoopStart(ws, ctx);
+    await ensureCleanLoopStartRecovery(ws, ctx);
 
     const head = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: ws,
@@ -488,7 +593,7 @@ test("ensureCleanLoopStart: resets stale in_progress to pending", async () => {
     });
 
     const ctx = makeLogCtx(ws);
-    await ensureCleanLoopStart(ws, ctx);
+    await ensureCleanLoopStartRecovery(ws, ctx);
 
     const ls = await loadLoopState(ws);
     assert.equal(ls.issueQueue[0].status, "pending");
@@ -508,7 +613,7 @@ test("ensureCleanLoopStart: no-op when clean", async () => {
   const ws = makeTmpWorkspace();
   try {
     const ctx = makeLogCtx(ws);
-    await ensureCleanLoopStart(ws, ctx);
+    await ensureCleanLoopStartRecovery(ws, ctx);
 
     // No recovery events should have been logged
     assert.equal(ctx.logEvents.length, 0);

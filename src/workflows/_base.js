@@ -1,6 +1,10 @@
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendStepCheckpoint } from "../state/machine-state.js";
+import {
+  appendStepCheckpoint,
+  loadCheckpoint,
+  truncateCheckpoint,
+} from "../state/machine-state.js";
 import { pollControlSignal } from "../state/workflow-state.js";
 
 export function runHooks(
@@ -77,7 +81,8 @@ export class WorkflowRunner {
    *   workflowContext: import("../machines/_base.js").WorkflowContext,
    *   onStageChange?: (stage: string, agentName?: string) => void,
    *   onHeartbeat?: () => void,
-   *   onCheckpoint?: (machineIndex: number, result: any) => void,
+   *   onCheckpoint?: (machineIndex: number, result: any, machineName: string) => void,
+   *   onResumeSkipped?: (runId: string) => Promise<void> | void,
    * }} opts
    */
   constructor(opts) {
@@ -86,6 +91,7 @@ export class WorkflowRunner {
     this.onStageChange = opts.onStageChange || (() => {});
     this.onHeartbeat = opts.onHeartbeat || (() => {});
     this.onCheckpoint = opts.onCheckpoint || (() => {});
+    this.onResumeSkipped = opts.onResumeSkipped || null;
 
     this.runId = randomUUID().slice(0, 8);
     this.results = [];
@@ -101,11 +107,62 @@ export class WorkflowRunner {
    *   optional?: boolean,
    * }>} steps
    * @param {any} [initialInput] - Input for the first machine's inputMapper (as prevResult)
+   * @param {{ resumeFromRunId?: string }} [opts] - If resumeFromRunId, load checkpoint and resume from that run
    * @returns {Promise<{ status: string, results: any[], runId: string, durationMs: number }>}
    */
-  async run(steps, initialInput = {}) {
+  async run(steps, initialInput = {}, opts = {}) {
     const start = Date.now();
-    this.results = [];
+    const workspaceDir = this.ctx.workspaceDir;
+
+    let startIndex = 0;
+    let prevResult = initialInput;
+
+    if (opts.resumeFromRunId) {
+      const checkpoint = loadCheckpoint(workspaceDir, opts.resumeFromRunId);
+      if (!checkpoint || checkpoint.workflow !== this.name) {
+        this.ctx.log({
+          event: "resume_skipped",
+          reason: checkpoint ? "workflow_mismatch" : "checkpoint_not_found",
+          runId: opts.resumeFromRunId,
+        });
+        if (this.onResumeSkipped) await this.onResumeSkipped(this.runId);
+      } else if (
+        checkpoint.steps.length > 0 &&
+        checkpoint.currentStep <= steps.length
+      ) {
+        this.runId = checkpoint.runId;
+        this.results = checkpoint.steps.map((s) => ({
+          machine: s.machine,
+          status: s.status,
+          data: s.data,
+          error: s.error,
+          durationMs: s.durationMs,
+        }));
+        const lastStep = checkpoint.steps[checkpoint.steps.length - 1];
+        const retryFailed = lastStep?.status === "error";
+        startIndex = retryFailed
+          ? checkpoint.currentStep - 1
+          : checkpoint.currentStep;
+        if (retryFailed) {
+          this.results.pop();
+          truncateCheckpoint(workspaceDir, checkpoint.runId, startIndex);
+        }
+        prevResult =
+          startIndex > 0 ? this.results[startIndex - 1] : initialInput;
+        this.ctx.log({
+          event: "workflow_resumed",
+          workflow: this.name,
+          runId: this.runId,
+          fromStep: startIndex,
+        });
+      } else if (this.onResumeSkipped) {
+        await this.onResumeSkipped(this.runId);
+      }
+    }
+
+    if (startIndex === 0) {
+      this.results = [];
+    }
 
     this._heartbeatInterval = setInterval(() => {
       this.onHeartbeat();
@@ -118,9 +175,8 @@ export class WorkflowRunner {
 
     try {
       this._runHooks("workflow_start", this.name);
-      let prevResult = initialInput;
 
-      for (let i = 0; i < steps.length; i++) {
+      for (let i = startIndex; i < steps.length; i++) {
         // Cancel checkpoint
         if (this.ctx.cancelToken.cancelled) {
           this.ctx.log({
@@ -171,9 +227,8 @@ export class WorkflowRunner {
         const result = await step.machine.run(input, this.ctx);
 
         this.results.push({ machine: machineName, ...result });
-        this.onCheckpoint(i, result);
+        this.onCheckpoint(i, result, machineName);
 
-        // Persist step checkpoint to disk (best-effort)
         try {
           appendStepCheckpoint(this.ctx.workspaceDir, this.runId, this.name, {
             machine: machineName,

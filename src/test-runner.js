@@ -96,6 +96,7 @@ export function loadTestConfig(repoDir, configPath) {
       test: config.test.command,
       teardown: config.test.teardown,
       timeoutMs: config.test.timeoutMs,
+      allowNoTests: config.test.allowNoTests ?? false,
     };
   }
   return null;
@@ -134,9 +135,10 @@ export async function waitForHealthCheck(url, retries, intervalMs) {
  * Run a full test config: setup → healthCheck → test → teardown (always).
  * @param {string} repoDir
  * @param {object} config - Parsed TestConfigSchema
+ * @param {boolean} [allowNoTests=false] - If true, pytest exit 5 (no tests) is treated as success
  * @returns {Promise<{ cmd: string, exitCode: number, stdout: string, stderr: string, details: object }>}
  */
-export async function runTestConfig(repoDir, config) {
+export async function runTestConfig(repoDir, config, allowNoTests = false) {
   const details = { setup: [], healthCheck: null, teardown: [] };
 
   try {
@@ -185,10 +187,12 @@ export async function runTestConfig(repoDir, config) {
       cwd: repoDir,
       timeoutMs: config.timeoutMs,
     });
+    const exitCode =
+      allowNoTests && testRes.exitCode === 5 ? 0 : testRes.exitCode;
 
     return {
       cmd: config.test,
-      exitCode: testRes.exitCode,
+      exitCode,
       stdout: testRes.stdout || "",
       stderr: testRes.stderr || "",
       details,

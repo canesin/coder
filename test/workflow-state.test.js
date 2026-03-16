@@ -16,6 +16,7 @@ import {
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
   statePathFor,
+  TERMINAL_RUN_STATUSES,
 } from "../src/state/workflow-state.js";
 
 function makeTmpDir() {
@@ -47,8 +48,16 @@ function makeIssueState(id, title = `Issue ${id}`) {
     questions: null,
     answers: null,
     steps: {},
-    claudeSessionId: null,
+    planningSessionId: null,
+    implementationSessionId: null,
+    programmerFixSessionId: null,
+    planReviewSessionId: null,
     reviewerSessionId: null,
+    plannerAgentName: null,
+    implementationAgentName: null,
+    planReviewAgentName: null,
+    programmerFixAgentName: null,
+    reviewerAgentName: null,
     lastError: null,
     reviewFingerprint: null,
     reviewedAt: null,
@@ -71,6 +80,34 @@ test("loopStatePathFor returns expected path", () => {
   );
 });
 
+test("TERMINAL_RUN_STATUSES includes blocked for start-path handling", () => {
+  assert.ok(
+    TERMINAL_RUN_STATUSES.includes("blocked"),
+    "blocked must be terminal so start treats prior blocked run as finished",
+  );
+  assert.deepEqual(
+    TERMINAL_RUN_STATUSES.sort(),
+    ["blocked", "cancelled", "completed", "failed"].sort(),
+  );
+});
+
+test("createWorkflowLifecycleMachine: BLOCKED transitions to blocked state", () => {
+  const machine = createWorkflowLifecycleMachine();
+  const actor = createActor(machine);
+  actor.start();
+  actor.send({
+    type: "START",
+    runId: "blocked-run",
+    workflow: "develop",
+    at: new Date().toISOString(),
+  });
+  assert.equal(actor.getSnapshot().value, "running");
+  actor.send({ type: "BLOCKED", at: new Date().toISOString() });
+  assert.equal(actor.getSnapshot().value, "blocked");
+  assert.equal(actor.getSnapshot().status, "done");
+  actor.stop();
+});
+
 test("loadState returns defaults for nonexistent workspace", async () => {
   const state = await loadState("/nonexistent-path-" + Date.now());
   assert.equal(state.selected, null);
@@ -90,7 +127,7 @@ test("saveState + loadState round-trip", async () => {
     questions: null,
     answers: null,
     steps: { wroteIssue: true },
-    claudeSessionId: null,
+    planningSessionId: null,
     lastError: null,
     reviewFingerprint: null,
     reviewedAt: null,
@@ -120,7 +157,7 @@ test("saveState + loadState round-trip with gitlab source", async () => {
     questions: null,
     answers: null,
     steps: {},
-    claudeSessionId: null,
+    planningSessionId: null,
     lastError: null,
     reviewFingerprint: null,
     reviewedAt: null,

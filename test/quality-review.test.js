@@ -201,7 +201,7 @@ test("quality_review execute: generates spec delta, persists to state, and passe
     questions: null,
     answers: null,
     steps: { implemented: true },
-    claudeSessionId: null,
+    programmerFixSessionId: null,
     reviewerSessionId: null,
     lastError: null,
     reviewFingerprint: null,
@@ -242,7 +242,7 @@ test("quality_review execute: generates spec delta, persists to state, and passe
     workspaceDir: ws,
     artifactsDir,
     config: {
-      ppcommit: {},
+      ppcommit: { blockSecrets: false },
       models: {
         gemini: {
           model: "gemini-test",
@@ -304,6 +304,136 @@ test("quality_review execute: generates spec delta, persists to state, and passe
   assert.ok(
     capturedReviewPrompt.includes("Spec Delta"),
     "reviewer prompt should include spec delta context",
+  );
+});
+
+test("quality_review: committer escalation ends in REVISE -> state cleared -> machine fails -> next run starts fresh", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-qr-revise-"));
+  const artifactsDir = path.join(ws, ".coder", "artifacts");
+  mkdirSync(artifactsDir, { recursive: true });
+
+  spawnSync("git", ["init", "-b", "main"], { cwd: ws });
+  spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: ws });
+  spawnSync("git", ["config", "user.name", "T"], { cwd: ws });
+  writeFileSync(path.join(ws, ".gitignore"), ".coder/\n");
+  spawnSync("git", ["add", ".gitignore"], { cwd: ws });
+  spawnSync("git", ["commit", "-m", "init"], { cwd: ws });
+
+  writeFileSync(path.join(artifactsDir, "ISSUE.md"), "Issue content");
+  writeFileSync(path.join(artifactsDir, "PLAN.md"), "Plan content");
+
+  const reviewFindingsPath = path.join(artifactsDir, "REVIEW_FINDINGS.md");
+  let reviewCallCount = 0;
+
+  const mockReviewerAgent = {
+    execute: async (prompt) => {
+      if (prompt.includes("Compare") && prompt.includes("Spec Delta Summary")) {
+        return {
+          exitCode: 0,
+          stdout:
+            "## Spec Delta Summary\n### Additions\n- item A\n### Omissions\n- item B\n",
+        };
+      }
+      if (prompt.includes("Review Checklist")) {
+        reviewCallCount++;
+        writeFileSync(
+          reviewFindingsPath,
+          `# Review Findings — Round ${reviewCallCount}\n\n## VERDICT: REVISE\n`,
+        );
+      }
+      return { exitCode: 0, stdout: "" };
+    },
+  };
+  const mockAgent = { execute: async () => ({ exitCode: 0, stdout: "" }) };
+
+  await saveState(ws, {
+    selected: null,
+    selectedProject: null,
+    linearProjects: null,
+    repoPath: ".",
+    baseBranch: "main",
+    branch: "main",
+    questions: null,
+    answers: null,
+    steps: { implemented: true },
+    programmerFixSessionId: null,
+    reviewerSessionId: null,
+    lastError: null,
+    reviewFingerprint: null,
+    reviewedAt: null,
+    prUrl: null,
+    prBranch: null,
+    prBase: null,
+    scratchpadPath: null,
+    lastWipPushAt: null,
+  });
+
+  const ctx = {
+    workspaceDir: ws,
+    artifactsDir,
+    config: {
+      ppcommit: { blockSecrets: false },
+      models: {
+        gemini: {
+          model: "gemini-test",
+          apiEndpoint: "http://localhost",
+          apiKeyEnv: "GEMINI_API_KEY",
+        },
+      },
+      workflow: {
+        timeouts: {
+          reviewRound: 60000,
+          programmerFix: 60000,
+          committerEscalation: 60000,
+          finalGate: 60000,
+        },
+        wip: {},
+      },
+      test: { command: "", allowNoTests: true },
+    },
+    agentPool: {
+      getAgent: (role) => {
+        const agent = role === "reviewer" ? mockReviewerAgent : mockAgent;
+        return { agentName: `mock-${role}`, agent };
+      },
+    },
+    log: () => {},
+    cancelToken: { cancelled: false, paused: false },
+    secrets: {},
+    scratchpadDir: path.join(ws, ".coder", "scratchpad"),
+  };
+
+  const result = await qualityReviewMachine.run({ allowNoTests: true }, ctx);
+  assert.equal(
+    result.status,
+    "error",
+    "machine should fail on REVISE escalation",
+  );
+  assert.match(
+    result.error ?? "",
+    /Review did not complete with APPROVED|Committer escalation exhausted with REVISE/,
+  );
+
+  const finalState = await loadState(ws);
+  assert.equal(finalState.steps.reviewRound, 0, "reviewRound should be reset");
+  assert.equal(
+    finalState.steps.reviewVerdict,
+    undefined,
+    "reviewVerdict should be cleared",
+  );
+  assert.ok(
+    finalState.reviewerSessionId == null,
+    "reviewerSessionId should be cleared for fresh cycle",
+  );
+  assert.equal(
+    finalState.steps.reviewerCompleted,
+    undefined,
+    "reviewerCompleted should remain false",
+  );
+  assert.equal(
+    finalState.steps.testsPassed,
+    undefined,
+    "stale testsPassed should be cleared",
   );
 });
 

@@ -376,16 +376,16 @@ test("runHooks is exported and callable directly", async () => {
   }
 });
 
-test("WorkflowRunner: writes checkpoint file after each step", async () => {
+test("WorkflowRunner: persists checkpoint after each step", async () => {
   const ws = mkdtempSync(path.join(os.tmpdir(), "runner-checkpoint-"));
   mkdirSync(path.join(ws, ".coder"), { recursive: true });
   try {
     const ctx = makeCtx({ workspaceDir: ws });
     const runner = new WorkflowRunner({ name: "test", workflowContext: ctx });
 
-    const result = await runner.run(
+    await runner.run(
       [
-        { machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) },
+        { machine: addMachine, inputMapper: () => ({ a: 2, b: 3 }) },
         {
           machine: doubleMachine,
           inputMapper: (prev) => ({ value: prev.data.sum }),
@@ -394,18 +394,149 @@ test("WorkflowRunner: writes checkpoint file after each step", async () => {
       {},
     );
 
-    assert.equal(result.status, "completed");
-
     const checkpoint = loadCheckpoint(ws, runner.runId);
-    assert.ok(checkpoint, "checkpoint file should exist");
+    assert.ok(checkpoint, "checkpoint should exist");
     assert.equal(checkpoint.workflow, "test");
-    assert.equal(checkpoint.runId, runner.runId);
     assert.equal(checkpoint.steps.length, 2);
-    assert.equal(checkpoint.steps[0].machine, "test.add");
-    assert.equal(checkpoint.steps[0].status, "ok");
-    assert.equal(checkpoint.steps[1].machine, "test.double");
-    assert.equal(checkpoint.steps[1].status, "ok");
     assert.equal(checkpoint.currentStep, 2);
+    assert.equal(checkpoint.steps[0].machine, "test.add");
+    assert.equal(checkpoint.steps[0].data.sum, 5);
+    assert.equal(checkpoint.steps[1].machine, "test.double");
+    assert.equal(checkpoint.steps[1].data.result, 10);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowRunner: resumes from checkpoint when resumeFromRunId provided", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "wf-resume-"));
+  mkdirSync(path.join(ws, ".coder"), { recursive: true });
+  try {
+    const ctx = makeCtx({ workspaceDir: ws });
+    const runner = new WorkflowRunner({ name: "test", workflowContext: ctx });
+
+    let failOnceInvoked = 0;
+    const failThenSucceed = defineMachine({
+      name: "test.failOnce",
+      description: "Fails first time, succeeds second",
+      inputSchema: z.object({}),
+      async execute() {
+        failOnceInvoked++;
+        if (failOnceInvoked === 1) throw new Error("intentional");
+        return { status: "ok", data: { done: true } };
+      },
+    });
+
+    const first = await runner.run(
+      [
+        { machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) },
+        { machine: failThenSucceed, inputMapper: () => ({}) },
+      ],
+      {},
+    );
+
+    assert.equal(first.status, "failed");
+    assert.equal(first.results.length, 2);
+    const runId = runner.runId;
+
+    const second = await runner.run(
+      [
+        { machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) },
+        { machine: failThenSucceed, inputMapper: () => ({}) },
+      ],
+      {},
+      { resumeFromRunId: runId },
+    );
+
+    assert.equal(second.status, "completed");
+    assert.equal(second.results.length, 2);
+    assert.equal(second.results[1].data.done, true);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowRunner: repeated resumes do not skip a previously failed step", async () => {
+  const ws = path.join(os.tmpdir(), `wf-resume-repeat-${Date.now()}`);
+  mkdirSync(path.join(ws, ".coder"), { recursive: true });
+  try {
+    const ctx = makeCtx({ workspaceDir: ws });
+    let attempts = 0;
+    const failTwiceThenSucceed = defineMachine({
+      name: "test.failTwice",
+      description: "Fails twice, then succeeds",
+      inputSchema: z.object({}),
+      async execute() {
+        attempts++;
+        if (attempts < 3) throw new Error(`intentional-${attempts}`);
+        return { status: "ok", data: { attempts } };
+      },
+    });
+
+    const steps = [
+      { machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) },
+      { machine: failTwiceThenSucceed, inputMapper: () => ({}) },
+      {
+        machine: doubleMachine,
+        inputMapper: (prev) => ({ value: prev.data.attempts }),
+      },
+    ];
+
+    const first = await new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+    }).run(steps);
+    assert.equal(first.status, "failed");
+
+    const second = await new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+    }).run(steps, {}, { resumeFromRunId: first.runId });
+    assert.equal(second.status, "failed");
+
+    const checkpointAfterSecond = loadCheckpoint(ws, first.runId);
+    assert.ok(checkpointAfterSecond, "checkpoint should still exist");
+    assert.equal(checkpointAfterSecond.steps.length, 2);
+    assert.equal(checkpointAfterSecond.currentStep, 2);
+    assert.equal(checkpointAfterSecond.steps[1].machine, "test.failTwice");
+    assert.equal(checkpointAfterSecond.steps[1].status, "error");
+
+    const third = await new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+    }).run(steps, {}, { resumeFromRunId: first.runId });
+    assert.equal(third.status, "completed");
+    assert.equal(third.results.length, 3);
+    assert.equal(third.results[1].data.attempts, 3);
+    assert.equal(third.results[2].data.result, 6);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowRunner: calls onResumeSkipped when checkpoint missing and persists fresh runId", async () => {
+  const ws = path.join(os.tmpdir(), `wf-resume-skip-${Date.now()}`);
+  mkdirSync(path.join(ws, ".coder"), { recursive: true });
+  try {
+    const ctx = makeCtx({ workspaceDir: ws });
+    const runIds = [];
+    const runner = new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+      onResumeSkipped: async (runId) => {
+        runIds.push(runId);
+      },
+    });
+
+    const result = await runner.run(
+      [{ machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) }],
+      {},
+      { resumeFromRunId: "nonexistent-run-id" },
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(runIds.length, 1);
+    assert.equal(runIds[0], runner.runId);
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }

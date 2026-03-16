@@ -3,15 +3,23 @@ import { spawn, spawnSync } from "node:child_process";
 let _sqliteAvailableCache = null;
 
 /**
- * Check if sqlite3 CLI is available. Result is cached for process lifetime.
+ * Check if we can run SQLite (sqlite3 CLI OR python3+sqlite3). Result is cached.
  */
 export function sqliteAvailable() {
   if (_sqliteAvailableCache !== null) return _sqliteAvailableCache;
-  const probe = spawnSync("sqlite3", ["--version"], {
+  const sqlite3Probe = spawnSync("sqlite3", ["--version"], {
     encoding: "utf8",
     stdio: "pipe",
   });
-  _sqliteAvailableCache = probe.status === 0;
+  if (sqlite3Probe.status === 0) {
+    _sqliteAvailableCache = true;
+    return _sqliteAvailableCache;
+  }
+  const pythonProbe = spawnSync("python3", ["-c", "import sqlite3"], {
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+  _sqliteAvailableCache = pythonProbe.status === 0;
   return _sqliteAvailableCache;
 }
 
@@ -21,6 +29,13 @@ export function sqliteAvailable() {
  */
 export function sqliteBackend() {
   return sqliteAvailable() ? "cli" : null;
+}
+
+/**
+ * Reset the sqlite availability cache. For tests only.
+ */
+export function __resetSqliteAvailabilityForTests() {
+  _sqliteAvailableCache = null;
 }
 
 /**
@@ -46,6 +61,44 @@ export class SqliteTimeoutError extends Error {
 }
 
 const KILL_GRACE_MS = 5000;
+const PYTHON_RUNNER = `
+import sys
+import sqlite3
+
+db_path = sys.argv[1]
+sql = sys.stdin.read()
+
+conn = None
+try:
+    conn = sqlite3.connect(db_path)
+    cur = conn.execute(sql)
+    rows = cur.fetchall()
+    if rows:
+        for row in rows:
+            sys.stdout.write("|".join("" if v is None else str(v) for v in row) + "\\n")
+    conn.commit()
+except Exception as e:
+    sys.stderr.write(str(e))
+    sys.exit(1)
+finally:
+    if conn is not None:
+        conn.close()
+`;
+
+function spawnSqliteProcess(dbPath) {
+  const sqlite3Probe = spawnSync("sqlite3", ["--version"], {
+    encoding: "utf8",
+    stdio: "pipe",
+  });
+  if (sqlite3Probe.status === 0) {
+    return spawn("sqlite3", [dbPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  }
+  return spawn("python3", ["-c", PYTHON_RUNNER, dbPath], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
 
 /**
  * Run SQL asynchronously via the sqlite3 CLI with timeout.
@@ -56,9 +109,7 @@ const KILL_GRACE_MS = 5000;
  */
 export function runSqliteAsync(dbPath, sql, { timeoutMs = 30000 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn("sqlite3", [dbPath], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawnSqliteProcess(dbPath);
     let stdout = "";
     let stderr = "";
     let killed = false;

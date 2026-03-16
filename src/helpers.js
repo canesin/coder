@@ -33,7 +33,12 @@ export function detectDefaultBranch(repoDir) {
   if (originHead.status === 0) {
     const raw = (originHead.stdout || "").trim();
     if (raw.startsWith("origin/") && raw.length > "origin/".length) {
-      return raw.slice("origin/".length);
+      const branch = raw.slice("origin/".length);
+      const verify = spawnSync("git", ["rev-parse", "--verify", raw], {
+        cwd: repoDir,
+        encoding: "utf8",
+      });
+      if (verify.status === 0) return branch;
     }
   }
 
@@ -41,7 +46,95 @@ export function detectDefaultBranch(repoDir) {
     cwd: repoDir,
     encoding: "utf8",
   });
-  return mainCheck.status === 0 ? "main" : "master";
+  if (mainCheck.status === 0) return "main";
+
+  const masterCheck = spawnSync("git", ["rev-parse", "--verify", "master"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  if (masterCheck.status === 0) return "master";
+
+  throw new Error(
+    "Could not detect default branch; origin/HEAD, main, and master are unavailable or absent.",
+  );
+}
+
+/**
+ * Check if the default branch has tracking config. If missing, log a warning.
+ * Skips check when repo has no origin (local-only); pull would fail anyway.
+ * @param {string} repoDir - Path to the git repository
+ * @param {string} defaultBranch - Default branch name (e.g. main)
+ * @param {(obj: object) => void} log - Logger function
+ * @returns {boolean} true if tracking is configured or no remote exists
+ */
+export function checkDefaultBranchTracking(repoDir, defaultBranch, log) {
+  const hasOrigin = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  if (hasOrigin.status !== 0) return true; // No remote; tracking check N/A
+
+  const remote = spawnSync(
+    "git",
+    ["config", "--get", `branch.${defaultBranch}.remote`],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  const merge = spawnSync(
+    "git",
+    ["config", "--get", `branch.${defaultBranch}.merge`],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  if (remote.status !== 0 || merge.status !== 0) {
+    const remoteName = getDefaultBranchRemoteName(repoDir, defaultBranch);
+    log({
+      event: "git_tracking_missing",
+      defaultBranch,
+      suggestion: `Run: git branch --set-upstream-to=${remoteName}/${defaultBranch} ${defaultBranch}`,
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Get the remote name for the default branch's upstream, or a fallback.
+ * @param {string} repoDir - Path to the git repository
+ * @param {string} defaultBranch - Default branch name (e.g. main)
+ * @returns {string} Remote name (e.g. origin, upstream)
+ */
+export function getDefaultBranchRemoteName(repoDir, defaultBranch) {
+  const res = spawnSync(
+    "git",
+    ["config", "--get", `branch.${defaultBranch}.remote`],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  const configured = (res.stdout || "").trim();
+  if (configured) return configured;
+  const remotes = spawnSync("git", ["remote"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  const list = (remotes.stdout || "").trim().split(/\s+/).filter(Boolean);
+  return list.includes("origin") ? "origin" : list[0] || "origin";
+}
+
+/** Patterns indicating upstream ref was deleted or never existed (stale tracking). */
+const STALE_UPSTREAM_PATTERNS = [
+  /couldn't find remote ref/i,
+  /no such ref was fetched/i,
+  /no such ref/i,
+  /your configuration specifies to merge with .* from the remote, but no such ref was fetched/i,
+  /refs\/heads\/[^\s]+ does not exist/i,
+];
+
+/**
+ * Detect if git pull stderr indicates a stale/deleted upstream ref.
+ * @param {string} stderr - Git pull stderr output
+ * @returns {boolean}
+ */
+export function isStaleUpstreamRefError(stderr) {
+  const text = String(stderr || "").trim();
+  return STALE_UPSTREAM_PATTERNS.some((re) => re.test(text));
 }
 
 /**
@@ -352,17 +445,17 @@ export function sanitizeIssueMarkdown(text) {
   // Drop leading startup noise (common) and then remove any remaining noise lines
   // anywhere in the document (MCP notifications can leak mid/late output).
   const cleaned = stripAgentNoise(text, { dropLeadingOnly: true });
-  let fullyCleaned = stripAgentNoise(cleaned).trim();
+  const fullyCleaned = stripAgentNoise(cleaned).trim();
   if (!fullyCleaned) return "";
-  // Strip outer markdown code fence wrapper (Gemini sometimes wraps entire output)
+  // Strip outer markdown code fence if the agent wrapped the output (e.g. Gemini).
   const fenceMatch = fullyCleaned.match(
-    /^```(?:markdown)?\s*\n([\s\S]*?)\n\s*```\s*$/,
+    /^```(?:markdown)?\s*\n([\s\S]*?)\n?```\s*$/i,
   );
-  if (fenceMatch) fullyCleaned = fenceMatch[1].trim();
-  const lines = fullyCleaned.split("\n");
+  const unwrapped = fenceMatch ? fenceMatch[1].trim() : fullyCleaned;
+  const lines = unwrapped.split("\n");
   const firstHeader = lines.findIndex((line) => line.trim().startsWith("#"));
   if (firstHeader > 0) return lines.slice(firstHeader).join("\n").trim();
-  return fullyCleaned;
+  return unwrapped;
 }
 
 export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {
@@ -653,11 +746,14 @@ export async function runHostTests(
       throw new Error(`Test config not found: ${abs}`);
     }
     const config = loadTestConfig(repoDir, testConfigPath);
-    return await runTestConfig(repoDir, config);
+    const effectiveAllowNoTests = allowNoTests ?? config?.allowNoTests ?? false;
+    return await runTestConfig(repoDir, config, effectiveAllowNoTests);
   }
   const configured = loadTestConfig(repoDir);
   if (configured) {
-    return await runTestConfig(repoDir, configured);
+    const effectiveAllowNoTests =
+      allowNoTests ?? configured.allowNoTests ?? false;
+    return await runTestConfig(repoDir, configured, effectiveAllowNoTests);
   }
 
   // Priority 2: explicit test command
@@ -710,7 +806,13 @@ export async function runHostTests(
   const detected = detectTestCommand(repoDir);
   if (detected) {
     const res = runTestCommand(repoDir, detected);
-    return { cmd: detected, ...res };
+    const exitCode = allowNoTests && res.exitCode === 5 ? 0 : res.exitCode;
+    return {
+      cmd: detected,
+      exitCode,
+      stdout: res.stdout || "",
+      stderr: res.stderr || "",
+    };
   }
 
   // Fallback

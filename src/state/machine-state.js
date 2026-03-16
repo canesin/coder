@@ -29,8 +29,12 @@ export function checkpointPathFor(workspaceDir, runId) {
 
 export function saveCheckpoint(workspaceDir, checkpoint) {
   const p = checkpointPathFor(workspaceDir, checkpoint.runId);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(checkpoint, null, 2) + "\n");
+  try {
+    mkdirSync(path.dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify(checkpoint, null, 2) + "\n");
+  } catch (err) {
+    console.error(`[coder] failed to save checkpoint ${p}: ${err.message}`);
+  }
 }
 
 export function loadCheckpoint(workspaceDir, runId) {
@@ -56,6 +60,17 @@ export function appendStepCheckpoint(workspaceDir, runId, workflow, step) {
     completedAt: new Date().toISOString(),
   });
   existing.currentStep = existing.steps.length;
+  existing.updatedAt = new Date().toISOString();
+  saveCheckpoint(workspaceDir, existing);
+  return existing;
+}
+
+export function truncateCheckpoint(workspaceDir, runId, stepCount) {
+  const existing = loadCheckpoint(workspaceDir, runId);
+  if (!existing) return null;
+  const safeStepCount = Math.max(0, Math.min(stepCount, existing.steps.length));
+  existing.steps = existing.steps.slice(0, safeStepCount);
+  existing.currentStep = safeStepCount;
   existing.updatedAt = new Date().toISOString();
   saveCheckpoint(workspaceDir, existing);
   return existing;
