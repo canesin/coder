@@ -149,7 +149,7 @@ export default defineMachine({
             state.repoPath ?? input.repoPath ?? ".",
           );
           const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
-          ctx.agentPool.setRepoRoot(repoRoot);
+          await ctx.agentPool.setRepoRoot(repoRoot);
           ctx.log({
             event: "issue_draft_skipped",
             issue: input.issue,
@@ -185,7 +185,7 @@ export default defineMachine({
 
     // Update pool repo root
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
-    ctx.agentPool.setRepoRoot(repoRoot);
+    await ctx.agentPool.setRepoRoot(repoRoot);
 
     if (!existsSync(repoRoot))
       throw new Error(`Repo root does not exist: ${repoRoot}`);

@@ -568,9 +568,13 @@ test("runDevelopPipeline: terminal quality-review failure still invalidates stal
     const result = await runDevelopPipeline(opts, ctx);
     assert.equal(result.status, "failed");
 
+    // With maxMachineRetries: 0, retry feedback is not injected (no retry will follow)
     const critique = readFileSync(critiquePath, "utf8");
-    assert.match(critique, /## Retry Feedback/);
-    assert.match(critique, /tests failed: terminal case/);
+    assert.equal(
+      critique,
+      "# Existing critique\n",
+      "critique should be unchanged when no retries are configured",
+    );
 
     const backupKey = backupKeyFor(issue);
     const backupStatePath = path.join(

@@ -1,10 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
-  cpSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -18,7 +16,6 @@ import {
 import {
   checkDefaultBranchTracking,
   detectDefaultBranch,
-  detectRemoteType,
   getDefaultBranchRemoteName,
   isStaleUpstreamRefError,
 } from "../helpers.js";
@@ -36,18 +33,27 @@ import planningMachine from "../machines/develop/planning.machine.js";
 import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
 import { runPreflight } from "../preflight.js";
+import {
+  backupKeyFor,
+  prepareForIssue,
+  saveBackup,
+} from "../state/issue-backup.js";
 import { checkpointPathFor } from "../state/machine-state.js";
-import { ScratchpadPersistence } from "../state/persistence.js";
 import {
   loadLoopState,
   loadState,
-  loadStateFromPath,
   saveLoopState,
   saveState,
   statePathFor,
 } from "../state/workflow-state.js";
 import { buildIssueBranchName } from "../worktrees.js";
 import { runHooks, WorkflowRunner } from "./_base.js";
+import {
+  ensureCleanLoopStart,
+  fetchOpenPrBranches,
+  glabMrListArgs,
+  resetForNextIssue,
+} from "./develop-git.js";
 
 /**
  * Update the loop state heartbeat timestamp.
@@ -471,14 +477,25 @@ export async function runDevelopPipeline(opts, ctx) {
       maxRetries: maxMachineRetries,
       backoffMs: retryBackoffMs,
       ctx,
-      onFailedAttempt: async ({ result }) => {
+      onFailedAttempt: async ({ attempt, maxRetries, result }) => {
         const failed = findFailedMachineResult(result);
         if (failed?.machine !== "develop.quality_review") return;
-        await injectRetryFeedback(
-          ctx,
-          failed.machine,
-          failed.error || result.error || "",
-        );
+        // Only inject retry feedback when another attempt will follow.
+        // Always reset implemented=false and clean up state regardless.
+        if (attempt < maxRetries) {
+          await injectRetryFeedback(
+            ctx,
+            failed.machine,
+            failed.error || result.error || "",
+          );
+        } else {
+          // Terminal attempt: still reset implementation cache for cross-process recovery
+          const state = await loadState(ctx.workspaceDir);
+          if (state?.steps?.implemented) {
+            state.steps.implemented = false;
+            await saveState(ctx.workspaceDir, state);
+          }
+        }
         // Overwrite the onCheckpoint backup with implemented=false so a cross-process
         // restart after quality_review failure re-runs implementation, matching
         // same-process retry behavior.
@@ -631,577 +648,14 @@ const isInfraError = (text) =>
     String(text || ""),
   );
 
-/** Unstage, restore tracked files, and remove untracked files. Returns true only if all steps succeeded. */
-function discardWorktreeChanges(repoRoot) {
-  const resetRes = spawnSync("git", ["reset"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  if (resetRes.status !== 0) return false;
-
-  const diffRes = spawnSync("git", ["diff", "--name-only"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  if (diffRes.status !== 0) return false;
-  const hasTrackedChanges = !!(diffRes.stdout || "").trim();
-  if (hasTrackedChanges) {
-    const coRes = spawnSync("git", ["checkout", "--", "."], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    if (coRes.status !== 0) return false;
-  }
-
-  const cleanRes = spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  return cleanRes.status === 0;
-}
-
-// --- Step-level resume helpers ---
-//
-// Backup lifecycle:
-// - Created: when switching away from an in-progress issue (wrotePlan=true)
-// - Consumed: when resuming an issue (deleted after restore)
-// - Pruned: at loop startup (orphans for issues no longer in queue)
-// - Deleted: when an issue completes successfully, or on destructiveReset
-
-/** @internal Exported for testing */
-export function backupKeyFor(issue) {
-  const source = issue.source ?? "unknown";
-  const raw = (issue.repo_path ?? ".").trim() || ".";
-  const repoPart =
-    raw === "."
-      ? "root"
-      : createHash("sha256").update(raw).digest("hex").slice(0, 12);
-  return String(`${source}-${issue.id}-${repoPart}`).replace(
-    /[/\\:*?"<>|]/g,
-    "-",
-  );
-}
-
-/** Verifies that artifact files exist for each step flag set. If a step flag is true
- * but the corresponding file is missing (e.g. manually deleted), returns false —
- * resume will not occur and we start fresh. */
-function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
-  const artifactsDir =
-    artifactsDirOverride ?? path.join(workspaceDir, ".coder", "artifacts");
-  if (steps?.wroteIssue && !existsSync(path.join(artifactsDir, "ISSUE.md")))
-    return false;
-  if (steps?.wrotePlan && !existsSync(path.join(artifactsDir, "PLAN.md")))
-    return false;
-  if (
-    steps?.wroteCritique &&
-    !existsSync(path.join(artifactsDir, "PLANREVIEW.md"))
-  )
-    return false;
-  if (
-    steps?.reviewerCompleted &&
-    !existsSync(path.join(artifactsDir, "REVIEW_FINDINGS.md"))
-  )
-    return false;
-  return true;
-}
-
-function clearStateAndArtifacts(workspaceDir) {
-  const sp = statePathFor(workspaceDir);
-  if (existsSync(sp)) rmSync(sp, { force: true });
-  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  for (const name of [
-    "ISSUE.md",
-    "PLAN.md",
-    "PLANREVIEW.md",
-    "REVIEW_FINDINGS.md",
-  ]) {
-    const p = path.join(artifactsDir, name);
-    if (existsSync(p)) rmSync(p, { force: true });
-  }
-}
-
-function saveBackup(workspaceDir, state) {
-  if (!state?.selected) return;
-  const key = backupKeyFor({
-    ...state.selected,
-    repo_path: state.repoPath ?? state.selected?.repo_path ?? ".",
-  });
-  const backupDir = path.join(workspaceDir, ".coder", "backups", key);
-  mkdirSync(backupDir, { recursive: true });
-  const stateDest = path.join(backupDir, "state.json");
-  writeFileSync(stateDest, JSON.stringify(state, null, 2) + "\n", "utf8");
-  const srcArtifacts = path.join(workspaceDir, ".coder", "artifacts");
-  const destArtifacts = path.join(backupDir, "artifacts");
-  if (existsSync(srcArtifacts)) {
-    mkdirSync(destArtifacts, { recursive: true });
-    for (const name of [
-      "ISSUE.md",
-      "PLAN.md",
-      "PLANREVIEW.md",
-      "REVIEW_FINDINGS.md",
-    ]) {
-      const src = path.join(srcArtifacts, name);
-      if (existsSync(src))
-        cpSync(src, path.join(destArtifacts, name), { force: true });
-    }
-  }
-  if (state.scratchpadPath) {
-    const srcMd = path.join(workspaceDir, state.scratchpadPath);
-    if (existsSync(srcMd))
-      cpSync(srcMd, path.join(backupDir, "scratchpad.md"), { force: true });
-  }
-  // Do NOT backup scratchpad.db — it is shared across all issues. Restoring
-  // it would wipe other issues' scratchpad state. The per-issue .md file is enough.
-}
-
-async function restoreBackup(workspaceDir, backupDir, issue, ctx) {
-  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  mkdirSync(artifactsDir, { recursive: true });
-  const srcArtifacts = path.join(backupDir, "artifacts");
-  if (existsSync(srcArtifacts)) {
-    for (const name of [
-      "ISSUE.md",
-      "PLAN.md",
-      "PLANREVIEW.md",
-      "REVIEW_FINDINGS.md",
-    ]) {
-      const src = path.join(srcArtifacts, name);
-      if (existsSync(src))
-        cpSync(src, path.join(artifactsDir, name), { force: true });
-    }
-  }
-  const scratchpad = new ScratchpadPersistence({
-    workspaceDir,
-    scratchpadDir:
-      ctx.scratchpadDir ?? path.join(workspaceDir, ".coder", "scratchpad"),
-    sqlitePath: path.join(workspaceDir, ".coder", "scratchpad.db"),
-    sqliteSync: false,
-  });
-  const canonicalScratchpadPath = scratchpad.issueScratchpadPath(issue);
-  const backupMd = path.join(backupDir, "scratchpad.md");
-  if (existsSync(backupMd)) {
-    mkdirSync(path.dirname(canonicalScratchpadPath), { recursive: true });
-    cpSync(backupMd, canonicalScratchpadPath, { force: true });
-  }
-  // Do NOT restore scratchpad.db — it is shared. Restoring would overwrite
-  // other issues' scratchpad rows. The .md file is enough; DB will sync on use.
-  const restored = await loadStateFromPath(path.join(backupDir, "state.json"));
-  if (restored) {
-    if (existsSync(backupMd))
-      restored.scratchpadPath = path.relative(
-        workspaceDir,
-        canonicalScratchpadPath,
-      );
-    await saveState(workspaceDir, restored);
-  }
-}
-
-/** @internal Exported for testing */
-export async function prepareForIssue(workspaceDir, issue, ctx) {
-  if (ctx.config?.workflow?.resumeStepState === false) {
-    clearStateAndArtifacts(workspaceDir);
-    return;
-  }
-  const state = await loadState(workspaceDir).catch(() => null);
-  const normRepo = (p) => (p ?? ".").trim() || ".";
-  const primaryKey = backupKeyFor(issue);
-  const legacyKey =
-    normRepo(issue.repo_path) !== "."
-      ? backupKeyFor({ ...issue, repo_path: "." })
-      : null;
-
-  for (const key of [primaryKey, legacyKey].filter(Boolean)) {
-    const backupDir = path.join(workspaceDir, ".coder", "backups", key);
-    if (!existsSync(path.join(backupDir, "state.json"))) continue;
-
-    const restored = await loadStateFromPath(
-      path.join(backupDir, "state.json"),
-    ).catch(() => null);
-    const backupArtifactsDir = path.join(backupDir, "artifacts");
-    const repoMatch =
-      normRepo(restored?.repoPath ?? restored?.selected?.repo_path) ===
-      normRepo(issue.repo_path);
-    if (
-      restored?.selected?.id === issue.id &&
-      restored?.selected?.source === issue.source &&
-      repoMatch &&
-      artifactConsistent(workspaceDir, restored.steps, backupArtifactsDir)
-    ) {
-      await restoreBackup(workspaceDir, backupDir, issue, ctx);
-      rmSync(backupDir, { recursive: true, force: true });
-      ctx.log({
-        event: "loop_resume_detected",
-        issueId: issue.id,
-        from: "backup",
-      });
-      return;
-    }
-  }
-  const repoMatch =
-    normRepo(state?.repoPath ?? state?.selected?.repo_path) ===
-    normRepo(issue.repo_path);
-  if (
-    state?.selected?.id === issue.id &&
-    state?.selected?.source === issue.source &&
-    repoMatch &&
-    artifactConsistent(workspaceDir, state.steps)
-  ) {
-    ctx.log({
-      event: "loop_resume_detected",
-      issueId: issue.id,
-      from: "current",
-    });
-    return;
-  }
-  if (state?.selected && state?.steps?.wrotePlan) {
-    saveBackup(workspaceDir, state);
-  }
-  clearStateAndArtifacts(workspaceDir);
-}
-
-/**
- * Ensure the workspace is in a known-clean state before starting the loop.
- * Cleans up stale per-issue state and artifacts that a previous crashed or
- * interrupted run may have left behind. Does NOT touch loop-state.json so
- * issue-level resume information is preserved.
- *
- * @param {object} [opts] - Optional. When opts.ctx is not provided (old callers), uses legacy behavior (always delete state/artifacts).
- * @param {object} [opts.ctx] - Workflow context (config, etc.)
- * @param {Array} [opts.issues] - Current issue queue for backup pruning
- * @param {boolean} [opts.destructiveReset] - When true, delete state, artifacts, and all backups
- */
-export function ensureCleanLoopStart(
-  workspaceDir,
-  repoRoot,
-  defaultBranch,
-  log,
-  knownBranches = new Set(),
-  opts = {},
-) {
-  const cleaned = {
-    state: false,
-    artifacts: false,
-    branch: false,
-    wipCommitted: false,
-    worktree: false,
-  };
-
-  const ctx = opts.ctx;
-  const destructiveReset = opts.destructiveReset === true;
-  const resumeEnabled =
-    ctx && ctx.config?.workflow?.resumeStepState !== false && !destructiveReset;
-
-  // 1. Delete stale per-issue state and artifacts (or preserve when resume enabled)
-  if (!resumeEnabled) {
-    const sp = statePathFor(workspaceDir);
-    if (existsSync(sp)) cleaned.state = true;
-    const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-    for (const name of [
-      "ISSUE.md",
-      "PLAN.md",
-      "PLANREVIEW.md",
-      "REVIEW_FINDINGS.md",
-    ]) {
-      if (existsSync(path.join(artifactsDir, name))) {
-        cleaned.artifacts = true;
-        break;
-      }
-    }
-    clearStateAndArtifacts(workspaceDir);
-  } else {
-    log({ event: "loop_startup_resume_preserved" });
-  }
-
-  // 2. destructiveReset: delete all backups
-  if (destructiveReset) {
-    const backupsDir = path.join(workspaceDir, ".coder", "backups");
-    if (existsSync(backupsDir)) {
-      rmSync(backupsDir, { recursive: true, force: true });
-    }
-  }
-  // 3. Prune orphan backups (issues no longer in queue)
-  else if (resumeEnabled && opts.issues && Array.isArray(opts.issues)) {
-    const validKeys = new Set();
-    const normRepo = (p) => (p ?? ".").trim() || ".";
-    for (const i of opts.issues) {
-      validKeys.add(backupKeyFor(i));
-      if (normRepo(i.repo_path) !== ".") {
-        validKeys.add(backupKeyFor({ ...i, repo_path: "." }));
-      }
-    }
-    const backupsDir = path.join(workspaceDir, ".coder", "backups");
-    if (existsSync(backupsDir)) {
-      try {
-        const entries = readdirSync(backupsDir, { withFileTypes: true });
-        for (const e of entries) {
-          if (e.isDirectory() && !validKeys.has(e.name))
-            rmSync(path.join(backupsDir, e.name), {
-              recursive: true,
-              force: true,
-            });
-        }
-      } catch {
-        // Best-effort prune
-      }
-    }
-  }
-
-  // 3b. Prune orphan checkpoints (runIds no longer in issue queue)
-  if (resumeEnabled && opts.issues && Array.isArray(opts.issues)) {
-    const validRunIds = new Set(
-      opts.issues.map((q) => q?.lastFailedRunId).filter(Boolean),
-    );
-    const coderDir = path.join(workspaceDir, ".coder");
-    if (existsSync(coderDir)) {
-      try {
-        const entries = readdirSync(coderDir, { withFileTypes: true });
-        for (const e of entries) {
-          if (
-            e.isFile() &&
-            e.name.startsWith("checkpoint-") &&
-            e.name.endsWith(".json")
-          ) {
-            const runId = e.name.slice("checkpoint-".length, -".json".length);
-            if (!validRunIds.has(runId))
-              rmSync(path.join(coderDir, e.name), { force: true });
-          }
-        }
-      } catch {
-        // Best-effort prune
-      }
-    }
-  }
-
-  // 4. Ensure git is on the default branch
-  const branchRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  if (branchRes.status !== 0) {
-    const err = (branchRes.stderr || "").trim().slice(0, 200);
-    log({
-      event: "loop_startup_cleanup_failed",
-      step: "detect_branch",
-      error: err,
-    });
-    throw new Error(
-      `Loop startup cleanup failed: could not detect current branch: ${err}`,
-    );
-  }
-  const currentBranch = (branchRes.stdout || "").trim();
-  if (currentBranch && currentBranch !== defaultBranch) {
-    const wipStatus = spawnSync("git", ["status", "--porcelain"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    const hasDirty = !!(wipStatus.stdout || "").trim();
-
-    if (hasDirty && knownBranches.has(currentBranch)) {
-      // Agent-managed branch from a prior run: preserve uncommitted WIP
-      const addRes = spawnSync("git", ["add", "-A"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
-      if (addRes.status !== 0) {
-        throw new Error(
-          `Loop startup cleanup failed: git add failed: ${(addRes.stderr || "").trim().slice(0, 200)}`,
-        );
-      }
-      const commitRes = spawnSync(
-        "git",
-        ["commit", "-m", `wip: interrupted work on ${currentBranch}`],
-        { cwd: repoRoot, encoding: "utf8" },
-      );
-      if (commitRes.status === 0) {
-        cleaned.wipCommitted = true;
-      } else {
-        throw new Error(
-          `Loop startup cleanup failed: could not preserve WIP on ${currentBranch} (commit failed): ${(commitRes.stderr || "").trim().slice(0, 150)}`,
-        );
-      }
-    } else if (hasDirty) {
-      const discardOk = discardWorktreeChanges(repoRoot);
-      if (!discardOk) {
-        log({
-          event: "loop_startup_cleanup_failed",
-          step: "discard_unknown_branch",
-          error: "could not discard worktree",
-        });
-        throw new Error(
-          "Loop startup cleanup failed: could not discard worktree on unknown branch",
-        );
-      }
-    }
-
-    const coRes = spawnSync("git", ["checkout", defaultBranch], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    if (coRes.status !== 0) {
-      const err = (coRes.stderr || "").trim().slice(0, 200);
-      log({
-        event: "loop_startup_cleanup_failed",
-        step: "checkout_default_branch",
-        error: err,
-      });
-      throw new Error(
-        `Loop startup cleanup failed: could not checkout ${defaultBranch}: ${err}`,
-      );
-    }
-    cleaned.branch = true;
-  }
-
-  // 4. Clean any remaining dirty files on the default branch
-  const status = spawnSync("git", ["status", "--porcelain"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  const dirtyLines = (status.stdout || "")
-    .split("\n")
-    .filter((l) => l.trim() && !l.slice(3).startsWith(".coder/"));
-  if (dirtyLines.length > 0) {
-    const ok = discardWorktreeChanges(repoRoot);
-    if (!ok) {
-      log({
-        event: "loop_startup_cleanup_failed",
-        step: "clean_worktree",
-        error: "discardWorktreeChanges failed",
-      });
-      throw new Error("Loop startup cleanup failed: could not clean worktree");
-    }
-    cleaned.worktree = true;
-  }
-
-  if (
-    cleaned.state ||
-    cleaned.artifacts ||
-    cleaned.branch ||
-    cleaned.wipCommitted ||
-    cleaned.worktree
-  ) {
-    log({
-      event: "loop_startup_cleanup",
-      ...cleaned,
-      ...(cleaned.branch && { previousBranch: currentBranch }),
-    });
-  }
-}
-
-/**
- * Build args for glab mr list. Exported for testing.
- * Per docs.gitlab.com/cli/mr/list: default is open MRs; --state is not a valid flag.
- * @returns {string[]}
- */
-export function glabMrListArgs() {
-  return ["mr", "list", "--output", "json"];
-}
-
-/**
- * Fetch open PR/MR branches and their diff stats from the hosting platform.
- * Returns an array of { branch, issueId, title, diffStat } suitable for
- * activeBranches. Best-effort: returns [] on failure.
- *
- * @param {string} repoRoot
- * @param {string} defaultBranch
- * @param {(e: object) => void} log
- * @returns {Array<{ branch: string, issueId: string, title: string, diffStat: string }>}
- */
-export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
-  try {
-    const platform = detectRemoteType(repoRoot);
-    let prs;
-
-    if (platform === "gitlab") {
-      const res = spawnSync("glab", glabMrListArgs(), {
-        cwd: repoRoot,
-        encoding: "utf8",
-        timeout: 15000,
-      });
-      if (res.status !== 0 || !res.stdout) {
-        if (log)
-          log({
-            event: "open_prs_fetch_failed",
-            error: (res.stderr || "glab failed").trim(),
-          });
-        return [];
-      }
-      const mrs = JSON.parse(res.stdout);
-      prs = (Array.isArray(mrs) ? mrs : []).map((mr) => ({
-        branch: mr.source_branch,
-        id: `!${mr.iid}`,
-        title: mr.title || "",
-        fetchRef: `refs/merge-requests/${mr.iid}/head`,
-      }));
-    } else {
-      const res = spawnSync(
-        "gh",
-        [
-          "pr",
-          "list",
-          "--state",
-          "open",
-          "--json",
-          "headRefName,title,number",
-          "--limit",
-          "50",
-        ],
-        { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
-      );
-      if (res.status !== 0 || !res.stdout) {
-        if (log)
-          log({
-            event: "open_prs_fetch_failed",
-            error: (res.stderr || "gh failed").trim(),
-          });
-        return [];
-      }
-      const items = JSON.parse(res.stdout);
-      prs = (Array.isArray(items) ? items : []).map((pr) => ({
-        branch: pr.headRefName,
-        id: `#${pr.number}`,
-        title: pr.title || "",
-        fetchRef: `pull/${pr.number}/head`,
-      }));
-    }
-
-    const result = [];
-    for (const pr of prs) {
-      // Use the platform-specific PR ref to fetch; this works for both
-      // same-repo and fork-based PRs without needing the branch on origin.
-      const localRef = `pr-fetch/${pr.id}`;
-      const fetchRes = spawnSync(
-        "git",
-        ["fetch", "origin", `${pr.fetchRef}:${localRef}`],
-        { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
-      );
-      if (fetchRes.status !== 0) continue;
-      const stat = spawnSync(
-        "git",
-        ["diff", "--stat", `${defaultBranch}...${localRef}`],
-        { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
-      );
-      if (stat.status !== 0) continue;
-      const diffStat = (stat.stdout || "").trim();
-      if (!diffStat) continue;
-      result.push({
-        branch: pr.branch,
-        issueId: pr.id,
-        title: pr.title,
-        diffStat,
-      });
-    }
-
-    if (log) {
-      log({ event: "open_prs_fetched", platform, count: result.length });
-    }
-    return result;
-  } catch (err) {
-    if (log) {
-      log({ event: "open_prs_fetch_failed", error: err.message });
-    }
-    return [];
-  }
-}
+// Re-export for tests that import from develop.workflow.js
+export { backupKeyFor, prepareForIssue };
+export {
+  ensureCleanLoopStart,
+  fetchOpenPrBranches,
+  glabMrListArgs,
+  resetForNextIssue,
+};
 
 /**
  * Run the autonomous develop loop — process multiple issues.
@@ -2318,122 +1772,6 @@ function hasTrackedFiles(repoRoot) {
     stdio: ["pipe", "pipe", "pipe"],
   });
   return res.status === 0;
-}
-
-/**
- * Reset workspace for next issue in autonomous loop.
- */
-export async function resetForNextIssue(
-  workspaceDir,
-  repoPath,
-  { destructiveReset = false, issueStatus = "completed" } = {},
-) {
-  // Delete per-issue state
-  const statePath = statePathFor(workspaceDir);
-  if (existsSync(statePath)) rmSync(statePath, { force: true });
-
-  // Delete workflow artifacts
-  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  for (const name of [
-    "ISSUE.md",
-    "PLAN.md",
-    "PLANREVIEW.md",
-    "REVIEW_FINDINGS.md",
-  ]) {
-    const p = path.join(artifactsDir, name);
-    if (existsSync(p)) rmSync(p, { force: true });
-  }
-
-  // Git cleanup
-  const repoRoot = resolveRepoRoot(workspaceDir, repoPath);
-  if (existsSync(repoRoot)) {
-    const preStatus = spawnSync("git", ["status", "--porcelain"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    const hasDirtyFiles = !!(preStatus.stdout || "").trim();
-
-    if (
-      hasDirtyFiles &&
-      (issueStatus === "failed" || issueStatus === "skipped")
-    ) {
-      // Preserve partial work on the issue branch for failed/skipped issues.
-      const addRes = spawnSync("git", ["add", "-A"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
-      if (addRes.status !== 0) {
-        throw new Error(
-          `resetForNextIssue: git add failed: ${(addRes.stderr || "").trim().slice(0, 200)}`,
-        );
-      }
-      const commitRes = spawnSync(
-        "git",
-        ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
-        { cwd: repoRoot, encoding: "utf8" },
-      );
-      if (commitRes.status !== 0) {
-        throw new Error(
-          `resetForNextIssue: could not preserve WIP (commit failed): ${(commitRes.stderr || "").trim().slice(0, 150)}`,
-        );
-      }
-    } else if (hasDirtyFiles) {
-      if (!discardWorktreeChanges(repoRoot)) {
-        throw new Error(
-          "resetForNextIssue: could not discard worktree changes",
-        );
-      }
-    }
-
-    const defaultBranch = detectDefaultBranch(repoRoot);
-    const checkoutRes = spawnSync("git", ["checkout", defaultBranch], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    if (checkoutRes.status !== 0) {
-      throw new Error(
-        `resetForNextIssue: git checkout ${defaultBranch} failed: ${(checkoutRes.stderr || "").trim().slice(0, 200)}`,
-      );
-    }
-
-    // Always remove untracked files after switching to the default branch
-    // to prevent them from leaking into the next issue's workspace.
-    const cleanRes = spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
-    if (cleanRes.status !== 0) {
-      throw new Error(
-        `resetForNextIssue: git clean failed: ${(cleanRes.stderr || "").trim().slice(0, 200)}`,
-      );
-    }
-
-    // Always clean untracked files after switching branches so the next
-    // issue starts with a pristine working tree.
-    if (destructiveReset) {
-      // Redundant with discardWorktreeChanges + git clean above when hasDirtyFiles,
-      // but ensures staged/worktree match HEAD when we skipped discard (no dirty files).
-      // Skip when repo has no tracked files (e.g. empty initial commit) — restore
-      // would fail with "pathspec '.' did not match any file(s) known to git".
-      const lsRes = spawnSync("git", ["ls-files"], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
-      const hasTrackedFiles = !!(lsRes.stdout || "").trim();
-      if (hasTrackedFiles) {
-        const restoreRes = spawnSync(
-          "git",
-          ["restore", "--staged", "--worktree", "."],
-          { cwd: repoRoot, encoding: "utf8" },
-        );
-        if (restoreRes.status !== 0) {
-          throw new Error(
-            `resetForNextIssue: git restore failed: ${(restoreRes.stderr || "").trim().slice(0, 200)}`,
-          );
-        }
-      }
-    }
-  }
 }
 
 /**

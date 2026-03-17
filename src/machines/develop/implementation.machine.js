@@ -179,9 +179,9 @@ FORBIDDEN patterns:
 - Do not bypass tests
 - Use the repo's normal commands (lint, format, test)`;
 
-    async function captureCodexSessionId(runStartTimeMs) {
+    async function captureCodexSessionId(runStartTimeMs, resultObj) {
       let sid = null;
-      if (res?.threadId) sid = res.threadId;
+      if (resultObj?.threadId) sid = resultObj.threadId;
       if (!sid) sid = await discoverCodexSessionId(repoRoot, runStartTimeMs);
       if (!sid) sid = null;
       state[sessionKey] = sid;
@@ -212,7 +212,7 @@ FORBIDDEN patterns:
             ...(codexWithoutSession && { execWithJsonCapture: true }),
           });
           if (codexWithoutSession) {
-            await captureCodexSessionId(retryRunStart);
+            await captureCodexSessionId(retryRunStart, res);
           }
         } catch (retryErr) {
           if (codexWithoutSession) {
@@ -233,7 +233,7 @@ FORBIDDEN patterns:
     }
 
     if (codexWithoutSession && !hadSessionBefore) {
-      await captureCodexSessionId(runStartTimeMs);
+      await captureCodexSessionId(runStartTimeMs, res);
     }
     requireExitZero(programmerName, "implementation failed", res);
 
