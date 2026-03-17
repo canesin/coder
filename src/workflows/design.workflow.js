@@ -8,9 +8,9 @@ import { WorkflowRunner } from "./_base.js";
 
 export {
   intentCaptureMachine,
+  specExportMachine,
   uiGenerationMachine,
   uiRefinementMachine,
-  specExportMachine,
 };
 
 export const designMachines = [

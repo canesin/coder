@@ -70,13 +70,13 @@ async function updateHeartbeat(ctx) {
 
 // Re-export machines for direct use
 export {
-  issueListMachine,
+  implementationMachine,
   issueDraftMachine,
+  issueListMachine,
   planningMachine,
   planReviewMachine,
-  implementationMachine,
-  qualityReviewMachine,
   prCreationMachine,
+  qualityReviewMachine,
 };
 // ensureCleanLoopStart and resetForNextIssue are exported at their definitions
 
@@ -649,11 +649,12 @@ const isInfraError = (text) =>
   );
 
 // Re-export for tests that import from develop.workflow.js
-export { backupKeyFor, prepareForIssue };
 export {
+  backupKeyFor,
   ensureCleanLoopStart,
   fetchOpenPrBranches,
   glabMrListArgs,
+  prepareForIssue,
   resetForNextIssue,
 };
 
