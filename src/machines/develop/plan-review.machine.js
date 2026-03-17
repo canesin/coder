@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { runPlanreview, stripAgentNoise } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { withSessionResume } from "./_session.js";
 import {
   artifactPaths,
   maybeCheckpointWip,
@@ -119,62 +119,20 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
-      // Session only for agents that support create/resume (claude, codex with --session).
-      // Gemini uses native runPlanreview above; codex without --session: non-resumable.
-      const planReviewSupportsSession =
-        planReviewerName === "claude" ||
-        (planReviewerName === "codex" &&
-          planReviewerAgent.codexSessionSupported?.() === true);
-      const planReviewSessionKey = "planReviewSessionId";
-      // Agent-change invalidation: always clear when agent changes (including resumable -> non-resumable).
-      if (
-        state.planReviewAgentName &&
-        state.planReviewAgentName !== planReviewerName
-      ) {
-        delete state[planReviewSessionKey];
-        state.planReviewAgentName = planReviewerName;
-        await saveState(ctx.workspaceDir, state);
-      }
-      let planReviewSessionOpts = {};
-      if (planReviewSupportsSession) {
-        const hadPlanReviewSession = !!state[planReviewSessionKey];
-        if (!state[planReviewSessionKey]) {
-          state[planReviewSessionKey] = randomUUID();
-          state.planReviewAgentName = planReviewerName;
-          await saveState(ctx.workspaceDir, state);
-        }
-        planReviewSessionOpts = hadPlanReviewSession
-          ? { resumeId: state[planReviewSessionKey] }
-          : { sessionId: state[planReviewSessionKey] };
-      }
-
-      let reviewRes;
-      try {
-        reviewRes = await planReviewerAgent.execute(reviewPrompt, {
-          ...planReviewSessionOpts,
-          timeoutMs: ctx.config.workflow.timeouts.planReview,
-        });
-      } catch (err) {
-        if (
-          planReviewSupportsSession &&
-          err.name === "CommandFatalStderrError" &&
-          err.category === "auth" &&
-          planReviewSessionOpts.resumeId
-        ) {
-          ctx.log({
-            event: "session_resume_failed",
-            sessionId: state[planReviewSessionKey],
-          });
-          state[planReviewSessionKey] = randomUUID();
-          await saveState(ctx.workspaceDir, state);
-          reviewRes = await planReviewerAgent.execute(reviewPrompt, {
-            sessionId: state[planReviewSessionKey],
+      const reviewRes = await withSessionResume({
+        agentName: planReviewerName,
+        agent: planReviewerAgent,
+        state,
+        sessionKey: "planReviewSessionId",
+        agentNameKey: "planReviewAgentName",
+        workspaceDir: ctx.workspaceDir,
+        log: ctx.log,
+        executeFn: (sessionOpts) =>
+          planReviewerAgent.execute(reviewPrompt, {
+            ...sessionOpts,
             timeoutMs: ctx.config.workflow.timeouts.planReview,
-          });
-        } else {
-          throw err;
-        }
-      }
+          }),
+      });
       requireExitZero(planReviewerName, "plan review failed", reviewRes);
 
       if (!existsSync(paths.critique)) {

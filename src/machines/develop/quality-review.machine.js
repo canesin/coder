@@ -12,6 +12,7 @@ import {
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { withSessionResume } from "./_session.js";
 import {
   artifactPaths,
   ensureBranch,
@@ -407,60 +408,21 @@ export default defineMachine({
 
         ctx.log({ event: "programmer_fix", round, agent: programmerName });
 
-        const programmerSupportsSession =
-          programmerName === "claude" ||
-          (programmerName === "codex" &&
-            programmerAgent.codexSessionSupported?.() === true);
-        const fixSessionKey = "programmerFixSessionId";
-        let fixSessionOpts = {};
-        // Agent-change invalidation: always clear when agent changes (including resumable -> non-resumable).
-        if (
-          state.programmerFixAgentName &&
-          state.programmerFixAgentName !== programmerName
-        ) {
-          delete state[fixSessionKey];
-          state.programmerFixAgentName = programmerName;
-          await saveState(ctx.workspaceDir, state);
-        }
-        if (programmerSupportsSession) {
-          const hadFixSession = !!state[fixSessionKey];
-          if (!state[fixSessionKey]) {
-            state[fixSessionKey] = randomUUID();
-            state.programmerFixAgentName = programmerName;
-            await saveState(ctx.workspaceDir, state);
-          }
-          fixSessionOpts = hadFixSession
-            ? { resumeId: state[fixSessionKey] }
-            : { sessionId: state[fixSessionKey] };
-        }
-
         const fixPrompt = buildProgrammerFixPrompt(paths, round);
-        let fixRes;
-        try {
-          fixRes = await programmerAgent.execute(fixPrompt, {
-            ...fixSessionOpts,
-            timeoutMs: ctx.config.workflow.timeouts.programmerFix,
-          });
-        } catch (err) {
-          if (
-            programmerSupportsSession &&
-            err.name === "CommandFatalStderrError" &&
-            err.category === "auth" &&
-            state[fixSessionKey]
-          ) {
-            ctx.log({
-              event: "session_resume_failed",
-              sessionId: state[fixSessionKey],
-            });
-            state[fixSessionKey] = null;
-            await saveState(ctx.workspaceDir, state);
-            fixRes = await programmerAgent.execute(fixPrompt, {
+        const fixRes = await withSessionResume({
+          agentName: programmerName,
+          agent: programmerAgent,
+          state,
+          sessionKey: "programmerFixSessionId",
+          agentNameKey: "programmerFixAgentName",
+          workspaceDir: ctx.workspaceDir,
+          log: ctx.log,
+          executeFn: (sessionOpts) =>
+            programmerAgent.execute(fixPrompt, {
+              ...sessionOpts,
               timeoutMs: ctx.config.workflow.timeouts.programmerFix,
-            });
-          } else {
-            throw err;
-          }
-        }
+            }),
+        });
         requireExitZero(programmerName, `fix round ${round}`, fixRes);
 
         state.steps.programmerFixedRound = round;
