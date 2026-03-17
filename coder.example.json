@@ -52,6 +52,13 @@
     "issueSource": "github",
     "localIssuesDir": "",
     "maxPlanRevisions": 3,
+    "resumeStepState": true,
+    "conflictDetection": true,
+    "maxMachineRetries": 2,
+    "retryBackoffMs": 5000,
+    "preflight": {
+      "checks": []
+    },
     "hooks": [],
     "timeouts": {
       "issueSelection": 600000,

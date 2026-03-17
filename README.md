@@ -185,7 +185,8 @@ All state lives under `.coder/` (gitignored):
 | `workflow-state.json` | Per-issue step completion |
 | `loop-state.json` | Multi-issue develop queue, loop status, heartbeat |
 | `checkpoint-{runId}.json` | Pipeline step checkpoints per run |
-| `artifacts/` | `ISSUE.md`, `PLAN.md`, `PLANREVIEW.md` |
+| `artifacts/` | `ISSUE.md`, `PLAN.md`, `PLANREVIEW.md`, `REVIEW_FINDINGS.md` |
+| `backups/` | Per-issue state snapshots for step-level resume across issues |
 | `steering/` | Persistent project context (`product.md`, `structure.md`, `tech.md`) |
 | `scratchpad/` | Research pipeline checkpoints |
 | `logs/*.jsonl` | Structured event logs (tagged with `runId`) |
@@ -220,6 +221,17 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
     "localIssuesDir": ".coder/local-issues",
     "wip": { "push": true, "autoCommit": true },
     "maxPlanRevisions": 3,
+    "resumeStepState": true,       // Preserve state/artifacts across issue retries (false = fresh start)
+    "conflictDetection": true,     // Detect conflicts with open PR branches during planning
+    "maxMachineRetries": 2,        // Max retries for Phase 3 machines (impl → review → PR)
+    "retryBackoffMs": 5000,        // Backoff between Phase 3 retries
+    // Pre-workflow health checks (tcp, command, or url)
+    "preflight": {
+      "checks": [
+        { "type": "tcp", "host": "127.0.0.1", "port": 5432 },
+        { "type": "command", "cmd": "docker ps" }
+      ]
+    },
     // Post-step hooks (shell commands triggered on workflow events)
     "hooks": [
       { "on": "machine_complete", "machine": "implementation", "run": "npm run lint" }
