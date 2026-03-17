@@ -172,6 +172,10 @@ Structure:
    - List existing test files that validate related behavior
    - Describe specific test cases to write (inputs, expected outputs, edge cases)
    - Specify the test command to run
+   - **Red/Green TDD** (when ISSUE.md difficulty >= 3 or change is non-trivial):
+     - RED phase: List the exact test files to create/modify and the failing assertions to write BEFORE implementation. Each test should target one requirement from ISSUE.md. Describe the expected failure (e.g. "ReferenceError: parseConfig is not defined", "Expected 3 but got undefined").
+     - GREEN phase: Which files to implement and in what order to make tests pass incrementally.
+     - If ISSUE.md difficulty < 3 and the change is straightforward, note that test-after is acceptable.
 7. **Out of Scope**: Explicitly list what this change does NOT include
 
 ## Complexity Budget
