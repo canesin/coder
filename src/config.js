@@ -250,6 +250,8 @@ export const CoderConfigSchema = z.object({
       resumeStepState: z.boolean().default(true),
       /** When true, treat connection-refused–style errors as infra (deferred). Default false to avoid misclassifying product bugs. */
       infraDetection: z.boolean().default(false),
+      maxMachineRetries: z.number().int().min(0).default(2),
+      retryBackoffMs: z.number().int().min(0).default(5000),
       maxPlanRevisions: z.number().int().min(1).max(10).default(3),
       issueSource: z
         .enum(["github", "linear", "gitlab", "local"])
