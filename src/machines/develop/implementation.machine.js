@@ -122,7 +122,9 @@ Build upon existing correct work. Do not duplicate or revert it.
 ## Step 1: Address Critique
 Update ${paths.plan} to address any Critical Issues or Over-Engineering Concerns from the critique.
 If critique says REJECT, revise the plan significantly before proceeding.
-${useRedGreen ? `
+${
+  useRedGreen
+    ? `
 ## Step 2: RED — Write Failing Tests First
 This is a difficulty ${difficulty} issue. Use Red/Green TDD.
 
@@ -142,7 +144,8 @@ Implement the feature following the plan. Your goal: make every failing test fro
 - Work incrementally — implement one piece, run tests, see progress
 - Do NOT weaken assertions, skip tests, or reduce coverage to get green
 - Do NOT modify the tests you wrote in Step 2 to make them pass (fix the implementation, not the tests)
-- When all tests pass, you are done with this step` : `
+- When all tests pass, you are done with this step`
+    : `
 ## Step 2: Write Tests
 Before writing implementation code:
 1. Read the Testing Strategy from ${paths.issue} and the Testing section from ${paths.plan}
@@ -151,7 +154,8 @@ Before writing implementation code:
 4. Only then proceed to Step 3
 
 ## Step 3: Implement
-Implement the feature following the plan. Make the failing tests pass without shortcuts — do not weaken assertions, skip tests, or reduce coverage to get green.`}
+Implement the feature following the plan. Make the failing tests pass without shortcuts — do not weaken assertions, skip tests, or reduce coverage to get green.`
+}
 
 Skip Steps 2-3 test phases ONLY when the change is purely non-behavioral (config files, documentation, pure refactors with no new behavior). For refactors, verify existing tests still pass before and after.
 

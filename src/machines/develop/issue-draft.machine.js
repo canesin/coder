@@ -339,10 +339,14 @@ If you wrote ISSUE.md to disk via a tool, also output its full contents to stdou
    - **Existing tests**: Which test files cover related behavior (paths + what they test)
    - **Test patterns**: The repo's test framework, conventions, assertion style
    - **New test cases**: Concrete test cases to write — inputs, expected outputs, edge cases
-   ${(input.issue.difficulty ?? 3) >= 3 ? `- **Red/Green TDD**: This is a difficulty ${input.issue.difficulty ?? 3} issue — use Red/Green TDD.
+   ${
+     (input.issue.difficulty ?? 3) >= 3
+       ? `- **Red/Green TDD**: This is a difficulty ${input.issue.difficulty ?? 3} issue — use Red/Green TDD.
      List specific failing assertions the implementation agent should write BEFORE coding:
      - Test name, assertion, and expected failure reason (missing function, wrong return value, etc.)
-     - These form the RED phase — they must fail for the right reasons before implementation begins` : `- For this low-complexity issue, a lightweight test-after approach is acceptable if a failing-test-first approach isn't practical`}
+     - These form the RED phase — they must fail for the right reasons before implementation begins`
+       : `- For this low-complexity issue, a lightweight test-after approach is acceptable if a failing-test-first approach isn't practical`
+   }
 6. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
 7. **Out of Scope**: What this does NOT include
 `;
