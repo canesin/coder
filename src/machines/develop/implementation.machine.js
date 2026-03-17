@@ -199,7 +199,7 @@ FORBIDDEN patterns:
         state[sessionKey]
       ) {
         ctx.log({
-          event: "session_resume_failed",
+          event: "session_auth_failed",
           sessionId: state[sessionKey],
         });
         state[sessionKey] = null;

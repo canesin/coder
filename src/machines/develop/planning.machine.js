@@ -263,14 +263,16 @@ ${branchSections}`;
             timeoutMs: ctx.config.workflow.timeouts.planning,
           });
         } catch (err) {
-          if (
-            err.name === "CommandFatalStderrError" &&
-            err.category === "auth" &&
-            sessionOpts.resumeId
-          ) {
+          const isAuthError =
+            err.name === "CommandFatalStderrError" && err.category === "auth";
+          const canRetryWithFreshSession =
+            isAuthError &&
+            (sessionOpts.resumeId || sessionOpts.sessionId);
+          if (canRetryWithFreshSession) {
             ctx.log({
-              event: "session_resume_failed",
+              event: "session_auth_failed",
               sessionId: state.planningSessionId,
+              wasCreating: !!sessionOpts.sessionId,
             });
             state.planningSessionId = randomUUID();
             await saveState(ctx.workspaceDir, state);

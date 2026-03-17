@@ -361,7 +361,7 @@ export default defineMachine({
               reviewSessionOpts.resumeId
             ) {
               ctx.log({
-                event: "session_resume_failed",
+                event: "session_auth_failed",
                 sessionId: state.reviewerSessionId,
               });
               state.reviewerSessionId = randomUUID();

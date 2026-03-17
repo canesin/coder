@@ -71,15 +71,17 @@ export async function withSessionResume({
   try {
     return await executeFn(sessionOpts);
   } catch (err) {
-    if (
+    const isAuthError =
       isSupported &&
       err.name === "CommandFatalStderrError" &&
-      err.category === "auth" &&
-      sessionOpts.resumeId
-    ) {
+      err.category === "auth";
+    const canRetryWithFreshSession =
+      isAuthError && (sessionOpts.resumeId || sessionOpts.sessionId);
+    if (canRetryWithFreshSession) {
       log({
-        event: "session_resume_failed",
+        event: "session_auth_failed",
         sessionId: state[sessionKey],
+        wasCreating: !!sessionOpts.sessionId,
       });
       state[sessionKey] = randomUUID();
       await saveState(workspaceDir, state);

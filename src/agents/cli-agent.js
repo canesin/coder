@@ -18,13 +18,15 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
   { pattern: "rejected stored OAuth token", category: "auth" },
   { pattern: "Please re-authenticate using: /mcp auth", category: "auth" },
 ];
-const CLAUDE_RESUME_FAILURE_PATTERNS = [
+/** @internal Exported for testing */
+export const CLAUDE_RESUME_FAILURE_PATTERNS = [
   { pattern: "No conversation found with session ID", category: "auth" },
   { pattern: "Conversation not found", category: "auth" },
   { pattern: "Session not found", category: "auth" },
   { pattern: "Invalid session ID", category: "auth" },
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
+  { pattern: "is already in use", category: "auth" }, // "Session ID <uuid> is already in use" (claude-code #5524)
 ];
 const CODEX_RESUME_FAILURE_PATTERNS = [
   { pattern: "session not found", category: "auth" },
