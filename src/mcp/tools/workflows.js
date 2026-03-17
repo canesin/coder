@@ -17,6 +17,7 @@ import {
   saveLoopState,
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
+  TERMINAL_RUN_STATUSES,
 } from "../../state/workflow-state.js";
 import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
@@ -145,6 +146,8 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
       });
     else if (status === "completed")
       actorEntry.actor.send({ type: "COMPLETE", at });
+    else if (status === "blocked")
+      actorEntry.actor.send({ type: "BLOCKED", at });
     actorEntry.actor.stop();
     workflowActors.delete(runId);
   } else {
@@ -169,10 +172,20 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   return true;
 }
 
-async function readWorkflowStatus(workspaceDir) {
+export async function readWorkflowStatus(workspaceDir) {
   const loopState = await loadLoopState(workspaceDir);
   const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
+
+  // Status contract: when currentStage is develop_starting, we are pre-merge.
+  // Suppress stale failed/skipped entries so status shows a fresh retryable view.
+  // Scoped to develop only; other workflows may have different semantics.
+  const isPreMerge = loopState.currentStage === "develop_starting";
+  const queueForStatus = isPreMerge
+    ? loopState.issueQueue.filter(
+        (e) => e.status !== "failed" && e.status !== "skipped",
+      )
+    : loopState.issueQueue;
 
   const counts = {
     total: 0,
@@ -182,7 +195,7 @@ async function readWorkflowStatus(workspaceDir) {
     pending: 0,
     inProgress: 0,
   };
-  for (const entry of loopState.issueQueue) {
+  for (const entry of queueForStatus) {
     counts.total++;
     if (entry.status === "completed") counts.completed++;
     else if (entry.status === "failed") counts.failed++;
@@ -191,7 +204,7 @@ async function readWorkflowStatus(workspaceDir) {
     else counts.pending++;
   }
 
-  const issueQueue = loopState.issueQueue.map((e) => ({
+  const issueQueue = queueForStatus.map((e) => ({
     source: e.source,
     id: e.id,
     title: e.title,
@@ -560,11 +573,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               for (const [id, run] of activeRuns) {
                 if (run.workspace !== ws) continue;
                 const diskState = await loadLoopState(ws);
-                if (
-                  ["completed", "failed", "cancelled"].includes(
-                    diskState.status,
-                  )
-                ) {
+                if (TERMINAL_RUN_STATUSES.includes(diskState.status)) {
                   activeRuns.delete(id);
                   workflowActors.delete(id);
                   continue;
@@ -759,12 +768,18 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               }
 
               const finalStatus =
-                result.status === "completed" ? "completed" : "failed";
+                result.status === "completed"
+                  ? "completed"
+                  : result.status === "blocked"
+                    ? "blocked"
+                    : "failed";
               const at = new Date().toISOString();
               const actorEntry = workflowActors.get(nextRunId);
               if (actorEntry) {
                 if (finalStatus === "completed")
                   actorEntry.actor.send({ type: "COMPLETE", at });
+                else if (finalStatus === "blocked")
+                  actorEntry.actor.send({ type: "BLOCKED", at });
                 else
                   actorEntry.actor.send({
                     type: "FAIL",

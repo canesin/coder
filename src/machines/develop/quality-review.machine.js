@@ -12,6 +12,7 @@ import {
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { withSessionResume } from "./_session.js";
 import {
   artifactPaths,
   ensureBranch,
@@ -204,7 +205,7 @@ export default defineMachine({
   inputSchema: z.object({
     testCmd: z.string().default(""),
     testConfigPath: z.string().default(""),
-    allowNoTests: z.boolean().default(false),
+    allowNoTests: z.boolean().optional(),
     ppcommitPreset: z.enum(["strict", "relaxed", "minimal"]).default("strict"),
   }),
 
@@ -275,9 +276,21 @@ export default defineMachine({
     if (!state.steps.reviewerCompleted) {
       ctx.log({ event: "review_loop_start" });
 
-      // Generate reviewer session ID for session continuity across rounds
-      if (!state.reviewerSessionId) {
+      // Session only for agents that support create/resume (claude, codex with --session).
+      // Gemini and codex without --session: non-resumable this iteration.
+      const reviewerSupportsSession =
+        reviewerName === "claude" ||
+        (reviewerName === "codex" &&
+          reviewerAgent.codexSessionSupported?.() === true);
+      // Agent-change invalidation: always clear when agent changes (including resumable -> non-resumable).
+      if (state.reviewerAgentName && state.reviewerAgentName !== reviewerName) {
+        delete state.reviewerSessionId;
+        state.reviewerAgentName = reviewerName;
+        await saveState(ctx.workspaceDir, state);
+      }
+      if (reviewerSupportsSession && !state.reviewerSessionId) {
         state.reviewerSessionId = randomUUID();
+        state.reviewerAgentName = reviewerName;
         await saveState(ctx.workspaceDir, state);
       }
 
@@ -328,10 +341,11 @@ export default defineMachine({
           );
 
           // Round 1: new session; Round 2+: resume to retain review context
-          const reviewSessionOpts =
-            round === 1
+          const reviewSessionOpts = reviewerSupportsSession
+            ? round === 1
               ? { sessionId: state.reviewerSessionId }
-              : { resumeId: state.reviewerSessionId };
+              : { resumeId: state.reviewerSessionId }
+            : {};
 
           let reviewRes;
           try {
@@ -341,6 +355,7 @@ export default defineMachine({
             });
           } catch (err) {
             if (
+              reviewerSupportsSession &&
               err.name === "CommandFatalStderrError" &&
               err.category === "auth" &&
               reviewSessionOpts.resumeId
@@ -351,7 +366,6 @@ export default defineMachine({
               });
               state.reviewerSessionId = randomUUID();
               await saveState(ctx.workspaceDir, state);
-              // Fresh session loses prior review context — acceptable per GH-89
               reviewRes = await reviewerAgent.execute(reviewPrompt, {
                 sessionId: state.reviewerSessionId,
                 timeoutMs: ctx.config.workflow.timeouts.reviewRound,
@@ -395,32 +409,20 @@ export default defineMachine({
         ctx.log({ event: "programmer_fix", round, agent: programmerName });
 
         const fixPrompt = buildProgrammerFixPrompt(paths, round);
-        let fixRes;
-        try {
-          fixRes = await programmerAgent.execute(fixPrompt, {
-            resumeId: state.claudeSessionId || undefined,
-            timeoutMs: ctx.config.workflow.timeouts.programmerFix,
-          });
-        } catch (err) {
-          if (
-            err.name === "CommandFatalStderrError" &&
-            err.category === "auth" &&
-            state.claudeSessionId
-          ) {
-            ctx.log({
-              event: "session_resume_failed",
-              sessionId: state.claudeSessionId,
-            });
-            state.claudeSessionId = null;
-            await saveState(ctx.workspaceDir, state);
-            // Fresh session loses prior context — acceptable per GH-89
-            fixRes = await programmerAgent.execute(fixPrompt, {
+        const fixRes = await withSessionResume({
+          agentName: programmerName,
+          agent: programmerAgent,
+          state,
+          sessionKey: "programmerFixSessionId",
+          agentNameKey: "programmerFixAgentName",
+          workspaceDir: ctx.workspaceDir,
+          log: ctx.log,
+          executeFn: (sessionOpts) =>
+            programmerAgent.execute(fixPrompt, {
+              ...sessionOpts,
               timeoutMs: ctx.config.workflow.timeouts.programmerFix,
-            });
-          } else {
-            throw err;
-          }
-        }
+            }),
+        });
         requireExitZero(programmerName, `fix round ${round}`, fixRes);
 
         state.steps.programmerFixedRound = round;
@@ -456,10 +458,27 @@ export default defineMachine({
         requireExitZero(committerName, "committer escalation", escalationRes);
       }
 
-      // Mark review phase complete
+      // Mark review phase complete only when APPROVED
       if (!state.steps.reviewerCompleted && !ctx.cancelToken.cancelled) {
-        state.steps.reviewerCompleted = true;
-        await saveState(ctx.workspaceDir, state);
+        if (state.steps.reviewVerdict === "APPROVED") {
+          state.steps.reviewerCompleted = true;
+          await saveState(ctx.workspaceDir, state);
+        } else {
+          // Escalation ended with REVISE — reset for fresh cycle, clear stale success, throw
+          state.steps.reviewRound = 0;
+          delete state.steps.reviewVerdict;
+          state.steps.programmerFixedRound = 0;
+          delete state.steps.testsPassed;
+          delete state.steps.ppcommitClean;
+          delete state.reviewFingerprint;
+          delete state.reviewedAt;
+          delete state.reviewerSessionId;
+          await saveState(ctx.workspaceDir, state);
+          throw new Error(
+            "Review did not complete with APPROVED. Committer escalation exhausted with REVISE. " +
+              "Re-run quality_review to start a fresh review cycle.",
+          );
+        }
       }
     }
 
@@ -525,7 +544,7 @@ Hard constraints:
     const testRes = await runHostTests(repoRoot, {
       testCmd: input.testCmd || ctx.config.test.command,
       testConfigPath: input.testConfigPath || "",
-      allowNoTests: input.allowNoTests || ctx.config.test.allowNoTests,
+      allowNoTests: input.allowNoTests ?? ctx.config.test.allowNoTests ?? false,
     });
     if (testRes.exitCode !== 0) {
       throw new Error(

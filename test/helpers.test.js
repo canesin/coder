@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,11 +8,14 @@ import { SandboxConfigSchema } from "../src/config.js";
 import {
   buildPrBodyFromIssue,
   buildSecretsWithFallback,
+  detectDefaultBranch,
   detectRemoteType,
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
+  getDefaultBranchRemoteName,
   gitCleanOrThrow,
+  isStaleUpstreamRefError,
   resolvePassEnv,
   runHostTests,
   sanitizeIssueMarkdown,
@@ -101,6 +104,44 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   const result = resolvePassEnv({});
   assert.deepEqual(result, defaults.passEnv);
   assert.ok(result.includes("GITLAB_TOKEN"));
+});
+
+test("detectDefaultBranch throws when only develop exists", () => {
+  const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
+  const runGit = (...args) => {
+    const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+    if (res.status !== 0) {
+      throw new Error(
+        `git ${args.join(" ")} failed: ${res.stderr || res.stdout}`,
+      );
+    }
+  };
+  runGit("checkout", "-b", "develop");
+  for (const b of ["main", "master"]) {
+    const check = spawnSync("git", ["rev-parse", "--verify", b], {
+      cwd: repoDir,
+      encoding: "utf8",
+    });
+    if (check.status === 0) runGit("branch", "-D", b);
+  }
+  assert.throws(() => detectDefaultBranch(repoDir), {
+    message:
+      /Could not detect default branch.*origin\/HEAD.*main.*master.*unavailable or absent/,
+  });
+});
+
+test("detectDefaultBranch returns main when it exists", () => {
+  const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
+  const runGit = (...args) => {
+    const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+    if (res.status !== 0) {
+      throw new Error(
+        `git ${args.join(" ")} failed: ${res.stderr || res.stdout}`,
+      );
+    }
+  };
+  runGit("branch", "-m", "main");
+  assert.equal(detectDefaultBranch(repoDir), "main");
 });
 
 test("detectRemoteType identifies GitLab HTTPS remotes", () => {
@@ -365,6 +406,55 @@ test("sanitizeIssueMarkdown returns empty for empty fence", () => {
   const raw = "```markdown\n\n```";
   const cleaned = sanitizeIssueMarkdown(raw);
   assert.equal(cleaned, "");
+});
+
+test("isStaleUpstreamRefError detects couldn't find remote ref", () => {
+  assert.equal(
+    isStaleUpstreamRefError("fatal: Couldn't find remote ref refs/heads/main"),
+    true,
+  );
+});
+
+test("isStaleUpstreamRefError detects no such ref was fetched", () => {
+  assert.equal(
+    isStaleUpstreamRefError(
+      "Your configuration specifies to merge with refs/heads/main from the remote, but no such ref was fetched.",
+    ),
+    true,
+  );
+});
+
+test("isStaleUpstreamRefError returns false for generic fetch error", () => {
+  assert.equal(
+    isStaleUpstreamRefError(
+      "fatal: unable to access 'https://x/': Could not resolve host: x",
+    ),
+    false,
+  );
+});
+
+test("getDefaultBranchRemoteName returns configured remote when set", () => {
+  const { repoDir } = setupGitRepo({ "README.md": "hi" });
+  const runGit = (...args) => {
+    const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+    if (res.status !== 0) throw new Error(`git ${args.join(" ")} failed`);
+  };
+  runGit("remote", "add", "upstream", "https://example.com/upstream.git");
+  runGit("config", "branch.main.remote", "upstream");
+  try {
+    assert.equal(getDefaultBranchRemoteName(repoDir, "main"), "upstream");
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("getDefaultBranchRemoteName falls back to origin when no config", () => {
+  const { repoDir } = setupGitRepo({ "README.md": "hi" });
+  try {
+    assert.equal(getDefaultBranchRemoteName(repoDir, "main"), "origin");
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
 });
 
 test("buildPrBodyFromIssue returns a sanitized top section", () => {

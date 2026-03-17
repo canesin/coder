@@ -9,9 +9,9 @@ Each pipeline step is an independent **machine** — callable as a standalone MC
 | Requirement | Notes |
 |-------------|-------|
 | Node.js >= 20 | Runtime |
-| `gemini` CLI | Default agent for issue selection, plan review, research |
+| `gemini` CLI | Default agent for issue selection, plan review, committing |
 | `claude` (Claude Code) | Default agent for planning, implementation |
-| `codex` CLI | Default agent for code review, committing |
+| `codex` CLI | Default agent for code review, coalescing |
 | `gh` CLI | GitHub issue listing and PR creation (`issueSource: "github"`) |
 | `glab` CLI | GitLab issue listing and MR creation (`issueSource: "gitlab"`) |
 
@@ -71,11 +71,20 @@ coder-mcp --transport http   # HTTP on 127.0.0.1:8787/mcp
 ### CLI (management)
 
 ```bash
-coder status              # workflow state and progress
-coder config              # resolved configuration
-coder ppcommit            # commit hygiene (all files)
-coder ppcommit --base main  # commit hygiene (branch diff only)
-coder serve               # start MCP server (delegates to coder-mcp)
+coder status                  # workflow state and progress
+coder status --watch          # refresh every 3s
+coder events                  # stream structured log events
+coder events --follow         # tail logs in real-time
+coder cancel                  # cancel current workflow run
+coder pause                   # pause at next checkpoint
+coder resume                  # resume paused run
+coder config                  # resolved configuration
+coder steering generate       # create steering context
+coder steering update         # refresh steering context
+coder ppcommit                # commit hygiene (all files)
+coder ppcommit --base main    # commit hygiene (branch diff only)
+coder version                 # version, branch, and commit info
+coder serve                   # start MCP server (delegates to coder-mcp)
 ```
 
 ## Pipelines
@@ -91,6 +100,8 @@ issue-list → issue-draft → planning ⇄ plan-review → implementation → q
 ```
 coder_workflow { action: "start", workflow: "develop" }
 ```
+
+The develop pipeline can run in **loop mode** to process multiple issues autonomously. Loop state (queue, progress, heartbeat) is exposed via `coder status` and the MCP `coder_status` tool. Crash recovery via `ensureCleanLoopStart` handles dirty branches, stale state, and interrupted runs.
 
 ### Research
 
@@ -146,7 +157,9 @@ Three backends, assigned to roles via config:
 | API | `ApiAgent` | Simple tasks — classification, JSON extraction |
 | MCP | `McpAgent` | External MCP servers (Stitch) |
 
-`AgentPool.getAgent(role, { scope, mode })` manages lifecycle and caching. Roles: `issueSelector`, `planner`, `planReviewer`, `programmer`, `reviewer`, `committer`.
+`AgentPool.getAgent(role, { scope, mode })` manages lifecycle and caching. Roles: `issueSelector`, `planner`, `planReviewer`, `programmer`, `reviewer`, `committer`, `coalesce`.
+
+Agents include automatic retry with configurable backoff and hang detection. If a primary agent fails, an optional fallback agent can take over (configured via `agents.fallback`).
 
 ### Workflow control
 
@@ -155,13 +168,13 @@ Three backends, assigned to roles via config:
 | Action | Description |
 |--------|-------------|
 | `start` | Launch a pipeline run |
-| `status` | Current stage, heartbeat, progress |
+| `status` | Current stage, heartbeat, loop state, progress |
 | `events` | Structured event log with cursor pagination |
 | `pause` | Pause at next checkpoint |
 | `resume` | Resume paused run |
 | `cancel` | Cooperative cancellation |
 
-XState v5 models the lifecycle: `idle → running → paused → completed/failed/cancelled`.
+XState v5 models the lifecycle: `idle → running → paused → completed/failed/cancelled/blocked`.
 
 ### State
 
@@ -170,7 +183,8 @@ All state lives under `.coder/` (gitignored):
 | Path | Purpose |
 |------|---------|
 | `workflow-state.json` | Per-issue step completion |
-| `loop-state.json` | Multi-issue develop queue |
+| `loop-state.json` | Multi-issue develop queue, loop status, heartbeat |
+| `checkpoint-{runId}.json` | Pipeline step checkpoints per run |
 | `artifacts/` | `ISSUE.md`, `PLAN.md`, `PLANREVIEW.md` |
 | `steering/` | Persistent project context (`product.md`, `structure.md`, `tech.md`) |
 | `scratchpad/` | Research pipeline checkpoints |
@@ -185,7 +199,7 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
 {
   // Model selection (see coder.example.json for full structure)
   "models": {
-    "gemini": { "model": "gemini-3.1-pro-preview" },
+    "gemini": { "model": "gemini-3-flash-preview" },
     "claude": { "model": "claude-sonnet-4-6" }
   },
 
@@ -197,29 +211,49 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
       "planReviewer": "gemini",
       "programmer": "claude",
       "reviewer": "codex",
-      "committer": "codex"
+      "committer": "gemini",
+      "coalesce": "codex"
     },
     // Issue source: "github" (default), "linear", "gitlab", or "local"
     // github → gh CLI, gitlab → glab CLI, linear → Linear MCP, local → .coder/local-issues/
     "issueSource": "github",
     "localIssuesDir": ".coder/local-issues",
     "wip": { "push": true, "autoCommit": true },
+    "maxPlanRevisions": 3,
     // Post-step hooks (shell commands triggered on workflow events)
     "hooks": [
       { "on": "machine_complete", "machine": "implementation", "run": "npm run lint" }
     ]
   },
 
+  // Agent retry, hang detection, and fallback
+  "agents": {
+    "retry": {
+      "retries": 1,
+      "backoffMs": 5000,
+      "retryOnRateLimit": true,
+      "hangTimeoutMs": 300000
+    },
+    // Fallback agents when primary fails (role → agent name)
+    "fallback": {}
+  },
+
   // Commit hygiene (tree-sitter AST-based)
+  // Presets: "strict" (default), "relaxed", "minimal"
   "ppcommit": {
+    "preset": "strict",
     "enableLlm": true,
     "llmModelRef": "gemini"
   },
 
-  // Test execution
+  // Test execution (setup/teardown hooks, health checks, timeouts)
   "test": {
     "command": "",
-    "allowNoTests": false
+    "allowNoTests": false,
+    "setup": [],
+    "teardown": [],
+    "healthCheck": null,
+    "timeoutMs": 600000
   },
 
   // Design pipeline (requires Google Stitch)
@@ -234,9 +268,17 @@ See [`coder.example.json`](coder.example.json) for a full example.
 
 ## ppcommit
 
-Built-in commit hygiene checker using tree-sitter AST analysis. Blocks:
+Built-in commit hygiene checker using tree-sitter AST analysis. Three presets control strictness:
 
-- Secrets and API keys
+| Preset | Description |
+|--------|-------------|
+| `strict` | All checks enabled (default) |
+| `relaxed` | Disables magic numbers, narration, new-markdown, and workflow artifact checks |
+| `minimal` | Only secrets and gitleaks — everything else off |
+
+Blocks (in `strict` mode):
+
+- Secrets and API keys (+ gitleaks integration)
 - TODO/FIXME comments
 - LLM narration markers (`Here we...`, `Step 1:`, etc.)
 - Emojis in code (not strings)
@@ -245,18 +287,18 @@ Built-in commit hygiene checker using tree-sitter AST analysis. Blocks:
 - Over-engineering patterns
 - New markdown files outside allowed directories
 
-Optional LLM-assisted checks via Gemini API for deeper analysis.
+Each check can be individually toggled (e.g., `"blockMagicNumbers": false`). Optional LLM-assisted checks via Gemini API for deeper analysis.
 
 ## Steering context
 
 Persistent project knowledge in `.coder/steering/` that agents receive automatically:
 
 ```bash
-coder_steering_generate   # scan repo, create product.md / structure.md / tech.md
-coder_steering_update     # refresh after significant changes
+coder steering generate   # scan repo, create product.md / structure.md / tech.md
+coder steering update     # refresh after significant changes
 ```
 
-Also available as the `coder://steering` MCP resource.
+Also available as MCP tools (`coder_steering_generate`, `coder_steering_update`) and the `coder://steering` MCP resource.
 
 ## Hooks
 
@@ -266,17 +308,21 @@ User-defined shell commands triggered on workflow events. Configure in `config.w
 { "on": "machine_complete", "machine": "implementation", "run": "npm run lint" }
 ```
 
+The `machine` field accepts a regex pattern for matching multiple machines.
+
 Events: `workflow_start`, `workflow_complete`, `workflow_failed`, `machine_start`, `machine_complete`, `machine_error`, `loop_start`, `loop_complete`, `issue_start`, `issue_complete`, `issue_failed`, `issue_skipped`, `issue_deferred`.
 
 Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATUS`, `CODER_HOOK_DATA`, and `CODER_HOOK_RUN_ID` environment variables. Failures are logged but never break the workflow.
 
 ## Safety
 
-- Workspace boundaries enforced — agents operate within the target repo
+- Workspace boundaries enforced — symlink escape detection on workspace and scratchpad paths
 - Non-destructive reset between issues (opt-in `destructiveReset`)
+- Crash recovery at loop start — WIP-commits known branches, resets stale state
 - Health-check URLs restricted to localhost
-- One active run per workspace
+- One active run per workspace (concurrent starts force-cancel previous)
 - Session TTL with automatic cleanup (HTTP mode)
+- Agent hang detection with configurable timeout (default 5 min)
 - Codex runs inside the host sandbox with `--dangerously-bypass-approvals-and-sandbox` for Linux compatibility
 - `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary paths
 - `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` for external health-check URLs
@@ -292,6 +338,8 @@ Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATU
 | `GITLAB_TOKEN` / `GITLAB_API_TOKEN` | GitLab API — used by `glab` CLI |
 | `LINEAR_API_KEY` | Linear issue tracking |
 | `GOOGLE_STITCH_API_KEY` | Design pipeline (Google Stitch) |
+| `CODER_ALLOW_ANY_WORKSPACE` | Allow arbitrary workspace paths (default: restricted) |
+| `CODER_ALLOW_EXTERNAL_HEALTHCHECK` | Allow non-localhost health-check URLs |
 
 ## Contributing
 

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { runPlanreview, stripAgentNoise } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { withSessionResume } from "./_session.js";
 import {
   artifactPaths,
   maybeCheckpointWip,
@@ -82,11 +83,14 @@ export default defineMachine({
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
     ctx.log({ event: "step3b_plan_review" });
 
+    // Use workspace scope so agent can access .coder/artifacts/ when repo_path is a subdir
     const { agentName: planReviewerName, agent: planReviewerAgent } =
-      ctx.agentPool.getAgent("planReviewer", { scope: "repo" });
+      ctx.agentPool.getAgent("planReviewer", { scope: "workspace" });
 
     if (planReviewerName === "gemini") {
-      const rc = runPlanreview(repoRoot, paths.plan, paths.critique);
+      // Use workspaceDir as cwd so Gemini can access .coder/artifacts/ when repo_path is subdir
+      const runReview = ctx._runPlanreviewForTest ?? runPlanreview;
+      const rc = runReview(ctx.workspaceDir, paths.plan, paths.critique);
       if (rc !== 0) {
         ctx.log({ event: "plan_review_nonzero", exitCode: rc });
         if (!existsSync(paths.critique)) {
@@ -115,8 +119,19 @@ Constraints:
 - Keep critique concrete with file-level references when possible.
 - Write markdown content directly to ${paths.critique}.`;
 
-      const reviewRes = await planReviewerAgent.execute(reviewPrompt, {
-        timeoutMs: ctx.config.workflow.timeouts.planReview,
+      const reviewRes = await withSessionResume({
+        agentName: planReviewerName,
+        agent: planReviewerAgent,
+        state,
+        sessionKey: "planReviewSessionId",
+        agentNameKey: "planReviewAgentName",
+        workspaceDir: ctx.workspaceDir,
+        log: ctx.log,
+        executeFn: (sessionOpts) =>
+          planReviewerAgent.execute(reviewPrompt, {
+            ...sessionOpts,
+            timeoutMs: ctx.config.workflow.timeouts.planReview,
+          }),
       });
       requireExitZero(planReviewerName, "plan review failed", reviewRes);
 

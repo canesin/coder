@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import pRetry from "p-retry";
 import {
@@ -25,6 +26,12 @@ const CLAUDE_RESUME_FAILURE_PATTERNS = [
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
 ];
+const CODEX_RESUME_FAILURE_PATTERNS = [
+  { pattern: "session not found", category: "auth" },
+  { pattern: "invalid session", category: "auth" },
+  { pattern: "session has expired", category: "auth" },
+  { pattern: "no such session", category: "auth" },
+];
 const GEMINI_TRANSIENT_FAILURE_PATTERNS = [
   { pattern: "An unexpected critical error occurred", category: "transient" },
   { pattern: "fetch failed sending request", category: "transient" },
@@ -35,6 +42,31 @@ const CODEX_FAILURE_PATTERNS = [
   { pattern: "Cannot autolaunch D-Bus", category: "auth" },
 ];
 const agentNameRegex = /^[a-zA-Z0-9._-]+$/;
+
+/**
+ * Parse first thread.started event from Codex --json JSONL stdout.
+ * @param {string} stdout - JSONL output from codex exec --json
+ * @returns {string|null} - thread_id or null
+ */
+function parseThreadStartedFromJsonl(stdout) {
+  const lines = String(stdout || "").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const obj = JSON.parse(trimmed);
+      if (
+        obj?.type === "thread.started" &&
+        typeof obj?.thread_id === "string"
+      ) {
+        return obj.thread_id;
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return null;
+}
 
 export function resolveAgentName(name) {
   const normalized = String(name || "")
@@ -82,6 +114,42 @@ export class CliAgent extends AgentAdapter {
     this.steeringContext = opts.steeringContext;
     this._mcpHealthParsed = false;
     this._strictMcpStartup = opts.config.mcp.strictStartup;
+    /** @type {boolean | null} Cached: does Codex support --session? null = not yet checked */
+    this._codexSessionSupported = null;
+  }
+
+  /**
+   * Check if the installed Codex CLI supports --session for initial named-session creation.
+   * Caches result. Logs codex_session_unavailable when unsupported.
+   * @returns {boolean}
+   */
+  _checkCodexSessionSupport() {
+    if (this._codexSessionSupported !== null)
+      return this._codexSessionSupported;
+    try {
+      const out = spawnSync("codex", ["exec", "--help"], {
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      const help = `${out.stdout || ""}\n${out.stderr || ""}`;
+      this._codexSessionSupported = help.includes("--session");
+      if (!this._codexSessionSupported) {
+        this._log({ event: "codex_session_unavailable" });
+      }
+    } catch {
+      this._codexSessionSupported = false;
+      this._log({ event: "codex_session_unavailable" });
+    }
+    return this._codexSessionSupported;
+  }
+
+  /**
+   * Whether this agent (Codex) supports --session for named-session creation.
+   * Used by implementation machine to decide whether to persist implementationSessionId.
+   * @returns {boolean}
+   */
+  codexSessionSupported() {
+    return this.name === "codex" ? this._checkCodexSessionSupport() : false;
   }
 
   get events() {
@@ -161,7 +229,15 @@ export class CliAgent extends AgentAdapter {
     // This allows individual machine calls to succeed even when MCP health is degraded
   }
 
-  _buildCommand(prompt, { structured = false, sessionId, resumeId } = {}) {
+  _buildCommand(
+    prompt,
+    {
+      structured = false,
+      sessionId,
+      resumeId,
+      execWithJsonCapture = false,
+    } = {},
+  ) {
     if (this.steeringContext) {
       prompt = `<steering_context>\n${this.steeringContext}\n</steering_context>\n\n${prompt}`;
     }
@@ -173,13 +249,14 @@ export class CliAgent extends AgentAdapter {
       let cmd = modelName
         ? `gemini --yolo -m ${shellEscape(modelName)}`
         : "gemini --yolo";
-      // Gemini CLI doesn't support named sessions; use --resume for continuation
-      if (resumeId) cmd += " --resume latest";
+      if (resumeId) cmd += ` --resume ${shellEscape(resumeId)}`;
       return heredocPipe(prompt, cmd);
     }
 
     if (this.name === "claude") {
-      let flags = "claude -p --no-session-persistence";
+      const needsPersistence = sessionId || resumeId;
+      let flags = "claude -p";
+      if (!needsPersistence) flags += " --no-session-persistence";
       const claudeModel = resolveModelName(this.config.models.claude);
       if (claudeModel) {
         flags += ` --model ${shellEscape(claudeModel)}`;
@@ -197,9 +274,16 @@ export class CliAgent extends AgentAdapter {
     // on Linux 6.2+. Use --dangerously-bypass-approvals-and-sandbox instead — outer
     // isolation (systemd-run with NoNewPrivileges + PrivateTmp) still applies.
     if (resumeId) {
+      if (resumeId === "__last__") {
+        return `codex exec resume --last --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
+      }
       return `codex exec resume ${shellEscape(resumeId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
     }
-    return `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
+    if (sessionId && this._checkCodexSessionSupport()) {
+      return `codex exec --session ${shellEscape(sessionId)} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
+    }
+    const jsonFlag = execWithJsonCapture ? " --json" : "";
+    return `codex exec${jsonFlag} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check ${shellEscape(prompt)}`;
   }
 
   async execute(prompt, opts = {}) {
@@ -219,17 +303,25 @@ export class CliAgent extends AgentAdapter {
       ? [...GEMINI_AUTH_FAILURE_PATTERNS, ...GEMINI_TRANSIENT_FAILURE_PATTERNS]
       : isClaude && (opts.resumeId || opts.sessionId)
         ? CLAUDE_RESUME_FAILURE_PATTERNS
-        : isCodex
-          ? CODEX_FAILURE_PATTERNS
-          : [];
+        : isCodex && (opts.resumeId || opts.sessionId)
+          ? CODEX_RESUME_FAILURE_PATTERNS
+          : isCodex
+            ? CODEX_FAILURE_PATTERNS
+            : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
 
-    return sandbox.commands.run(cmd, {
+    const result = await sandbox.commands.run(cmd, {
       timeoutMs: opts.timeoutMs ?? 1000 * 60 * 10,
       hangTimeoutMs,
       hangResetOnStderr,
       killOnStderrPatterns,
     });
+
+    if (isCodex && opts.execWithJsonCapture && result.stdout) {
+      const threadId = parseThreadStartedFromJsonl(result.stdout);
+      if (threadId) return { ...result, threadId };
+    }
+    return result;
   }
 
   async executeStructured(prompt, opts = {}) {

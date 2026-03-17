@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import {
   access,
   appendFile,
@@ -51,6 +51,17 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
     return runSqliteAsync(this.sqlitePath, sql);
   }
 
+  /**
+   * Shared invariant: both _relPath and _relPathForRestore enforce the same
+   * workspace-boundary rules. Returns relative path from realBase to targetPath
+   * if targetPath is inside realBase; otherwise null.
+   */
+  _relPathFromCanonical(realBase, targetPath) {
+    const rel = path.relative(realBase, targetPath);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+    return rel;
+  }
+
   _relPath(absPath) {
     let realBase, realTarget;
     try {
@@ -59,9 +70,38 @@ CREATE TABLE IF NOT EXISTS scratchpad_files (
     } catch {
       return null;
     }
-    const rel = path.relative(realBase, realTarget);
-    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
-    return rel;
+    return this._relPathFromCanonical(realBase, realTarget);
+  }
+
+  /**
+   * Compute relative path for restore when target does not exist yet.
+   * Canonicalizes the nearest existing parent to avoid symlink escapes.
+   */
+  _relPathForRestore(absPath) {
+    let realBase;
+    try {
+      realBase = realpathSync(this.workspaceDir);
+    } catch {
+      return null;
+    }
+    const resolved = path.resolve(absPath);
+    let dir = path.dirname(resolved);
+    while (dir && dir !== path.dirname(dir)) {
+      if (existsSync(dir)) {
+        try {
+          const canonicalParent = realpathSync(dir);
+          const canonicalTarget = path.join(
+            canonicalParent,
+            path.basename(resolved),
+          );
+          return this._relPathFromCanonical(realBase, canonicalTarget);
+        } catch {
+          return null;
+        }
+      }
+      dir = path.dirname(dir);
+    }
+    return null; // no existing parent found
   }
 
   async appendSection(filePath, heading, lines = []) {
@@ -113,7 +153,7 @@ ON CONFLICT(file_path) DO UPDATE SET
     } catch {
       // file doesn't exist — proceed
     }
-    const relPath = this._relPath(filePath);
+    const relPath = this._relPathForRestore(filePath);
     if (!relPath) return false;
     try {
       const out = await this._runSql(

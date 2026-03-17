@@ -2,7 +2,7 @@ import { registerMachine } from "../_registry.js";
 import pocRunnerMachine from "./poc-runner.machine.js";
 import webResearchMachine from "./web-research.machine.js";
 
-export { webResearchMachine, pocRunnerMachine };
+export { pocRunnerMachine, webResearchMachine };
 
 export const sharedMachines = [webResearchMachine, pocRunnerMachine];
 

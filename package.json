@@ -24,7 +24,8 @@
   ],
   "type": "module",
   "bin": {
-    "coder": "./bin/coder.js"
+    "coder": "./bin/coder.js",
+    "coder-mcp": "./bin/coder-mcp.js"
   },
   "files": [
     "bin/",
@@ -44,7 +45,7 @@
     "lint:fix": "biome check --write ./bin ./src ./test package.json",
     "format": "biome format --write ./bin ./src ./test package.json",
     "format:check": "biome format ./bin ./src ./test package.json",
-    "test": "NODE_ENV=test node --test test/*.test.js",
+    "test": "NODE_ENV=test node --experimental-test-module-mocks --test test/*.test.js",
     "prepublishOnly": "npm run lint && npm test"
   },
   "engines": {
@@ -54,7 +55,7 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "cli-table3": "^0.6.5",
     "deepmerge": "^4.3.1",
-    "jsonrepair": "^3.12.0",
+    "jsonrepair": "^3.13.3",
     "p-retry": "^7.1.1",
     "qs": "^6.15.0",
     "tree-sitter": "^0.25.0",
@@ -80,6 +81,6 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.5"
+    "@biomejs/biome": "^2.4.7"
   }
 }

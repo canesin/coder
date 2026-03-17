@@ -11,11 +11,11 @@ import { WorkflowRunner } from "./_base.js";
 export {
   contextGatherMachine,
   deepResearchMachine,
-  techSelectionMachine,
-  pocValidationMachine,
-  issueSynthesisMachine,
   issueCritiqueMachine,
+  issueSynthesisMachine,
+  pocValidationMachine,
   specPublishMachine,
+  techSelectionMachine,
 };
 
 export const researchMachines = [
@@ -154,5 +154,6 @@ export async function runResearchPipeline(opts, ctx) {
       },
     ],
     {},
+    { resumeFromRunId: opts.resumeFromRunId },
   );
 }

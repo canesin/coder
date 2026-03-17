@@ -2,7 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { resolveConfig } from "../../config.js";
-import { loadLoopState, loadState } from "../../state/workflow-state.js";
+import {
+  loadLoopState,
+  loadState,
+  loadWorkflowSnapshot,
+} from "../../state/workflow-state.js";
 
 function readActivityFile(workspaceDir) {
   const p = path.join(workspaceDir, ".coder", "activity.json");
@@ -22,6 +26,41 @@ function readMcpHealth(workspaceDir) {
   } catch {
     return null;
   }
+}
+
+async function readWorkflowRunState(workspaceDir) {
+  const loopState = await loadLoopState(workspaceDir);
+  const snapshot = await loadWorkflowSnapshot(workspaceDir);
+
+  if (
+    (loopState.status === "running" || loopState.status === "paused") &&
+    (loopState.currentStage ||
+      loopState.activeAgent ||
+      loopState.lastHeartbeatAt)
+  ) {
+    return {
+      runId: loopState.runId || null,
+      runStatus: loopState.status || null,
+      currentStage: loopState.currentStage || null,
+      currentStageStartedAt: loopState.currentStageStartedAt || null,
+      lastHeartbeatAt: loopState.lastHeartbeatAt || null,
+      activeAgent: loopState.activeAgent || null,
+    };
+  }
+
+  if (snapshot?.context) {
+    const ctx = snapshot.context;
+    return {
+      runId: snapshot.runId || null,
+      runStatus: snapshot.value ?? null,
+      currentStage: ctx.currentStage ?? null,
+      currentStageStartedAt: null,
+      lastHeartbeatAt: ctx.lastHeartbeatAt ?? null,
+      activeAgent: ctx.activeAgent ?? null,
+    };
+  }
+
+  return null;
 }
 
 function readResearchState(workspaceDir) {
@@ -62,7 +101,9 @@ export async function getStatus(workspaceDir) {
     ? path.resolve(workspaceDir, state.scratchpadPath)
     : null;
 
-  const result = {
+  const runState = await readWorkflowRunState(workspaceDir);
+
+  return {
     selected: state.selected || null,
     selectedProject: state.selectedProject || null,
     repoPath: state.repoPath || null,
@@ -99,34 +140,15 @@ export async function getStatus(workspaceDir) {
       },
     },
     agentActivity: readActivityFile(workspaceDir),
-    currentStage: null,
-    currentStageStartedAt: null,
-    lastHeartbeatAt: null,
-    activeAgent: null,
-    loopStatus: null,
-    loopRunId: null,
+    currentStage: runState?.currentStage ?? null,
+    currentStageStartedAt: runState?.currentStageStartedAt ?? null,
+    lastHeartbeatAt: runState?.lastHeartbeatAt ?? null,
+    activeAgent: runState?.activeAgent ?? null,
+    runId: runState?.runId ?? null,
+    runStatus: runState?.runStatus ?? null,
     mcpHealth: readMcpHealth(workspaceDir),
     researchWorkflow: readResearchState(workspaceDir),
   };
-
-  // Overlay live loop state when available
-  try {
-    const loopState = await loadLoopState(workspaceDir);
-    if (loopState.runId) {
-      result.currentStage = loopState.currentStage || result.currentStage;
-      result.currentStageStartedAt =
-        loopState.currentStageStartedAt || result.currentStageStartedAt;
-      result.lastHeartbeatAt =
-        loopState.lastHeartbeatAt || result.lastHeartbeatAt;
-      result.activeAgent = loopState.activeAgent || result.activeAgent;
-      result.loopStatus = loopState.status || null;
-      result.loopRunId = loopState.runId;
-    }
-  } catch {
-    // best-effort — don't fail status over loop state
-  }
-
-  return result;
 }
 
 export function registerStatusTools(server, resolveWorkspace) {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,8 +10,10 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { checkpointPathFor } from "../src/state/machine-state.js";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
+  backupKeyFor,
   runDevelopPipeline,
   runWithMachineRetry,
 } from "../src/workflows/develop.workflow.js";
@@ -256,8 +259,60 @@ test("runDevelopPipeline: injects quality-review failure details before retry", 
   const tmp = mkdtempSync(path.join(os.tmpdir(), "coder-retry-feedback-"));
   const artifactsDir = path.join(tmp, ".coder", "artifacts");
   mkdirSync(artifactsDir, { recursive: true });
+  mkdirSync(path.join(tmp, ".coder"), { recursive: true });
   const critiquePath = path.join(artifactsDir, "PLANREVIEW.md");
   writeFileSync(critiquePath, "# Existing critique\n", "utf8");
+  const issue = {
+    source: "local",
+    id: "ISSUE-2",
+    title: "Retry feedback test",
+    repo_path: "/tmp/repo",
+  };
+  writeFileSync(
+    path.join(tmp, ".coder", "state.json"),
+    JSON.stringify({
+      selected: issue,
+      steps: { wrotePlan: true, wroteCritique: true, implemented: true },
+    }),
+  );
+  const staleRunId = "phase3-first";
+  writeFileSync(
+    checkpointPathFor(tmp, staleRunId),
+    JSON.stringify({
+      runId: staleRunId,
+      workflow: "develop",
+      steps: [
+        {
+          machine: "develop.implementation",
+          status: "ok",
+          data: {},
+          durationMs: 0,
+          completedAt: new Date().toISOString(),
+        },
+        {
+          machine: "develop.quality_review",
+          status: "error",
+          error: "tests failed: 2 failing cases",
+          durationMs: 0,
+          completedAt: new Date().toISOString(),
+        },
+      ],
+      currentStep: 2,
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  const loopState = {
+    runId: "loop-1",
+    issueQueue: [
+      {
+        source: issue.source,
+        id: issue.id,
+        title: issue.title,
+        status: "in_progress",
+        lastFailedRunId: staleRunId,
+      },
+    ],
+  };
 
   const ctx = makeCtx({
     workspaceDir: tmp,
@@ -268,8 +323,11 @@ test("runDevelopPipeline: injects quality-review failure details before retry", 
     },
   });
   const opts = {
-    issue: { source: "local", id: "ISSUE-2", title: "Retry feedback test" },
+    issue,
     repoPath: "/tmp/repo",
+    loopState,
+    issueIndex: 0,
+    resumeFromRunId: staleRunId,
   };
 
   const originalRun = WorkflowRunner.prototype.run;
@@ -321,7 +379,7 @@ test("runDevelopPipeline: injects quality-review failure details before retry", 
               error: "tests failed: 2 failing cases",
             },
           ],
-          runId: "run-2",
+          runId: staleRunId,
           durationMs: 0,
         };
       }
@@ -336,7 +394,7 @@ test("runDevelopPipeline: injects quality-review failure details before retry", 
             data: { prUrl: "https://example.test/pr/2", branch: "feat/2" },
           },
         ],
-        runId: "run-2",
+        runId: "phase3-second",
         durationMs: 0,
       };
     }
@@ -353,6 +411,189 @@ test("runDevelopPipeline: injects quality-review failure details before retry", 
     assert.match(critique, /## Retry Feedback/);
     assert.match(critique, /\*\*develop\.quality_review failed/);
     assert.match(critique, /tests failed: 2 failing cases/);
+
+    const backupKey = backupKeyFor(issue);
+    const backupStatePath = path.join(
+      tmp,
+      ".coder",
+      "backups",
+      backupKey,
+      "state.json",
+    );
+    assert.ok(
+      readFileSync(backupStatePath, "utf8").includes('"implemented": false'),
+      "backup after quality_review failure must have implemented: false",
+    );
+    assert.equal(
+      existsSync(checkpointPathFor(tmp, staleRunId)),
+      false,
+      "quality_review retry feedback should invalidate the stale phase-3 checkpoint",
+    );
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runDevelopPipeline: terminal quality-review failure still invalidates stale resume state", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "coder-retry-terminal-"));
+  const artifactsDir = path.join(tmp, ".coder", "artifacts");
+  mkdirSync(artifactsDir, { recursive: true });
+  mkdirSync(path.join(tmp, ".coder"), { recursive: true });
+  const critiquePath = path.join(artifactsDir, "PLANREVIEW.md");
+  writeFileSync(critiquePath, "# Existing critique\n", "utf8");
+  const issue = {
+    source: "local",
+    id: "ISSUE-3",
+    title: "Terminal retry feedback test",
+    repo_path: "/tmp/repo",
+  };
+  writeFileSync(
+    path.join(tmp, ".coder", "state.json"),
+    JSON.stringify({
+      selected: issue,
+      steps: { wrotePlan: true, wroteCritique: true, implemented: true },
+    }),
+  );
+  const staleRunId = "phase3-terminal";
+  writeFileSync(
+    checkpointPathFor(tmp, staleRunId),
+    JSON.stringify({
+      runId: staleRunId,
+      workflow: "develop",
+      steps: [
+        {
+          machine: "develop.implementation",
+          status: "ok",
+          data: {},
+          durationMs: 0,
+          completedAt: new Date().toISOString(),
+        },
+        {
+          machine: "develop.quality_review",
+          status: "error",
+          error: "tests failed: terminal case",
+          durationMs: 0,
+          completedAt: new Date().toISOString(),
+        },
+      ],
+      currentStep: 2,
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  const loopState = {
+    runId: "loop-2",
+    issueQueue: [
+      {
+        source: issue.source,
+        id: issue.id,
+        title: issue.title,
+        status: "in_progress",
+        lastFailedRunId: staleRunId,
+      },
+    ],
+  };
+
+  const ctx = makeCtx({
+    workspaceDir: tmp,
+    artifactsDir,
+    scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    config: {
+      workflow: { maxMachineRetries: 0, retryBackoffMs: 0 },
+    },
+  });
+  const opts = {
+    issue,
+    repoPath: "/tmp/repo",
+    loopState,
+    issueIndex: 0,
+    resumeFromRunId: staleRunId,
+  };
+
+  const originalRun = WorkflowRunner.prototype.run;
+
+  WorkflowRunner.prototype.run = async function runStub(steps) {
+    const machineName = steps[0]?.machine?.name;
+
+    if (machineName === "develop.issue_draft") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: {} }],
+        runId: "run-3",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.planning") {
+      return {
+        status: "completed",
+        results: [{ status: "ok", data: { planMd: "plan" } }],
+        runId: "run-3",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.plan_review") {
+      return {
+        status: "completed",
+        results: [
+          { status: "ok", data: { verdict: "APPROVED", critiqueMd: "" } },
+        ],
+        runId: "run-3",
+        durationMs: 0,
+      };
+    }
+
+    if (machineName === "develop.implementation") {
+      return {
+        status: "failed",
+        error: "quality review failed terminally",
+        results: [
+          { machine: "develop.implementation", status: "ok", data: {} },
+          {
+            machine: "develop.quality_review",
+            status: "error",
+            error: "tests failed: terminal case",
+          },
+        ],
+        runId: staleRunId,
+        durationMs: 0,
+      };
+    }
+
+    throw new Error(`Unexpected machine sequence start: ${machineName}`);
+  };
+
+  try {
+    const result = await runDevelopPipeline(opts, ctx);
+    assert.equal(result.status, "failed");
+
+    // With maxMachineRetries: 0, retry feedback is not injected (no retry will follow)
+    const critique = readFileSync(critiquePath, "utf8");
+    assert.equal(
+      critique,
+      "# Existing critique\n",
+      "critique should be unchanged when no retries are configured",
+    );
+
+    const backupKey = backupKeyFor(issue);
+    const backupStatePath = path.join(
+      tmp,
+      ".coder",
+      "backups",
+      backupKey,
+      "state.json",
+    );
+    assert.ok(
+      readFileSync(backupStatePath, "utf8").includes('"implemented": false'),
+      "terminal quality_review failure must persist implemented: false",
+    );
+    assert.equal(
+      existsSync(checkpointPathFor(tmp, staleRunId)),
+      false,
+      "terminal quality_review failure should invalidate the stale phase-3 checkpoint",
+    );
+    assert.equal(loopState.issueQueue[0].lastFailedRunId, null);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
     rmSync(tmp, { recursive: true, force: true });
