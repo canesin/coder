@@ -311,12 +311,19 @@ export class CliAgent extends AgentAdapter {
             ? CODEX_FAILURE_PATTERNS
             : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
+    // Claude emits "Session ID X is already in use" to stdout, not stderr — kill on both
+    const killOnStdoutPatterns =
+      opts.killOnStdoutPatterns ??
+      (isClaude && (opts.resumeId || opts.sessionId)
+        ? CLAUDE_RESUME_FAILURE_PATTERNS
+        : []);
 
     const result = await sandbox.commands.run(cmd, {
       timeoutMs: opts.timeoutMs ?? 1000 * 60 * 10,
       hangTimeoutMs,
       hangResetOnStderr,
       killOnStderrPatterns,
+      killOnStdoutPatterns,
     });
 
     if (isCodex && opts.execWithJsonCapture && result.stdout) {
@@ -372,7 +379,11 @@ export class CliAgent extends AgentAdapter {
           const err = ctx.error;
           if (err.name === "AbortError") return false;
           if (err.name === "CommandTimeoutError") return false;
-          if (err.name === "CommandFatalStderrError" && err.category === "auth")
+          if (
+            (err.name === "CommandFatalStderrError" ||
+              err.name === "CommandFatalStdoutError") &&
+            err.category === "auth"
+          )
             return false;
           if (err.name === "McpStartupError") return false;
           return true;

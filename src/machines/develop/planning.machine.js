@@ -268,7 +268,9 @@ ${branchSections}`;
           });
         } catch (err) {
           const isAuthError =
-            err.name === "CommandFatalStderrError" && err.category === "auth";
+            (err.name === "CommandFatalStderrError" ||
+              err.name === "CommandFatalStdoutError") &&
+            err.category === "auth";
           const canRetryWithFreshSession =
             isAuthError && (sessionOpts.resumeId || sessionOpts.sessionId);
           if (canRetryWithFreshSession) {

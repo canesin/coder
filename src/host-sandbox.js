@@ -50,6 +50,15 @@ export class CommandFatalStderrError extends Error {
   }
 }
 
+export class CommandFatalStdoutError extends Error {
+  constructor(pattern, category) {
+    super(`Command aborted after fatal stdout match [${category}]: ${pattern}`);
+    this.name = "CommandFatalStdoutError";
+    this.pattern = pattern;
+    this.category = category;
+  }
+}
+
 export class McpStartupError extends Error {
   constructor(agentName, failedServers) {
     super(
@@ -159,6 +168,14 @@ class HostSandboxInstance extends EventEmitter {
     const hangResetOnStderr = options.hangResetOnStderr ?? true;
     const killOnStderrPatterns = Array.isArray(options.killOnStderrPatterns)
       ? options.killOnStderrPatterns.filter(
+          (p) =>
+            typeof p?.pattern === "string" &&
+            p.pattern.trim() !== "" &&
+            typeof p?.category === "string",
+        )
+      : [];
+    const killOnStdoutPatterns = Array.isArray(options.killOnStdoutPatterns)
+      ? options.killOnStdoutPatterns.filter(
           (p) =>
             typeof p?.pattern === "string" &&
             p.pattern.trim() !== "" &&
@@ -301,6 +318,20 @@ class HostSandboxInstance extends EventEmitter {
         resetHangTimer();
         options.onStdout?.(chunk);
         this.emit("stdout", chunk);
+
+        if (killOnStdoutPatterns.length > 0) {
+          const lower = chunk.toLowerCase();
+          const hit = killOnStdoutPatterns.find((p) =>
+            lower.includes(p.pattern.toLowerCase()),
+          );
+          if (hit) {
+            terminateChild();
+            const err = new CommandFatalStdoutError(hit.pattern, hit.category);
+            err.stdout = stdout;
+            err.stderr = stderr;
+            settle(err);
+          }
+        }
       });
       child.stderr.on("data", (buf) => {
         const chunk = buf.toString();

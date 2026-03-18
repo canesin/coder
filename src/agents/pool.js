@@ -40,7 +40,8 @@ class RetryFallbackWrapper extends AgentAdapter {
       // On auth error with an active session, retry primary once without
       // session state before falling through to the fallback agent.
       if (
-        err.name === "CommandFatalStderrError" &&
+        (err.name === "CommandFatalStderrError" ||
+          err.name === "CommandFatalStdoutError") &&
         err.category === "auth" &&
         opts?.resumeId
       ) {
@@ -93,7 +94,8 @@ class RetryFallbackWrapper extends AgentAdapter {
           const name = ctx.error.name;
           if (name === "CommandTimeoutError") return false;
           if (
-            name === "CommandFatalStderrError" &&
+            (name === "CommandFatalStderrError" ||
+              name === "CommandFatalStdoutError") &&
             ctx.error.category === "auth"
           )
             return false;
