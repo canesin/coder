@@ -73,7 +73,8 @@ export async function withSessionResume({
   } catch (err) {
     const isAuthError =
       isSupported &&
-      err.name === "CommandFatalStderrError" &&
+      (err.name === "CommandFatalStderrError" ||
+        err.name === "CommandFatalStdoutError") &&
       err.category === "auth";
     const canRetryWithFreshSession =
       isAuthError && (sessionOpts.resumeId || sessionOpts.sessionId);

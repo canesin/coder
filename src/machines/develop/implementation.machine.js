@@ -221,7 +221,8 @@ FORBIDDEN patterns:
       res = await programmerAgent.execute(implPrompt, execOpts);
     } catch (err) {
       if (
-        err.name === "CommandFatalStderrError" &&
+        (err.name === "CommandFatalStderrError" ||
+          err.name === "CommandFatalStdoutError") &&
         err.category === "auth" &&
         state[sessionKey]
       ) {

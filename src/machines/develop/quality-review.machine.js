@@ -356,7 +356,8 @@ export default defineMachine({
           } catch (err) {
             const isAuthError =
               reviewerSupportsSession &&
-              err.name === "CommandFatalStderrError" &&
+              (err.name === "CommandFatalStderrError" ||
+                err.name === "CommandFatalStdoutError") &&
               err.category === "auth";
             const canRetryWithFreshSession =
               isAuthError &&
