@@ -354,15 +354,18 @@ export default defineMachine({
               timeoutMs: ctx.config.workflow.timeouts.reviewRound,
             });
           } catch (err) {
-            if (
+            const isAuthError =
               reviewerSupportsSession &&
               err.name === "CommandFatalStderrError" &&
-              err.category === "auth" &&
-              reviewSessionOpts.resumeId
-            ) {
+              err.category === "auth";
+            const canRetryWithFreshSession =
+              isAuthError &&
+              (reviewSessionOpts.resumeId || reviewSessionOpts.sessionId);
+            if (canRetryWithFreshSession) {
               ctx.log({
                 event: "session_auth_failed",
                 sessionId: state.reviewerSessionId,
+                wasCreating: !!reviewSessionOpts.sessionId,
               });
               state.reviewerSessionId = randomUUID();
               await saveState(ctx.workspaceDir, state);
