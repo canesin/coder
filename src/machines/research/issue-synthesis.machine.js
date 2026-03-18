@@ -1,12 +1,15 @@
 import { writeFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
   loadPipeline,
+  loadSessionState,
   loadStepArtifact,
   resolveArtifact,
   runStructuredStep,
+  saveSessionState,
 } from "./_shared.js";
 
 export default defineMachine({
@@ -59,6 +62,8 @@ export default defineMachine({
       "validation-results",
     );
 
+    const runDir = path.dirname(stepsDir);
+    const sessionState = loadSessionState(runDir);
     const stepOpts = { stepsDir, scratchpadPath, pipeline, pipelinePath, ctx };
 
     let priorFeedback = [];
@@ -163,7 +168,10 @@ Return ONLY valid JSON in this schema:
         prompt: draftPrompt,
         timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
+        sessionState,
+        sessionKey: "synthesisDraftSessionId",
       });
+      saveSessionState(runDir, sessionState);
       const draftPayload = draftRes.payload;
       if (
         !draftPayload ||
@@ -226,7 +234,10 @@ Return ONLY valid JSON in this schema:
         prompt: reviewPrompt,
         timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
+        sessionState,
+        sessionKey: "synthesisCritiqueSessionId",
       });
+      saveSessionState(runDir, sessionState);
       finalReview = reviewRes.payload;
 
       const mustFix = Array.isArray(finalReview?.must_fix)

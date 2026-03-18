@@ -6,6 +6,7 @@ import issueSynthesisMachine from "../machines/research/issue-synthesis.machine.
 import pocValidationMachine from "../machines/research/poc-validation.machine.js";
 import specPublishMachine from "../machines/research/spec-publish.machine.js";
 import techSelectionMachine from "../machines/research/tech-selection.machine.js";
+import { runPreflight } from "../preflight.js";
 import { WorkflowRunner } from "./_base.js";
 
 export {
@@ -53,6 +54,20 @@ export function registerResearchMachines() {
  * @param {import("../machines/_base.js").WorkflowContext} ctx
  */
 export async function runResearchPipeline(opts, ctx) {
+  // Pre-flight checks — fail fast before processing
+  const preflight = ctx.config?.workflow?.preflight;
+  if (preflight?.checks?.length > 0) {
+    try {
+      await runPreflight(preflight.checks, ctx.workspaceDir);
+    } catch (err) {
+      return {
+        status: "failed",
+        error: `Pre-flight check failed: ${err.message}`,
+        results: [],
+      };
+    }
+  }
+
   const runner = new WorkflowRunner({
     name: "research",
     workflowContext: ctx,
@@ -78,6 +93,8 @@ export async function runResearchPipeline(opts, ctx) {
       },
       {
         machine: deepResearchMachine,
+        maxRetries: ctx.config?.workflow?.maxMachineRetries ?? 0,
+        backoffMs: ctx.config?.workflow?.retryBackoffMs ?? 5000,
         inputMapper: (prev) => ({
           stepsDir: prev.data.stepsDir,
           scratchpadPath: prev.data.scratchpadPath,
@@ -88,6 +105,8 @@ export async function runResearchPipeline(opts, ctx) {
       },
       {
         machine: pocValidationMachine,
+        maxRetries: ctx.config?.workflow?.maxMachineRetries ?? 0,
+        backoffMs: ctx.config?.workflow?.retryBackoffMs ?? 5000,
         inputMapper: (prev, state) => {
           const gatherData = state.results[0]?.data || {};
           return {

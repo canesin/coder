@@ -15,6 +15,33 @@ import { CancelledError } from "../_base.js";
 import { withSessionResume } from "../_session.js";
 
 /**
+ * Load session state from the run directory.
+ * @param {string} runDir
+ * @returns {object}
+ */
+export function loadSessionState(runDir) {
+  const p = path.join(runDir, "session-state.json");
+  if (!existsSync(p)) return {};
+  try {
+    return JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Save session state to the run directory.
+ * @param {string} runDir
+ * @param {object} state
+ */
+export function saveSessionState(runDir, state) {
+  writeFileSync(
+    path.join(runDir, "session-state.json"),
+    `${JSON.stringify(state, null, 2)}\n`,
+  );
+}
+
+/**
  * Chunk a large pointer text into manageable pieces for analysis.
  * @param {string} text
  * @param {{ maxChars?: number, maxChunks?: number }} [opts]

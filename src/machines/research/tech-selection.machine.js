@@ -1,13 +1,10 @@
 import { z } from "zod";
-import { defineMachine } from "../_base.js";
+import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
-  beginPipelineStep,
-  endPipelineStep,
   loadPipeline,
-  parseAgentPayload,
-  requireExitZero,
   resolveArtifact,
+  runStructuredStep,
 } from "./_shared.js";
 
 export default defineMachine({
@@ -42,10 +39,6 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const { agentName, agent } = ctx.agentPool.getAgent("planner", {
-      scope: "workspace",
-    });
-
     const pipeline = loadPipeline(input.pipelinePath) || {
       version: 1,
       runId: "tech-selection",
@@ -64,13 +57,7 @@ export default defineMachine({
       "web-references",
     );
 
-    beginPipelineStep(
-      pipeline,
-      input.pipelinePath,
-      input.scratchpadPath,
-      "tech_evaluation",
-      { agent: agentName },
-    );
+    checkCancel(ctx);
 
     const refSummary = Object.values(webRefs)
       .slice(0, 10)
@@ -137,27 +124,23 @@ Return JSON:
   }
 }`;
 
-    const res = await agent.execute(prompt, {
+    const { payload, agentName } = await runStructuredStep({
+      stepName: "tech_evaluation",
+      role: "planner",
+      prompt,
       timeoutMs: ctx.config.workflow.timeouts.researchStep,
+      stepsDir: input.stepsDir,
+      scratchpadPath: input.scratchpadPath,
+      pipeline,
+      pipelinePath: input.pipelinePath,
+      ctx,
     });
-    requireExitZero(agentName, "tech_selection", res);
-
-    const payload = parseAgentPayload(agentName, res.stdout);
 
     appendScratchpad(input.scratchpadPath, "Tech Selection", [
       `- agent: ${agentName}`,
       `- categories: ${(payload?.categories || []).length}`,
       `- stack: ${payload?.stack?.summary || "unknown"}`,
     ]);
-
-    endPipelineStep(
-      pipeline,
-      input.pipelinePath,
-      input.scratchpadPath,
-      "tech_evaluation",
-      "completed",
-      { agent: agentName },
-    );
 
     return {
       status: "ok",

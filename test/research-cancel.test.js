@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -243,5 +249,312 @@ describe("context-gather cancel", () => {
     );
 
     assert.equal(result.status, "cancelled");
+  });
+});
+
+describe("deep-research cancel", () => {
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "deep-research-cancel-"));
+    mkdirSync(path.join(tmp, ".coder"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("deep-research respects cancel before web search", async () => {
+    const { default: deepResearchMachine } = await import(
+      "../src/machines/research/deep-research.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        version: 1,
+        current: "init",
+        history: [],
+        steps: {},
+      }) + "\n",
+    );
+    writeFileSync(
+      path.join(stepsDir, "analysis-brief.json"),
+      JSON.stringify({ problem_spaces: [] }),
+    );
+
+    const ctx = {
+      workspaceDir: tmp,
+      cancelToken: { cancelled: true, paused: false },
+      log: () => {},
+      config: { workflow: { timeouts: { webSearch: 60000 } } },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: { execute: async () => ({ exitCode: 0, stdout: "{}" }) },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+
+    const result = await deepResearchMachine.run(
+      { stepsDir, scratchpadPath, pipelinePath, webResearch: true },
+      ctx,
+    );
+
+    assert.equal(result.status, "cancelled");
+  });
+});
+
+describe("poc-validation cancel", () => {
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "poc-cancel-"));
+    mkdirSync(path.join(tmp, ".coder"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("poc-validation respects cancel between plan and execute", async () => {
+    const { default: pocValidationMachine } = await import(
+      "../src/machines/research/poc-validation.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        version: 1,
+        current: "init",
+        history: [],
+        steps: {},
+      }) + "\n",
+    );
+    writeFileSync(
+      path.join(stepsDir, "analysis-brief.json"),
+      JSON.stringify({ problem_spaces: [] }),
+    );
+
+    let callCount = 0;
+    const cancelToken = { cancelled: false, paused: false };
+
+    const ctx = {
+      workspaceDir: tmp,
+      cancelToken,
+      log: () => {},
+      config: {
+        workflow: {
+          timeouts: { researchStep: 60000, pocValidation: 60000 },
+        },
+      },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: {
+            execute: async () => {
+              callCount++;
+              // After plan step completes, cancel before execute
+              cancelToken.cancelled = true;
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  tracks: [{ id: "V1", topic: "test" }],
+                  notes: "",
+                }),
+              };
+            },
+          },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+
+    const result = await pocValidationMachine.run(
+      { stepsDir, scratchpadPath, pipelinePath, validateIdeas: true },
+      ctx,
+    );
+
+    assert.equal(result.status, "cancelled");
+    // Only 1 call: plan succeeded, then cancel fired before execute
+    assert.equal(callCount, 1);
+  });
+});
+
+describe("issue-critique cancel", () => {
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "critique-cancel-"));
+    mkdirSync(path.join(tmp, ".coder"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("issue-critique respects cancel", async () => {
+    const { default: issueCritiqueMachine } = await import(
+      "../src/machines/research/issue-critique.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        version: 1,
+        current: "init",
+        history: [],
+        steps: {},
+      }) + "\n",
+    );
+
+    const ctx = {
+      workspaceDir: tmp,
+      cancelToken: { cancelled: true, paused: false },
+      log: () => {},
+      config: { workflow: { timeouts: { researchStep: 60000 } } },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: { execute: async () => ({ exitCode: 0, stdout: "{}" }) },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+
+    const result = await issueCritiqueMachine.run(
+      {
+        issues: [{ id: "IDEA-01", title: "Test" }],
+        repoRoot: tmp,
+        stepsDir,
+        scratchpadPath,
+        pipelinePath,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "cancelled");
+  });
+});
+
+describe("tech-selection cancel", () => {
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "tech-cancel-"));
+    mkdirSync(path.join(tmp, ".coder"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("tech-selection respects cancel", async () => {
+    const { default: techSelectionMachine } = await import(
+      "../src/machines/research/tech-selection.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        version: 1,
+        current: "init",
+        history: [],
+        steps: {},
+      }) + "\n",
+    );
+
+    const ctx = {
+      workspaceDir: tmp,
+      cancelToken: { cancelled: true, paused: false },
+      log: () => {},
+      config: { workflow: { timeouts: { researchStep: 60000 } } },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: { execute: async () => ({ exitCode: 0, stdout: "{}" }) },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+
+    const result = await techSelectionMachine.run(
+      {
+        requirements: "Test requirements",
+        stepsDir,
+        scratchpadPath,
+        pipelinePath,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "cancelled");
+  });
+});
+
+describe("session state helpers", () => {
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "session-state-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("round-trips session state to disk", async () => {
+    const { loadSessionState, saveSessionState } = await import(
+      "../src/machines/research/_shared.js"
+    );
+
+    // Initially empty
+    const initial = loadSessionState(tmp);
+    assert.deepEqual(initial, {});
+
+    // Save and reload
+    const state = {
+      synthesisDraftSessionId: "abc-123",
+      synthesisDraftSessionId_agent: "claude",
+    };
+    saveSessionState(tmp, state);
+
+    const loaded = loadSessionState(tmp);
+    assert.deepEqual(loaded, state);
+
+    // Verify file on disk
+    const raw = JSON.parse(
+      readFileSync(path.join(tmp, "session-state.json"), "utf8"),
+    );
+    assert.equal(raw.synthesisDraftSessionId, "abc-123");
   });
 });

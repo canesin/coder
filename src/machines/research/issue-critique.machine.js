@@ -1,15 +1,10 @@
-import { writeFileSync } from "node:fs";
-import path from "node:path";
 import { z } from "zod";
-import { defineMachine } from "../_base.js";
+import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
-  beginPipelineStep,
-  endPipelineStep,
   loadPipeline,
-  parseAgentPayload,
-  requireExitZero,
   resolveArtifact,
+  runStructuredStep,
 } from "./_shared.js";
 
 export default defineMachine({
@@ -35,10 +30,6 @@ export default defineMachine({
   }),
 
   async execute(input, ctx) {
-    const { agentName, agent } = ctx.agentPool.getAgent("planReviewer", {
-      scope: "workspace",
-    });
-
     const pipeline = loadPipeline(input.pipelinePath) || {
       version: 1,
       runId: "issue-critique",
@@ -46,29 +37,15 @@ export default defineMachine({
       history: [],
       steps: {},
     };
-    const _analysisBrief = resolveArtifact(
-      input.analysisBrief,
-      input.stepsDir,
-      "analysis-brief",
-    );
-    const _webReferenceMap = resolveArtifact(
-      input.webReferenceMap,
-      input.stepsDir,
-      "web-references",
-    );
+    resolveArtifact(input.analysisBrief, input.stepsDir, "analysis-brief");
+    resolveArtifact(input.webReferenceMap, input.stepsDir, "web-references");
     const validationResults = resolveArtifact(
       input.validationResults,
       input.stepsDir,
       "validation-results",
     );
 
-    beginPipelineStep(
-      pipeline,
-      input.pipelinePath,
-      input.scratchpadPath,
-      "issue_critique",
-      { agent: agentName, issueCount: input.issues.length },
-    );
+    checkCancel(ctx);
 
     const issuesSummary = input.issues
       .map(
@@ -137,16 +114,17 @@ Return JSON:
   "feedback": ["actionable feedback items for next iteration"]
 }`;
 
-    const res = await agent.execute(prompt, {
+    const { payload, agentName } = await runStructuredStep({
+      stepName: "issue_critique",
+      role: "planReviewer",
+      prompt,
       timeoutMs: ctx.config.workflow.timeouts.researchStep,
+      stepsDir: input.stepsDir,
+      scratchpadPath: input.scratchpadPath,
+      pipeline,
+      pipelinePath: input.pipelinePath,
+      ctx,
     });
-    requireExitZero(agentName, "issue_critique", res);
-
-    const payload = parseAgentPayload(agentName, res.stdout);
-
-    // Save critique artifact
-    const critiquePath = path.join(input.stepsDir, "issue-critique.json");
-    writeFileSync(critiquePath, `${JSON.stringify(payload, null, 2)}\n`);
 
     appendScratchpad(input.scratchpadPath, "Issue Critique", [
       `- agent: ${agentName}`,
@@ -155,15 +133,6 @@ Return JSON:
       `- issues_reviewed: ${(payload?.issueReviews || []).length}`,
       `- gaps_found: ${(payload?.backlogIssues?.gaps || []).length}`,
     ]);
-
-    endPipelineStep(
-      pipeline,
-      input.pipelinePath,
-      input.scratchpadPath,
-      "issue_critique",
-      "completed",
-      { agent: agentName, verdict: payload?.verdict },
-    );
 
     return {
       status: "ok",
