@@ -107,6 +107,7 @@ test("All expected Claude resume failure patterns are present", async () => {
     "Invalid session ID",
     "Conversation has expired",
     "Session has expired",
+    "is already in use", // "Session ID <uuid> is already in use" (claude-code #5524)
   ];
   assert.equal(capturedOpts.killOnStderrPatterns.length, expected.length);
   for (const pattern of expected) {
