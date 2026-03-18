@@ -11,6 +11,8 @@ import {
   extractJson,
   formatCommandFailure,
 } from "../../helpers.js";
+import { CancelledError } from "../_base.js";
+import { withSessionResume } from "../_session.js";
 
 /**
  * Chunk a large pointer text into manageable pieces for analysis.
@@ -100,6 +102,8 @@ export function requireExitZero(agentName, label, res) {
  *   pipeline: object,
  *   pipelinePath: string,
  *   ctx: import("../_base.js").WorkflowContext & { agentPool: any },
+ *   sessionState?: object,
+ *   sessionKey?: string,
  * }} opts
  * @returns {Promise<{ payload: any, agentName: string, outputPath: string, relOutputPath: string }>}
  */
@@ -114,15 +118,32 @@ export async function runStructuredStep({
   pipeline,
   pipelinePath,
   ctx,
+  sessionState,
+  sessionKey,
 }) {
-  if (ctx.cancelToken.cancelled) throw new Error("Run cancelled");
+  if (ctx.cancelToken.cancelled) throw new CancelledError();
 
   beginPipelineStep(pipeline, pipelinePath, scratchpadPath, stepName, { role });
   const { agentName, agent } = ctx.agentPool.getAgent(role, {
     scope: "workspace",
   });
 
-  const res = await agent.execute(prompt, { timeoutMs });
+  let res;
+  if (sessionState && sessionKey) {
+    res = await withSessionResume({
+      agentName,
+      agent,
+      state: sessionState,
+      sessionKey,
+      agentNameKey: `${sessionKey}_agent`,
+      workspaceDir: ctx.workspaceDir,
+      executeFn: (sessionOpts) =>
+        agent.execute(prompt, { timeoutMs, ...sessionOpts }),
+      log: ctx.log,
+    });
+  } else {
+    res = await agent.execute(prompt, { timeoutMs });
+  }
   if (res.exitCode !== 0) {
     endPipelineStep(
       pipeline,

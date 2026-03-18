@@ -1,0 +1,247 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { CancelledError, checkCancel } from "../src/machines/_base.js";
+
+describe("checkCancel", () => {
+  it("does nothing when not cancelled", () => {
+    const ctx = { cancelToken: { cancelled: false, paused: false } };
+    assert.doesNotThrow(() => checkCancel(ctx));
+  });
+
+  it("throws CancelledError when cancelled", () => {
+    const ctx = { cancelToken: { cancelled: true, paused: false } };
+    assert.throws(
+      () => checkCancel(ctx),
+      (err) => err instanceof CancelledError,
+    );
+  });
+});
+
+describe("research cancel in issue-synthesis", () => {
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "research-cancel-"));
+    mkdirSync(path.join(tmp, ".coder"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("issue-synthesis respects cancel between iterations", async () => {
+    // We import the machine dynamically to test it
+    const { default: issueSynthesisMachine } = await import(
+      "../src/machines/research/issue-synthesis.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+
+    const pipeline = {
+      version: 1,
+      runId: "test-cancel",
+      current: "issue_synthesis",
+      history: [],
+      steps: {},
+    };
+    writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2) + "\n");
+
+    // Write a mock analysis-brief artifact
+    writeFileSync(
+      path.join(stepsDir, "analysis-brief.json"),
+      JSON.stringify({ problem_spaces: [], constraints: [] }),
+    );
+
+    const logEvents = [];
+    const ctx = {
+      workspaceDir: tmp,
+      cancelToken: { cancelled: true, paused: false }, // Already cancelled
+      log: (e) => logEvents.push(e),
+      config: { workflow: { timeouts: { researchStep: 60000 } } },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: { execute: async () => ({ exitCode: 0, stdout: "{}" }) },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+
+    const result = await issueSynthesisMachine.run(
+      {
+        stepsDir,
+        scratchpadPath,
+        pipelinePath,
+        repoRoot: tmp,
+        iterations: 3,
+        maxIssues: 6,
+      },
+      ctx,
+    );
+
+    // Should return cancelled status (from CancelledError caught by defineMachine)
+    assert.equal(result.status, "cancelled");
+  });
+
+  it("issue-synthesis skips completed iterations on resume", async () => {
+    const { default: issueSynthesisMachine } = await import(
+      "../src/machines/research/issue-synthesis.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+
+    // Pre-mark iteration 1 as completed
+    const pipeline = {
+      version: 1,
+      runId: "test-resume",
+      current: "issue_synthesis",
+      history: [],
+      steps: {
+        synthesis_iteration_1: {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+        },
+      },
+    };
+    writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2) + "\n");
+
+    // Write artifacts for iteration 1
+    const draftPayload = {
+      issues: [{ id: "IDEA-01", title: "Test Issue" }],
+      assumptions: [],
+      open_questions: [],
+    };
+    writeFileSync(
+      path.join(stepsDir, "draft-01.json"),
+      JSON.stringify(draftPayload),
+    );
+    writeFileSync(
+      path.join(stepsDir, "analysis-brief.json"),
+      JSON.stringify({ problem_spaces: [], constraints: [] }),
+    );
+
+    const logEvents = [];
+    let agentCallCount = 0;
+
+    const ctx = {
+      workspaceDir: tmp,
+      cancelToken: { cancelled: false, paused: false },
+      log: (e) => logEvents.push(e),
+      config: { workflow: { timeouts: { researchStep: 60000 } } },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: {
+            execute: async () => {
+              agentCallCount++;
+              // Return issues for iteration 2 (final)
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  issues: [
+                    { id: "IDEA-01", title: "Test Issue Updated" },
+                    { id: "IDEA-02", title: "Second Issue" },
+                  ],
+                  assumptions: [],
+                  open_questions: [],
+                }),
+              };
+            },
+          },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+
+    const result = await issueSynthesisMachine.run(
+      {
+        stepsDir,
+        scratchpadPath,
+        pipelinePath,
+        repoRoot: tmp,
+        iterations: 2,
+        maxIssues: 6,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "ok");
+    // Iteration 1 was skipped (no critique since iterations=2 means iteration 2 is last)
+    // Only iteration 2 draft should call the agent (1 call)
+    assert.equal(agentCallCount, 1);
+    assert.ok(
+      logEvents.some((e) => e.event === "research_iteration_skipped"),
+      "should log that iteration 1 was skipped",
+    );
+  });
+});
+
+describe("context-gather cancel", () => {
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "ctx-gather-cancel-"));
+    mkdirSync(path.join(tmp, ".coder", "scratchpad"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("context-gather respects cancel in chunk loop", async () => {
+    const { default: contextGatherMachine } = await import(
+      "../src/machines/research/context-gather.machine.js"
+    );
+
+    // Create a git repo so the machine passes validation
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: tmp, stdio: "pipe" });
+
+    // Large pointer text to create multiple chunks
+    const pointers = "x".repeat(15000) + "\n" + "y".repeat(15000);
+
+    const logEvents = [];
+    const ctx = {
+      workspaceDir: tmp,
+      cancelToken: { cancelled: true, paused: false }, // Already cancelled
+      log: (e) => logEvents.push(e),
+      config: { workflow: { timeouts: { researchStep: 60000 } } },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: {
+            execute: async () => ({
+              exitCode: 0,
+              stdout: JSON.stringify({ summary: "test", signals: {} }),
+            }),
+          },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+
+    const result = await contextGatherMachine.run(
+      { pointers, repoPath: "." },
+      ctx,
+    );
+
+    assert.equal(result.status, "cancelled");
+  });
+});

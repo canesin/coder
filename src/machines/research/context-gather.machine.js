@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { defineMachine } from "../_base.js";
+import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
   chunkPointers,
@@ -105,6 +105,8 @@ export default defineMachine({
     ctx.log({ event: "research_analyze_chunks", count: pointerChunks.length });
     const chunkSummaries = [];
     for (let i = 0; i < pointerChunks.length; i++) {
+      checkCancel(ctx);
+
       const chunkPrompt = `Summarize pointer chunk ${i + 1}/${pointerChunks.length} for issue decomposition.
 
 Repo root: ${repoRoot}
