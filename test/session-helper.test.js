@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   supportsSession,
   withSessionResume,
-} from "../src/machines/develop/_session.js";
+} from "../src/machines/_session.js";
 import { loadState, saveState } from "../src/state/workflow-state.js";
 
 describe("supportsSession", () => {

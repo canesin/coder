@@ -1,8 +1,10 @@
+import { writeFileSync } from "node:fs";
 import { z } from "zod";
-import { defineMachine } from "../_base.js";
+import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
   loadPipeline,
+  loadStepArtifact,
   resolveArtifact,
   runStructuredStep,
 } from "./_shared.js";
@@ -65,6 +67,18 @@ export default defineMachine({
     let prevIssueCount = 0;
 
     for (let i = 1; i <= iterations; i++) {
+      // Skip already-completed iterations (resume support)
+      const iterKey = `synthesis_iteration_${i}`;
+      if (pipeline.steps[iterKey]?.status === "completed") {
+        finalDraft =
+          loadStepArtifact(stepsDir, `draft-${String(i).padStart(2, "0")}`) ||
+          finalDraft;
+        ctx.log({ event: "research_iteration_skipped", iteration: i });
+        continue;
+      }
+
+      checkCancel(ctx);
+
       const feedbackSection =
         priorFeedback.length > 0
           ? priorFeedback.map((f) => `- ${f}`).join("\n")
@@ -178,8 +192,15 @@ Return ONLY valid JSON in this schema:
         `- draft_json: ${draftRes.relOutputPath}`,
       ]);
 
-      // Skip critique on last iteration
-      if (i >= iterations) break;
+      // Skip critique on last iteration — mark completed and break
+      if (i >= iterations) {
+        pipeline.steps[iterKey] = {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+        };
+        writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+        break;
+      }
 
       // Critique
       ctx.log({ event: "research_critique_iteration", iteration: i });
@@ -243,6 +264,13 @@ Return ONLY valid JSON in this schema:
         `- testing_gaps: ${testingGaps.length}`,
         `- review_json: ${reviewRes.relOutputPath}`,
       ]);
+
+      // Mark iteration complete in pipeline
+      pipeline.steps[iterKey] = {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      };
+      writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
     }
 
     return {

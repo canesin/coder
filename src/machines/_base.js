@@ -1,5 +1,27 @@
 import { z } from "zod";
 
+/**
+ * Tagged error for cancellation — thrown by `checkCancel()`.
+ * WorkflowRunner recognises this and converts it to `{ status: "cancelled" }`
+ * instead of `{ status: "error" }`.
+ */
+export class CancelledError extends Error {
+  constructor(message = "Run cancelled") {
+    super(message);
+    this.name = "CancelledError";
+  }
+}
+
+/**
+ * Check whether the workflow has been cancelled and throw if so.
+ * Use inside machine loops to allow prompt cancellation.
+ *
+ * @param {{ cancelToken: { cancelled: boolean } }} ctx
+ */
+export function checkCancel(ctx) {
+  if (ctx.cancelToken.cancelled) throw new CancelledError();
+}
+
 export const MachineResultSchema = z.object({
   status: z.enum(["ok", "error", "skipped"]),
   data: z.any().optional(),
@@ -83,6 +105,13 @@ export function defineMachine(def) {
           durationMs: result.durationMs ?? durationMs,
         };
       } catch (err) {
+        if (err instanceof CancelledError) {
+          return {
+            status: "cancelled",
+            error: err.message,
+            durationMs: Date.now() - start,
+          };
+        }
         return {
           status: "error",
           error: err.message || String(err),
