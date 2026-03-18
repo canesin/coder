@@ -11,6 +11,7 @@ import {
   extractJson,
   formatCommandFailure,
 } from "../../helpers.js";
+import { CancelledError } from "../_base.js";
 import { withSessionResume } from "../_session.js";
 
 /**
@@ -120,7 +121,7 @@ export async function runStructuredStep({
   sessionState,
   sessionKey,
 }) {
-  if (ctx.cancelToken.cancelled) throw new Error("Run cancelled");
+  if (ctx.cancelToken.cancelled) throw new CancelledError();
 
   beginPipelineStep(pipeline, pipelinePath, scratchpadPath, stepName, { role });
   const { agentName, agent } = ctx.agentPool.getAgent(role, {

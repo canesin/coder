@@ -23,7 +23,7 @@ export function checkCancel(ctx) {
 }
 
 export const MachineResultSchema = z.object({
-  status: z.enum(["ok", "error", "skipped"]),
+  status: z.enum(["ok", "error", "skipped", "cancelled"]),
   data: z.any().optional(),
   error: z.string().optional(),
   durationMs: z.number().int().nonnegative(),
