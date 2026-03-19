@@ -173,14 +173,36 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
 }
 
 export async function readWorkflowStatus(workspaceDir) {
-  const loopState = await loadLoopState(workspaceDir);
-  const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+  let loopState = await loadLoopState(workspaceDir);
+  let { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
+
+  // Capture pre-merge stage before auto-transition (which clears currentStage).
+  const originalStage = loopState.currentStage;
+
+  // Auto-transition orphaned stale runs to "failed" on status read.
+  // This handles service restarts that leave runs stuck in "running".
+  // Skip paused runs — they are intentionally inactive, not stuck.
+  if (
+    isStale &&
+    loopState.runId &&
+    loopState.status !== "paused" &&
+    !activeRuns.has(loopState.runId)
+  ) {
+    const snapshot = await loadWorkflowSnapshot(workspaceDir);
+    const wf = snapshot?.workflow || "develop";
+    await markRunTerminalOnDisk(workspaceDir, loopState.runId, wf, "failed");
+    // Re-read state after terminal transition
+    loopState = await loadLoopState(workspaceDir);
+    ({ heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+      detectStaleness(loopState));
+  }
 
   // Status contract: when currentStage is develop_starting, we are pre-merge.
   // Suppress stale failed/skipped entries so status shows a fresh retryable view.
   // Scoped to develop only; other workflows may have different semantics.
-  const isPreMerge = loopState.currentStage === "develop_starting";
+  // Use originalStage so auto-transition doesn't break the pre-merge filter.
+  const isPreMerge = originalStage === "develop_starting";
   const queueForStatus = isPreMerge
     ? loopState.issueQueue.filter(
         (e) => e.status !== "failed" && e.status !== "skipped",

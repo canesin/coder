@@ -13,41 +13,91 @@ import {
 
 /**
  * Parse the Verdict section from a plan critique markdown string.
- * Takes the last match to avoid false positives from prompt examples in the header.
+ * Scans the full text between the last Verdict heading and the next heading (or EOF)
+ * to handle cases where the reviewer writes narrative before the verdict keyword.
  * Returns one of: "APPROVED", "REJECT", "REVISE", "PROCEED_WITH_CAUTION", "UNKNOWN".
  */
 export function parsePlanVerdict(critiqueMd) {
   if (!critiqueMd) return "UNKNOWN";
 
-  const verdictLines = [];
-  // Match heading-based verdict sections: "## [N.] Verdict" then value on next non-empty line
+  // Extract full Verdict sections (heading to next heading or EOF)
+  const verdictSections = [];
   for (const match of critiqueMd.matchAll(
-    /^#{1,6}\s+(?:\d+\.\s+)?Verdict\b[^\n]*\n\s*([^\n]+)/gim,
+    /^#{1,6}\s+(?:\d+\.\s+)?Verdict\b[^\n]*/gim,
   )) {
-    verdictLines.push(match[1]);
+    const sectionStart = match.index + match[0].length;
+    // Find the next heading or EOF
+    const rest = critiqueMd.slice(sectionStart);
+    const nextHeading = rest.search(/^#{1,6}\s/m);
+    const sectionText = nextHeading >= 0 ? rest.slice(0, nextHeading) : rest;
+    verdictSections.push(sectionText);
   }
 
   // Fallback: inline "**Verdict**: VALUE" or "Verdict: VALUE"
-  if (verdictLines.length === 0) {
+  if (verdictSections.length === 0) {
     for (const match of critiqueMd.matchAll(
       /\*{0,2}Verdict\*{0,2}\s*[:-]\s*([^\n]+)/gi,
     )) {
-      verdictLines.push(match[1]);
+      verdictSections.push(match[1]);
     }
   }
 
-  if (verdictLines.length === 0) return "UNKNOWN";
+  if (verdictSections.length === 0) return "UNKNOWN";
 
-  const raw = verdictLines[verdictLines.length - 1]
-    .trim()
+  // Two-pass keyword extraction from the last verdict section:
+  // Pass 1: scan lines bottom-up for lines that START with a verdict keyword
+  //         (handles "REVISE\n\nNot approved until..." without false positives)
+  // Pass 2: fall back to last-position-wins across the whole section
+  //         (handles "The plan is APPROVED." on a single line)
+  const raw = verdictSections[verdictSections.length - 1]
     .toUpperCase()
-    .replace(/[*_`[\]()]/g, "");
-  if (/\bAPPROVED\b/.test(raw)) return "APPROVED";
-  if (/\bREJECT\b/.test(raw)) return "REJECT";
-  if (/\bREVISE\b/.test(raw)) return "REVISE";
-  if (/\bPROCEED\b/.test(raw) || /\bCAUTION\b/.test(raw))
-    return "PROCEED_WITH_CAUTION";
-  return "UNKNOWN";
+    .replace(/[*_`"'[\]()]/g, "");
+
+  // Pass 1: keyword-leading lines. A line qualifies when a verdict keyword
+  // starts it and is followed by a separator (- , : . ;) or end-of-line.
+  // This matches "APPROVED - proceed with caution" but rejects
+  // "Approved once the API is verified." (continuation word, not separator).
+  const lines = raw.split("\n");
+  const sep = /(?:\s*[-\u2014:.,;!]|\s*$)/; // separator or EOL after keyword
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim().replace(/^[-\u2022*]\s*/, "");
+    if (new RegExp(`^APPROVED\\b${sep.source}`).test(line)) return "APPROVED";
+    if (new RegExp(`^REJECT\\b${sep.source}`).test(line)) return "REJECT";
+    if (new RegExp(`^REVISE\\b${sep.source}`).test(line)) return "REVISE";
+    if (
+      new RegExp(`^PROCEED[\\s]+(?:WITH[\\s]+)?CAUTION\\b${sep.source}`).test(
+        line,
+      )
+    )
+      return "PROCEED_WITH_CAUTION";
+  }
+
+  // Pass 2: last-position-wins across the section.
+  // Guard: if 3+ distinct verdict categories appear, this is likely an echoed
+  // template or truncated output — return UNKNOWN to avoid false positives.
+  const kwPatterns = [
+    { pattern: /\bAPPROVED\b/g, verdict: "APPROVED" },
+    { pattern: /\bREJECT\b/g, verdict: "REJECT" },
+    { pattern: /\bREVISE\b/g, verdict: "REVISE" },
+    { pattern: /\bPROCEED\b/g, verdict: "PROCEED_WITH_CAUTION" },
+    { pattern: /\bCAUTION\b/g, verdict: "PROCEED_WITH_CAUTION" },
+  ];
+  let bestVerdict = "UNKNOWN";
+  let bestPos = -1;
+  const foundCategories = new Set();
+  for (const { pattern, verdict } of kwPatterns) {
+    let last = null;
+    for (const m of raw.matchAll(pattern)) last = m;
+    if (last) {
+      foundCategories.add(verdict);
+      if (last.index > bestPos) {
+        bestPos = last.index;
+        bestVerdict = verdict;
+      }
+    }
+  }
+  if (foundCategories.size >= 2) return "UNKNOWN";
+  return bestVerdict;
 }
 
 export default defineMachine({
