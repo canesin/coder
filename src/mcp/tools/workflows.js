@@ -179,7 +179,13 @@ export async function readWorkflowStatus(workspaceDir) {
 
   // Auto-transition orphaned stale runs to "failed" on status read.
   // This handles service restarts that leave runs stuck in "running".
-  if (isStale && loopState.runId && !activeRuns.has(loopState.runId)) {
+  // Skip paused runs — they are intentionally inactive, not stuck.
+  if (
+    isStale &&
+    loopState.runId &&
+    loopState.status !== "paused" &&
+    !activeRuns.has(loopState.runId)
+  ) {
     const snapshot = await loadWorkflowSnapshot(workspaceDir);
     const wf = snapshot?.workflow || "develop";
     await markRunTerminalOnDisk(workspaceDir, loopState.runId, wf, "failed");

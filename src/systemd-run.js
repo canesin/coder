@@ -101,9 +101,11 @@ export function buildSystemdRunArgs(
     );
   }
 
-  // Use cwd (not /tmp) so the script is visible inside the unit — PrivateTmp=yes
-  // gives the service a private /tmp that is isolated from the caller.
-  args.push("bash", "-lc", maybeTmpFile(command, cwd || "/tmp"));
+  // PrivateTmp=yes hides /tmp from the unit. Use XDG_RUNTIME_DIR (/run/user/<uid>)
+  // which is visible to both the caller and --user units, and avoids polluting the
+  // repo working tree (unlike cwd).
+  const tmpDir = process.env.XDG_RUNTIME_DIR || cwd || "/tmp";
+  args.push("bash", "-lc", maybeTmpFile(command, tmpDir));
   return args;
 }
 

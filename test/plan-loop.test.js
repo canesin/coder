@@ -113,6 +113,23 @@ Overall good plan.`;
   assert.equal(parsePlanVerdict(md), "REVISE");
 });
 
+test("parsePlanVerdict: verdict keyword then prose mentioning another keyword", () => {
+  const md = `## Verdict
+REVISE
+
+Not approved until the API surface is verified.`;
+  // Line-start pass finds REVISE first (bottom-up: prose line doesn't start
+  // with a keyword, then REVISE does). "approved" in prose is not a false positive.
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: verdict embedded in prose falls back to last-position-wins", () => {
+  const md = `## Verdict
+The plan is APPROVED.`;
+  // No line starts with a keyword, so pass 2 finds APPROVED.
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
 // ---------------------------------------------------------------------------
 // runPlanLoop
 // ---------------------------------------------------------------------------

@@ -44,13 +44,27 @@ export function parsePlanVerdict(critiqueMd) {
 
   if (verdictSections.length === 0) return "UNKNOWN";
 
-  // Last-position-wins: scan the final verdict section for keywords and
-  // return whichever appears latest. This handles echoed option lists
-  // (e.g. "One of: REJECT / REVISE / APPROVED") followed by the real verdict.
+  // Two-pass keyword extraction from the last verdict section:
+  // Pass 1: scan lines bottom-up for lines that START with a verdict keyword
+  //         (handles "REVISE\n\nNot approved until..." without false positives)
+  // Pass 2: fall back to last-position-wins across the whole section
+  //         (handles "The plan is APPROVED." on a single line)
   const raw = verdictSections[verdictSections.length - 1]
     .toUpperCase()
     .replace(/[*_`"'[\]()]/g, "");
-  const keywords = [
+
+  // Pass 1: line-start matching (most reliable)
+  const lines = raw.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim().replace(/^[-•*]\s*/, "");
+    if (/^APPROVED\b/.test(line)) return "APPROVED";
+    if (/^REJECT\b/.test(line)) return "REJECT";
+    if (/^REVISE\b/.test(line)) return "REVISE";
+    if (/^PROCEED\b/.test(line)) return "PROCEED_WITH_CAUTION";
+  }
+
+  // Pass 2: last-position-wins across the section
+  const kwPatterns = [
     { pattern: /\bAPPROVED\b/g, verdict: "APPROVED" },
     { pattern: /\bREJECT\b/g, verdict: "REJECT" },
     { pattern: /\bREVISE\b/g, verdict: "REVISE" },
@@ -59,7 +73,7 @@ export function parsePlanVerdict(critiqueMd) {
   ];
   let bestVerdict = "UNKNOWN";
   let bestPos = -1;
-  for (const { pattern, verdict } of keywords) {
+  for (const { pattern, verdict } of kwPatterns) {
     let last = null;
     for (const m of raw.matchAll(pattern)) last = m;
     if (last && last.index > bestPos) {
