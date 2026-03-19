@@ -47,6 +47,17 @@ export function parsePlanVerdict(critiqueMd) {
   if (/\bREVISE\b/.test(raw)) return "REVISE";
   if (/\bPROCEED\b/.test(raw) || /\bCAUTION\b/.test(raw))
     return "PROCEED_WITH_CAUTION";
+  // Handle common paraphrases from models that don't follow exact keyword format
+  if (
+    /\bNEEDS?\s+REWORK\b/.test(raw) ||
+    /\bNEEDS?\s+REVISION\b/.test(raw) ||
+    /\bREWORK\b/.test(raw)
+  )
+    return "REVISE";
+  if (/\bNEEDS?\s+MAJOR\b/.test(raw) || /\bMAJOR\s+REWORK\b/.test(raw))
+    return "REJECT";
+  if (/\bMINOR\s+ISSUES?\b/.test(raw) || /\bLOOKS?\s+GOOD\b/.test(raw))
+    return "PROCEED_WITH_CAUTION";
   return "UNKNOWN";
 }
 

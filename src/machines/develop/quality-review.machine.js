@@ -10,7 +10,11 @@ import {
   stripAgentNoise,
   upsertIssueCompletionBlock,
 } from "../../helpers.js";
-import { loadState, saveState } from "../../state/workflow-state.js";
+import {
+  clearAllSessionIdsAndDisable,
+  loadState,
+  saveState,
+} from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
 import { withSessionResume } from "./_session.js";
 import {
@@ -288,11 +292,16 @@ export default defineMachine({
         state.reviewerAgentName = reviewerName;
         await saveState(ctx.workspaceDir, state);
       }
+      let createdNewSessionInThisBlock = false;
       if (reviewerSupportsSession && !state.reviewerSessionId) {
         state.reviewerSessionId = randomUUID();
         state.reviewerAgentName = reviewerName;
+        createdNewSessionInThisBlock = true;
         await saveState(ctx.workspaceDir, state);
       }
+      // After invalidation and init: true = resuming existing session (same-issue recovery), false = creating new
+      const hadReviewerSessionBefore =
+        !createdNewSessionInThisBlock && !!state.reviewerSessionId;
 
       // Initialize review round tracking if not set (recovery-safe)
       if (state.steps.reviewRound === undefined) {
@@ -340,12 +349,23 @@ export default defineMachine({
             state.specDeltaSummary || "",
           );
 
-          // Round 1: new session; Round 2+: resume to retain review context
-          const reviewSessionOpts = reviewerSupportsSession
-            ? round === 1
-              ? { sessionId: state.reviewerSessionId }
-              : { resumeId: state.reviewerSessionId }
-            : {};
+          // Round 1: create only when no session existed before (same-issue recovery uses resume)
+          // sessionsDisabled: no session opts for remainder of issue
+          const reviewSessionOpts =
+            state.sessionsDisabled || !reviewerSupportsSession
+              ? {}
+              : round === 1 && !hadReviewerSessionBefore
+                ? { sessionId: state.reviewerSessionId }
+                : { resumeId: state.reviewerSessionId };
+          if (Object.keys(reviewSessionOpts).length > 0) {
+            ctx.log({
+              event: "session_opts",
+              sessionKey: "reviewerSessionId",
+              hadSessionBefore: hadReviewerSessionBefore,
+              usingCreate: !!reviewSessionOpts.sessionId,
+              usingResume: !!reviewSessionOpts.resumeId,
+            });
+          }
 
           let reviewRes;
           try {
@@ -355,22 +375,20 @@ export default defineMachine({
             });
           } catch (err) {
             const isAuthError =
-              reviewerSupportsSession &&
-              err.name === "CommandFatalStderrError" &&
+              (err.name === "CommandFatalStderrError" ||
+                err.name === "CommandFatalStdoutError") &&
               err.category === "auth";
-            const canRetryWithFreshSession =
-              isAuthError &&
-              (reviewSessionOpts.resumeId || reviewSessionOpts.sessionId);
-            if (canRetryWithFreshSession) {
+            const hadSessionOpts =
+              reviewSessionOpts.resumeId || reviewSessionOpts.sessionId;
+            if (isAuthError && hadSessionOpts) {
               ctx.log({
                 event: "session_auth_failed",
                 sessionId: state.reviewerSessionId,
                 wasCreating: !!reviewSessionOpts.sessionId,
               });
-              state.reviewerSessionId = randomUUID();
+              clearAllSessionIdsAndDisable(state);
               await saveState(ctx.workspaceDir, state);
               reviewRes = await reviewerAgent.execute(reviewPrompt, {
-                sessionId: state.reviewerSessionId,
                 timeoutMs: ctx.config.workflow.timeouts.reviewRound,
               });
             } else {

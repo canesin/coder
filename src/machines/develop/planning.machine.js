@@ -2,7 +2,11 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { z } from "zod";
-import { loadState, saveState } from "../../state/workflow-state.js";
+import {
+  clearAllSessionIdsAndDisable,
+  loadState,
+  saveState,
+} from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
 import {
   artifactPaths,
@@ -131,7 +135,8 @@ export default defineMachine({
         action: "creating_fresh_session",
       });
     }
-    const creatingSession = !state.planningSessionId || agentChanged;
+    const creatingSession =
+      !state.sessionsDisabled && (!state.planningSessionId || agentChanged);
     if (creatingSession) {
       state.planningSessionId = randomUUID();
       state.plannerAgentName = plannerName;
@@ -254,10 +259,20 @@ ${branchSections}`;
           `\n\nRemember: only write ${paths.plan}. Do not modify any source files.`;
       }
 
-      const sessionOpts =
-        creatingSession && attempt === 0
+      const sessionOpts = state.sessionsDisabled
+        ? {}
+        : creatingSession && attempt === 0
           ? { sessionId: state.planningSessionId }
           : { resumeId: state.planningSessionId };
+      if (Object.keys(sessionOpts).length > 0) {
+        ctx.log({
+          event: "session_opts",
+          sessionKey: "planningSessionId",
+          hadSessionBefore: !creatingSession,
+          usingCreate: !!sessionOpts.sessionId,
+          usingResume: !!sessionOpts.resumeId,
+        });
+      }
 
       let res;
       try {
@@ -268,24 +283,24 @@ ${branchSections}`;
           });
         } catch (err) {
           const isAuthError =
-            err.name === "CommandFatalStderrError" && err.category === "auth";
-          const canRetryWithFreshSession =
-            isAuthError && (sessionOpts.resumeId || sessionOpts.sessionId);
-          if (canRetryWithFreshSession) {
+            (err.name === "CommandFatalStderrError" ||
+              err.name === "CommandFatalStdoutError") &&
+            err.category === "auth";
+          const hadSessionOpts = sessionOpts.resumeId || sessionOpts.sessionId;
+          if (isAuthError && hadSessionOpts) {
             ctx.log({
               event: "session_auth_failed",
               sessionId: state.planningSessionId,
               wasCreating: !!sessionOpts.sessionId,
             });
-            state.planningSessionId = randomUUID();
+            clearAllSessionIdsAndDisable(state);
             await saveState(ctx.workspaceDir, state);
-            // Fresh session needs full planPrompt even during REVISE/constraint rounds
+            // Full planPrompt needed when retrying without session
             const retryPrompt =
               prompt === planPrompt || prompt.startsWith(planPrompt)
                 ? prompt
                 : `${planPrompt}\n\n${prompt}`;
             res = await plannerAgent.execute(retryPrompt, {
-              sessionId: state.planningSessionId,
               timeoutMs: ctx.config.workflow.timeouts.planning,
             });
           } else {

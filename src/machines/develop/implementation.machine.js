@@ -2,7 +2,11 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { discoverCodexSessionId } from "../../agents/codex-session-discovery.js";
-import { loadState, saveState } from "../../state/workflow-state.js";
+import {
+  clearAllSessionIdsAndDisable,
+  loadState,
+  saveState,
+} from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
 import {
   artifactPaths,
@@ -59,7 +63,7 @@ export default defineMachine({
     }
 
     const hadSessionBefore = !!state[sessionKey];
-    if (!state[sessionKey]) {
+    if (!state.sessionsDisabled && !state[sessionKey]) {
       if (programmerName === "codex") {
         if (codexUsesSession) {
           state[sessionKey] = randomUUID();
@@ -78,7 +82,9 @@ export default defineMachine({
       timeoutMs: ctx.config.workflow.timeouts.implementation,
     };
     const codexWithoutSession = programmerName === "codex" && !codexUsesSession;
-    if (programmerName === "codex") {
+    if (state.sessionsDisabled) {
+      if (codexWithoutSession) execOpts.execWithJsonCapture = true;
+    } else if (programmerName === "codex") {
       if (codexUsesSession) {
         if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
         else execOpts.sessionId = sessionOrResumeId;
@@ -221,15 +227,16 @@ FORBIDDEN patterns:
       res = await programmerAgent.execute(implPrompt, execOpts);
     } catch (err) {
       if (
-        err.name === "CommandFatalStderrError" &&
+        (err.name === "CommandFatalStderrError" ||
+          err.name === "CommandFatalStdoutError") &&
         err.category === "auth" &&
-        state[sessionKey]
+        (state[sessionKey] || execOpts.sessionId || execOpts.resumeId)
       ) {
         ctx.log({
           event: "session_auth_failed",
           sessionId: state[sessionKey],
         });
-        state[sessionKey] = null;
+        clearAllSessionIdsAndDisable(state);
         await saveState(ctx.workspaceDir, state);
         // Fresh session loses prior planning context — acceptable per GH-89
         const retryRunStart = codexWithoutSession ? Date.now() : 0;

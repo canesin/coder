@@ -20,7 +20,7 @@ function makeCommandFatalStderrError(message) {
   return err;
 }
 
-test("planning: retries with fresh session when session ID is already in use (create path)", async () => {
+test("planning: retries without session when session ID is already in use (create path)", async () => {
   const tmp = mkdtempSync(
     path.join(os.tmpdir(), "planning-session-collision-"),
   );
@@ -88,7 +88,12 @@ test("planning: retries with fresh session when session ID is already in use (cr
     assert.ok(existsSync(path.join(artifactsDir, "PLAN.md")));
 
     const state = await loadState(tmp);
-    assert.ok(state.planningSessionId, "should have new planning session ID");
+    assert.equal(
+      state.sessionsDisabled,
+      true,
+      "sessions disabled after collision",
+    );
+    assert.equal(state.planningSessionId, null, "planning session cleared");
     assert.equal(state.steps.wrotePlan, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });

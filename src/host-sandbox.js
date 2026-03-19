@@ -50,6 +50,15 @@ export class CommandFatalStderrError extends Error {
   }
 }
 
+export class CommandFatalStdoutError extends Error {
+  constructor(pattern, category) {
+    super(`Command aborted after fatal stdout match [${category}]: ${pattern}`);
+    this.name = "CommandFatalStdoutError";
+    this.pattern = pattern;
+    this.category = category;
+  }
+}
+
 export class McpStartupError extends Error {
   constructor(agentName, failedServers) {
     super(
@@ -78,6 +87,20 @@ function filterEnv(env) {
     if (env[key] !== undefined) out[key] = env[key];
   }
   return out;
+}
+
+/**
+ * Compute the effective env that agent subprocesses receive.
+ * Used for debugging (coder debug env).
+ * @param {NodeJS.ProcessEnv} processEnv
+ * @param {Record<string, string>} [baseEnv]
+ * @param {Record<string, string>} [extraEnv]
+ * @returns {Record<string, string>}
+ */
+export function computeSandboxEnv(processEnv, baseEnv = {}, extraEnv = {}) {
+  return stripNestedClaudeEnv(
+    mergeEnv(mergeEnv(filterEnv(processEnv), baseEnv), extraEnv),
+  );
 }
 
 export class HostSandboxProvider {
@@ -159,6 +182,14 @@ class HostSandboxInstance extends EventEmitter {
     const hangResetOnStderr = options.hangResetOnStderr ?? true;
     const killOnStderrPatterns = Array.isArray(options.killOnStderrPatterns)
       ? options.killOnStderrPatterns.filter(
+          (p) =>
+            typeof p?.pattern === "string" &&
+            p.pattern.trim() !== "" &&
+            typeof p?.category === "string",
+        )
+      : [];
+    const killOnStdoutPatterns = Array.isArray(options.killOnStdoutPatterns)
+      ? options.killOnStdoutPatterns.filter(
           (p) =>
             typeof p?.pattern === "string" &&
             p.pattern.trim() !== "" &&
@@ -301,6 +332,21 @@ class HostSandboxInstance extends EventEmitter {
         resetHangTimer();
         options.onStdout?.(chunk);
         this.emit("stdout", chunk);
+
+        if (killOnStdoutPatterns.length > 0) {
+          // Check accumulated stdout so split messages (e.g. across stream chunks) are caught
+          const lower = stdout.toLowerCase();
+          const hit = killOnStdoutPatterns.find((p) =>
+            lower.includes(p.pattern.toLowerCase()),
+          );
+          if (hit) {
+            terminateChild();
+            const err = new CommandFatalStdoutError(hit.pattern, hit.category);
+            err.stdout = stdout;
+            err.stderr = stderr;
+            settle(err);
+          }
+        }
       });
       child.stderr.on("data", (buf) => {
         const chunk = buf.toString();
@@ -311,7 +357,8 @@ class HostSandboxInstance extends EventEmitter {
         this.emit("stderr", chunk);
 
         if (killOnStderrPatterns.length > 0) {
-          const lower = chunk.toLowerCase();
+          // Check accumulated stderr so split messages (e.g. across stream chunks) are caught
+          const lower = stderr.toLowerCase();
           const hit = killOnStderrPatterns.find((p) =>
             lower.includes(p.pattern.toLowerCase()),
           );

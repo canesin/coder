@@ -588,11 +588,13 @@ Problems that should be addressed but won't cause immediate failure.
 Ambiguities or assumptions that need to be verified.
 
 ### Verdict
-One of:
-- REJECT (major rework needed, scope violation, or hallucinated APIs)
-- REVISE (fix over-engineering or other issues first)
-- PROCEED WITH CAUTION (minor issues)
-- APPROVED (rare - plan is minimal, correct, and verified)
+IMPORTANT: Your verdict line MUST be exactly one of these four options, with no other words:
+- REJECT
+- REVISE
+- PROCEED WITH CAUTION
+- APPROVED
+
+Do NOT paraphrase (e.g. do not write "Needs Revision" or "Needs Rework"). Write the exact keyword.
 
 Be specific. Reference what you found in your searches about the external APIs.
 Reference specific sections in the plan when identifying over-engineering.`;

@@ -50,6 +50,54 @@ test("host sandbox aborts on Codex session-not-found pattern (auth category)", a
   );
 });
 
+test("host sandbox aborts command on configured stdout auth-failure pattern (session already in use)", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `echo "Error: Session ID 57ce9ef7-f502-451c-a258-535c8b62ccf5 is already in use."; sleep 2; echo "should-not-print"`,
+        {
+          timeoutMs: 5000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "already in use");
+      return true;
+    },
+  );
+});
+
+test("host sandbox aborts when pattern is split across stdout chunks", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  // Simulate error split across chunks: "Error: Session " + "ID X is already in use"
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `printf 'Error: Session '; printf 'ID 123 is already in use.'; sleep 2`,
+        {
+          timeoutMs: 5000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      return true;
+    },
+  );
+});
+
 test("host sandbox aborts with transient category on matching stderr pattern", async () => {
   const provider = new HostSandboxProvider();
   const sandbox = await provider.create();
