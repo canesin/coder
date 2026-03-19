@@ -156,6 +156,12 @@ test("spec_ingest build mode reads research manifest", async () => {
       "SCRATCHPAD.md must exist",
     );
     const scratchpad = readFileSync(result.data.scratchpadPath, "utf8");
+    // Step-tracking entries from beginPipelineStep / endPipelineStep
+    assert.match(scratchpad, /## Step: spec_ingest/);
+    assert.match(scratchpad, /- status: running/);
+    assert.match(scratchpad, /- status: completed/);
+    assert.match(scratchpad, /- mode: build/);
+    // Custom summary section
     assert.match(scratchpad, /Spec Ingest \(build mode\)/);
     assert.match(scratchpad, /researchRunId: test-research-run/);
   } finally {
@@ -231,6 +237,12 @@ test("spec_ingest ingest mode parses spec directory with domains, decisions, and
       "SCRATCHPAD.md must exist",
     );
     const scratchpad = readFileSync(result.data.scratchpadPath, "utf8");
+    // Step-tracking entries from beginPipelineStep / endPipelineStep
+    assert.match(scratchpad, /## Step: spec_ingest/);
+    assert.match(scratchpad, /- status: running/);
+    assert.match(scratchpad, /- status: completed/);
+    assert.match(scratchpad, /- mode: ingest/);
+    // Custom summary section
     assert.match(scratchpad, /Spec Ingest \(ingest mode\)/);
     assert.match(scratchpad, /domains: 1/);
     assert.match(scratchpad, /decisions: 1/);
