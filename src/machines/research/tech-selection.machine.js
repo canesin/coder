@@ -59,9 +59,19 @@ export default defineMachine({
 
     checkCancel(ctx);
 
-    const refSummary = Object.values(webRefs)
-      .slice(0, 10)
-      .map((ref) => `- ${ref.title || ref.url}: ${ref.summary || ""}`)
+    const flatRefs = Array.isArray(webRefs?.topics)
+      ? webRefs.topics.flatMap((t) =>
+          Array.isArray(t?.references)
+            ? t.references.map((r) => ({ ...r, topic: t.topic }))
+            : [],
+        )
+      : [];
+    const refSummary = flatRefs
+      .slice(0, 15)
+      .map(
+        (ref) =>
+          `- ${ref.title || ref.url || "untitled"} (${ref.source || "other"}): ${ref.why || ""}`,
+      )
       .join("\n");
 
     const briefSummary =

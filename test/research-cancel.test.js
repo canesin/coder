@@ -519,6 +519,110 @@ describe("tech-selection cancel", () => {
 
     assert.equal(result.status, "cancelled");
   });
+
+  it("tech-selection flattens web references from deep-research schema", async () => {
+    const { default: techSelectionMachine } = await import(
+      "../src/machines/research/tech-selection.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        version: 1,
+        current: "init",
+        history: [],
+        steps: {},
+      }) + "\n",
+    );
+
+    // Write web-references in deep-research's output schema
+    const webRefs = {
+      topics: [
+        {
+          topic: "state machines",
+          references: [
+            {
+              source: "github",
+              title: "XState",
+              url: "https://github.com/statelyai/xstate",
+              why: "mature JS state machine lib",
+              library: "xstate",
+            },
+            {
+              source: "docs",
+              title: "Robot",
+              url: "https://thisrobot.life",
+              why: "lightweight alternative",
+              library: "robot",
+            },
+          ],
+        },
+      ],
+      missing_research: ["performance benchmarks"],
+    };
+    writeFileSync(
+      path.join(stepsDir, "web-references.json"),
+      JSON.stringify(webRefs),
+    );
+
+    let capturedPrompt = "";
+    const ctx = {
+      workspaceDir: tmp,
+      cancelToken: { cancelled: false, paused: false },
+      log: () => {},
+      config: { workflow: { timeouts: { researchStep: 60000 } } },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: {
+            execute: async (prompt) => {
+              capturedPrompt = prompt;
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  categories: [],
+                  stack: { summary: "test", technologies: [] },
+                }),
+              };
+            },
+          },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+
+    const result = await techSelectionMachine.run(
+      {
+        requirements: "Need a state machine library",
+        stepsDir,
+        scratchpadPath,
+        pipelinePath,
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "ok");
+    // Verify the prompt contains flattened reference titles, not "undefined"
+    assert.ok(
+      capturedPrompt.includes("XState"),
+      "prompt should contain reference title 'XState'",
+    );
+    assert.ok(
+      capturedPrompt.includes("Robot"),
+      "prompt should contain reference title 'Robot'",
+    );
+    assert.ok(
+      !capturedPrompt.includes("- undefined"),
+      "prompt should not contain 'undefined' from broken Object.values()",
+    );
+  });
 });
 
 describe("session state helpers", () => {
