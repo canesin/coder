@@ -11,7 +11,10 @@ const LARGE_COMMAND_THRESHOLD = 80000; // 80KB — well under Linux MAX_ARG_STRL
  * Preserves the command's exit code across the cleanup rm.
  */
 function maybeTmpFile(command, tmpDir = "/tmp") {
-  if (command.length <= LARGE_COMMAND_THRESHOLD) return command;
+  // Compare UTF-8 byte length — Linux MAX_ARG_STRLEN is byte-based,
+  // not UTF-16 code-unit-based, so CJK/emoji-heavy prompts need this.
+  if (Buffer.byteLength(command, "utf8") <= LARGE_COMMAND_THRESHOLD)
+    return command;
   const tmpPath = `${tmpDir}/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
   writeFileSync(tmpPath, command, { mode: 0o600 });
   return `bash "${tmpPath}"; __coder_rc=$?; rm -f "${tmpPath}"; exit $__coder_rc`;

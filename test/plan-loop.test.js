@@ -123,6 +123,15 @@ Not approved until the API surface is verified.`;
   assert.equal(parsePlanVerdict(md), "REVISE");
 });
 
+test("parsePlanVerdict: explanation starting with keyword does not override verdict", () => {
+  const md = `## Verdict
+REVISE
+
+Approved once the API surface is verified.`;
+  // "Approved once..." is a sentence, not a standalone keyword — pass 1 skips it.
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
 test("parsePlanVerdict: verdict embedded in prose falls back to last-position-wins", () => {
   const md = `## Verdict
 The plan is APPROVED.`;

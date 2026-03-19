@@ -53,14 +53,17 @@ export function parsePlanVerdict(critiqueMd) {
     .toUpperCase()
     .replace(/[*_`"'[\]()]/g, "");
 
-  // Pass 1: line-start matching (most reliable)
+  // Pass 1: standalone keyword lines (most reliable). A line qualifies when
+  // the keyword is the ONLY significant content — this prevents explanation
+  // sentences like "Approved once the API is verified." from matching.
   const lines = raw.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim().replace(/^[-•*]\s*/, "");
-    if (/^APPROVED\b/.test(line)) return "APPROVED";
-    if (/^REJECT\b/.test(line)) return "REJECT";
-    if (/^REVISE\b/.test(line)) return "REVISE";
-    if (/^PROCEED\b/.test(line)) return "PROCEED_WITH_CAUTION";
+    if (/^APPROVED[\s.,;:!-]*$/.test(line)) return "APPROVED";
+    if (/^REJECT[\s.,;:!-]*$/.test(line)) return "REJECT";
+    if (/^REVISE[\s.,;:!-]*$/.test(line)) return "REVISE";
+    if (/^PROCEED[\s]+(?:WITH[\s]+)?CAUTION[\s.,;:!-]*$/.test(line))
+      return "PROCEED_WITH_CAUTION";
   }
 
   // Pass 2: last-position-wins across the section
