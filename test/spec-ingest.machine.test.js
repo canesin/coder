@@ -127,7 +127,7 @@ test("spec_ingest build mode reads research manifest", async () => {
     assert.ok(result.data.pipelinePath);
     assert.ok(result.data.repoRoot);
 
-    // Verify pipeline.json tracking (Finding 2)
+    // Verify pipeline.json tracking
     assert.ok(existsSync(result.data.pipelinePath), "pipeline.json must exist");
     const pipeline = JSON.parse(readFileSync(result.data.pipelinePath, "utf8"));
     assert.equal(pipeline.steps.spec_ingest.status, "completed");
@@ -208,7 +208,7 @@ test("spec_ingest ingest mode parses spec directory with domains, decisions, and
     assert.equal(result.data.parsedGaps.length, 1);
     assert.equal(result.data.parsedGaps[0].domain, "AUTH");
 
-    // Verify pipeline.json tracking (Finding 2)
+    // Verify pipeline.json tracking
     assert.ok(existsSync(result.data.pipelinePath), "pipeline.json must exist");
     const pipeline = JSON.parse(readFileSync(result.data.pipelinePath, "utf8"));
     assert.equal(pipeline.steps.spec_ingest.status, "completed");
