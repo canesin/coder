@@ -18,8 +18,14 @@ import {
   runPpcommitNative,
 } from "../src/ppcommit.js";
 
-/** Config to bypass gitleaks so tests exercise TODO/markdown/parser behavior. */
+/** Config to bypass gitleaks so tests exercise task/markdown/parser behavior. */
 const NO_GITLEAKS = { blockSecrets: false };
+
+const EMOJI_SMILE = 0x1f642;
+const PROBE_TIMEOUT_MS = 5000;
+const SUBPROCESS_TIMEOUT_MS = 15000;
+const FILE_MODE_NON_EXECUTABLE = 0o644;
+const FILE_MODE_EXECUTABLE = 0o755;
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
@@ -81,7 +87,7 @@ test("ppcommit: does not flag edits to existing markdown", async () => {
 test("ppcommit: treatWarningsAsErrors upgrades warnings", async () => {
   const repo = makeRepo();
   // Emoji in code should be a warning by default.
-  const smile = String.fromCodePoint(0x1f642);
+  const smile = String.fromCodePoint(EMOJI_SMILE);
   writeFileSync(path.join(repo, "a.js"), `// hello ${smile}\n`, "utf8");
   const r = await runPpcommitNative(repo, {
     ...NO_GITLEAKS,
@@ -286,7 +292,7 @@ function gitleaksSpawnSkipReason() {
     symlinkSync(gitPath, path.join(probeDir, path.basename(gitPath)));
     const probe = spawnSync(process.execPath, ["-e", "0"], {
       encoding: "utf8",
-      timeout: 5000,
+      timeout: PROBE_TIMEOUT_MS,
       env: { ...process.env, PATH: probeDir, NODE_ENV: "test" },
     });
     if (probe.error) return `spawn fails (${probe.error.code})`;
@@ -323,7 +329,7 @@ test("ppcommit: gitleaks missing from PATH produces actionable error", {
   `;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
-    timeout: 15000,
+    timeout: SUBPROCESS_TIMEOUT_MS,
     env: { ...process.env, PATH: restrictedPath, NODE_ENV: "test" },
   });
   if (r.error) {
@@ -368,7 +374,7 @@ test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
 
   const gitleaksPath = path.join(binDir, "gitleaks");
   writeFileSync(gitleaksPath, "#!/bin/sh\nexit 0\n", "utf8");
-  chmodSync(gitleaksPath, 0o644);
+  chmodSync(gitleaksPath, FILE_MODE_NON_EXECUTABLE);
 
   const srcPath = path.resolve(import.meta.dirname, "..", "src", "ppcommit.js");
   const script = `
@@ -384,7 +390,7 @@ test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
   const restrictedPath = `${binDir}:/usr/bin:/bin`;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
-    timeout: 15000,
+    timeout: SUBPROCESS_TIMEOUT_MS,
     env: { ...process.env, PATH: restrictedPath, NODE_ENV: "test" },
   });
   if (r.error) {
@@ -435,7 +441,7 @@ test("ppcommit: gitleaks version check failure produces distinct error", {
     "#!/bin/sh\necho 'bad version' >&2\nexit 1\n",
     "utf8",
   );
-  chmodSync(gitleaksPath, 0o755);
+  chmodSync(gitleaksPath, FILE_MODE_EXECUTABLE);
 
   const srcPath = path.resolve(import.meta.dirname, "..", "src", "ppcommit.js");
   const script = `
@@ -449,7 +455,7 @@ test("ppcommit: gitleaks version check failure produces distinct error", {
   `;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
-    timeout: 15000,
+    timeout: SUBPROCESS_TIMEOUT_MS,
     env: { ...process.env, PATH: binDir, NODE_ENV: "test" },
   });
   if (r.error) {
