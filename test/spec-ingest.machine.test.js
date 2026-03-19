@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -65,6 +71,20 @@ test("spec_ingest errors when existingSpecDir does not exist", async () => {
   }
 });
 
+test("spec_ingest errors when researchRunId directory does not exist", async () => {
+  const env = makeTempEnv();
+  try {
+    const result = await specIngestMachine.run(
+      { researchRunId: "nonexistent-run-id" },
+      env.ctx,
+    );
+    assert.equal(result.status, "error");
+    assert.match(result.error, /Research manifest not found/);
+  } finally {
+    env.cleanup();
+  }
+});
+
 test("spec_ingest errors when researchRunId manifest is missing", async () => {
   const env = makeTempEnv();
   try {
@@ -106,6 +126,38 @@ test("spec_ingest build mode reads research manifest", async () => {
     assert.ok(result.data.scratchpadPath);
     assert.ok(result.data.pipelinePath);
     assert.ok(result.data.repoRoot);
+
+    // Verify pipeline.json tracking (Finding 2)
+    assert.ok(existsSync(result.data.pipelinePath), "pipeline.json must exist");
+    const pipeline = JSON.parse(readFileSync(result.data.pipelinePath, "utf8"));
+    assert.equal(pipeline.steps.spec_ingest.status, "completed");
+    assert.equal(pipeline.steps.spec_ingest.mode, "build");
+    assert.ok(pipeline.steps.spec_ingest.startedAt);
+    assert.ok(pipeline.steps.spec_ingest.endedAt);
+    assert.ok(
+      pipeline.history.some(
+        (h) => h.event === "step_start" && h.step === "spec_ingest",
+      ),
+      "pipeline history must contain step_start for spec_ingest",
+    );
+    assert.ok(
+      pipeline.history.some(
+        (h) =>
+          h.event === "step_end" &&
+          h.step === "spec_ingest" &&
+          h.status === "completed",
+      ),
+      "pipeline history must contain step_end with completed status",
+    );
+
+    // Verify SCRATCHPAD.md tracking
+    assert.ok(
+      existsSync(result.data.scratchpadPath),
+      "SCRATCHPAD.md must exist",
+    );
+    const scratchpad = readFileSync(result.data.scratchpadPath, "utf8");
+    assert.match(scratchpad, /Spec Ingest \(build mode\)/);
+    assert.match(scratchpad, /researchRunId: test-research-run/);
   } finally {
     env.cleanup();
   }
@@ -149,6 +201,40 @@ test("spec_ingest ingest mode parses spec directory with domains, decisions, and
     assert.equal(result.data.parsedDecisions[0].status, "accepted");
     assert.equal(result.data.parsedGaps.length, 1);
     assert.equal(result.data.parsedGaps[0].domain, "AUTH");
+
+    // Verify pipeline.json tracking (Finding 2)
+    assert.ok(existsSync(result.data.pipelinePath), "pipeline.json must exist");
+    const pipeline = JSON.parse(readFileSync(result.data.pipelinePath, "utf8"));
+    assert.equal(pipeline.steps.spec_ingest.status, "completed");
+    assert.equal(pipeline.steps.spec_ingest.mode, "ingest");
+    assert.equal(pipeline.steps.spec_ingest.domains, 1);
+    assert.equal(pipeline.steps.spec_ingest.gaps, 1);
+    assert.ok(
+      pipeline.history.some(
+        (h) => h.event === "step_start" && h.step === "spec_ingest",
+      ),
+      "pipeline history must contain step_start for spec_ingest",
+    );
+    assert.ok(
+      pipeline.history.some(
+        (h) =>
+          h.event === "step_end" &&
+          h.step === "spec_ingest" &&
+          h.status === "completed",
+      ),
+      "pipeline history must contain step_end with completed status",
+    );
+
+    // Verify SCRATCHPAD.md tracking
+    assert.ok(
+      existsSync(result.data.scratchpadPath),
+      "SCRATCHPAD.md must exist",
+    );
+    const scratchpad = readFileSync(result.data.scratchpadPath, "utf8");
+    assert.match(scratchpad, /Spec Ingest \(ingest mode\)/);
+    assert.match(scratchpad, /domains: 1/);
+    assert.match(scratchpad, /decisions: 1/);
+    assert.match(scratchpad, /gaps: 1/);
   } finally {
     env.cleanup();
   }
