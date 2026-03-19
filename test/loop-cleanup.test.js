@@ -10,6 +10,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { resolveRepoRoot } from "../src/machines/develop/_shared.js";
 import {
   backupKeyFor,
   ensureCleanLoopStart,
@@ -597,6 +598,22 @@ test("prepareForIssue: restores from backup when backup exists and is consistent
       "should emit loop_resume_detected from backup",
     );
     assert.ok(!existsSync(backupDir), "backup should be consumed");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("resolveRepoRoot: file path resolves to its directory for git cwd", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const filePath = path.join(tmp, "lib", "foo", "bar.ex");
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writeFileSync(filePath, "# code\n", "utf8");
+
+    const fileRel = "lib/foo/bar.ex";
+    const resolved = resolveRepoRoot(tmp, fileRel);
+    assert.equal(resolved, path.join(tmp, "lib", "foo"));
+    assert.ok(existsSync(resolved), "resolved path must exist and be a directory");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

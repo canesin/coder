@@ -396,7 +396,7 @@ Return ONLY valid JSON in this schema:
     ctx.log({ event: "step1_list_issues", issueSource });
 
     const TAIL = `
-Estimate implementation difficulty and directness for each issue (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
+Estimate implementation difficulty and directness for each issue (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path. IMPORTANT: repo_path must be a directory path (e.g. "." or "packages/foo"), never a file path like "lib/foo/bar.ex".
 
 For each issue, also identify any dependency relationships — if an issue explicitly references or requires another issue to be completed first, include the dependency in "depends_on" as the issue ID string.
 
@@ -407,7 +407,7 @@ Return ONLY valid JSON in this schema:
       "source": "<source>",
       "id": "string",
       "title": "string",
-      "repo_path": "string (relative path to repo subfolder in workspace, or empty if unknown)",
+      "repo_path": "string (relative path to repo directory or subfolder, e.g. '.' or 'packages/foo' — must be a directory, NOT a file path; use empty if unknown)",
       "difficulty": 1 | 2 | 3 | 4 | 5,
       "reason": "short explanation",
       "depends_on": ["issue-id-1"]
