@@ -8,6 +8,7 @@ import {
   loadPipeline,
   loadSessionState,
   loadStepArtifact,
+  requirePayloadFields,
   resolveArtifact,
   runStructuredStep,
   saveSessionState,
@@ -197,14 +198,14 @@ Return ONLY valid JSON in this schema:
         sessionKey: "synthesisDraftSessionId",
       });
       saveSessionState(runDir, sessionState);
-      const draftPayload = draftRes.payload;
-      if (
-        !draftPayload ||
-        !Array.isArray(draftPayload.issues) ||
-        draftPayload.issues.length === 0
-      ) {
+      const draftPayload = requirePayloadFields(
+        draftRes.payload,
+        { issues: "array" },
+        `draft_issue_backlog_${i}`,
+      );
+      if (draftPayload.issues.length === 0) {
         throw new Error(
-          `${draftRes.agentName} returned no issues for pointers-based drafting.`,
+          `${draftRes.agentName} returned empty issues array for pointers-based drafting.`,
         );
       }
       finalDraft = draftPayload;
@@ -262,21 +263,21 @@ Return ONLY valid JSON in this schema:
         sessionKey: "synthesisCritiqueSessionId",
       });
       saveSessionState(runDir, sessionState);
-      finalReview = reviewRes.payload;
+      finalReview = requirePayloadFields(
+        reviewRes.payload,
+        { must_fix: "array", should_fix: "array" },
+        `review_issue_backlog_${i}`,
+      );
 
-      const mustFix = Array.isArray(finalReview?.must_fix)
-        ? finalReview.must_fix
-        : [];
-      const shouldFix = Array.isArray(finalReview?.should_fix)
-        ? finalReview.should_fix
-        : [];
-      const referenceGaps = Array.isArray(finalReview?.reference_gaps)
+      const mustFix = finalReview.must_fix;
+      const shouldFix = finalReview.should_fix;
+      const referenceGaps = Array.isArray(finalReview.reference_gaps)
         ? finalReview.reference_gaps
         : [];
-      const validationGaps = Array.isArray(finalReview?.validation_gaps)
+      const validationGaps = Array.isArray(finalReview.validation_gaps)
         ? finalReview.validation_gaps
         : [];
-      const testingGaps = Array.isArray(finalReview?.testing_gaps)
+      const testingGaps = Array.isArray(finalReview.testing_gaps)
         ? finalReview.testing_gaps
         : [];
       priorFeedback = [

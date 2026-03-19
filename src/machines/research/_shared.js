@@ -99,6 +99,74 @@ export function parseAgentPayload(agentName, stdout) {
 }
 
 /**
+ * Validate that a step payload contains required fields with expected types.
+ * Enforces the JSON contract between machines — fail fast if agent output
+ * doesn't match the schema we depend on downstream.
+ *
+ * @param {any} payload
+ * @param {Record<string, "array"|"string"|"number"|"object">} schema - field → expected type
+ * @param {string} stepName - for error messages
+ * @returns {any} the payload (for chaining)
+ */
+export function requirePayloadFields(payload, schema, stepName) {
+  if (payload == null || typeof payload !== "object") {
+    throw new Error(
+      `${stepName}: expected object payload, got ${typeof payload}`,
+    );
+  }
+  const errors = [];
+  for (const [field, type] of Object.entries(schema)) {
+    const value = payload[field];
+    if (type === "array") {
+      if (!Array.isArray(value))
+        errors.push(
+          `${field}: expected array, got ${value == null ? "missing" : typeof value}`,
+        );
+    } else if (type === "string") {
+      if (typeof value !== "string" || !value.trim())
+        errors.push(`${field}: expected non-empty string`);
+    } else if (type === "number") {
+      if (typeof value !== "number")
+        errors.push(
+          `${field}: expected number, got ${value == null ? "missing" : typeof value}`,
+        );
+    } else if (type === "object") {
+      if (value == null || typeof value !== "object" || Array.isArray(value))
+        errors.push(
+          `${field}: expected object, got ${value == null ? "missing" : typeof value}`,
+        );
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(
+      `${stepName} payload contract violation:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
+    );
+  }
+  return payload;
+}
+
+/**
+ * Normalize a verdict string to a known enum value.
+ * Mirrors parsePlanVerdict() from the develop workflow — deterministic
+ * extraction of a verdict from potentially noisy agent output.
+ *
+ * @param {string} raw
+ * @param {string[]} allowed - e.g. ["approve", "revise"]
+ * @param {string} fallback - default if no match
+ * @returns {string}
+ */
+export function normalizeVerdict(raw, allowed, fallback) {
+  const upper = String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[*_`"'[\]()]/g, "");
+  for (const v of allowed) {
+    if (upper.includes(v.toUpperCase())) return v;
+  }
+  return fallback;
+}
+
+/**
  * Ensure an agent result has exit code 0, throw otherwise.
  * @param {string} agentName
  * @param {string} label

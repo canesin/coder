@@ -6,6 +6,8 @@ import {
   appendScratchpad,
   ensureArtifactOnDisk,
   loadPipeline,
+  normalizeVerdict,
+  requirePayloadFields,
   resolveArtifact,
   runStructuredStep,
   sanitizeFilenameSegment,
@@ -155,23 +157,35 @@ Return JSON:
       ctx,
     });
 
+    // Enforce output contract — deterministic verdict + required fields
+    requirePayloadFields(
+      payload,
+      { verdict: "string", issueReviews: "array" },
+      "issue_critique",
+    );
+    const verdict = normalizeVerdict(
+      payload.verdict,
+      ["approve", "revise"],
+      "revise",
+    );
+
     appendScratchpad(input.scratchpadPath, "Issue Critique", [
       `- agent: ${agentName}`,
-      `- verdict: ${payload?.verdict || "unknown"}`,
-      `- score: ${payload?.overallScore || "unknown"}`,
-      `- issues_reviewed: ${(payload?.issueReviews || []).length}`,
-      `- gaps_found: ${(payload?.backlogIssues?.gaps || []).length}`,
+      `- verdict: ${verdict}`,
+      `- score: ${payload.overallScore || "unknown"}`,
+      `- issues_reviewed: ${payload.issueReviews.length}`,
+      `- gaps_found: ${(payload.backlogIssues?.gaps || []).length}`,
     ]);
 
     return {
       status: "ok",
       data: {
-        verdict: payload?.verdict || "revise",
-        overallScore: payload?.overallScore || 0,
-        issueReviews: payload?.issueReviews || [],
-        backlogIssues: payload?.backlogIssues || {},
-        summary: payload?.summary || "",
-        feedback: payload?.feedback || [],
+        verdict,
+        overallScore: payload.overallScore || 0,
+        issueReviews: payload.issueReviews,
+        backlogIssues: payload.backlogIssues || {},
+        summary: payload.summary || "",
+        feedback: payload.feedback || [],
       },
     };
   },

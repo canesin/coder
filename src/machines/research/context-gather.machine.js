@@ -8,6 +8,7 @@ import {
   chunkPointers,
   initPipeline,
   initRunDirectory,
+  requirePayloadFields,
   runStructuredStep,
 } from "./_shared.js";
 
@@ -153,6 +154,11 @@ Return ONLY valid JSON in this schema:
         timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
       });
+      requirePayloadFields(
+        chunkRes.payload,
+        { summary: "string", signals: "object" },
+        `analyze_chunk_${i + 1}`,
+      );
       chunkSummaries.push(chunkRes.payload);
     }
 
@@ -197,7 +203,11 @@ Return ONLY valid JSON in this schema:
       timeoutMs: ctx.config.workflow.timeouts.researchStep,
       ...stepOpts,
     });
-    const analysisBrief = analysisRes.payload || {};
+    const analysisBrief = requirePayloadFields(
+      analysisRes.payload,
+      { problem_spaces: "array", constraints: "array" },
+      "aggregate_pointer_analysis",
+    );
 
     appendScratchpad(scratchpadPath, "Context Gather Complete", [
       `- chunks_analyzed: ${pointerChunks.length}`,

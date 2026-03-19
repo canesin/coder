@@ -879,6 +879,95 @@ describe("prompt content — codebase grounding", () => {
   });
 });
 
+describe("payload contract validation", () => {
+  it("requirePayloadFields accepts valid payloads", async () => {
+    const { requirePayloadFields } = await import(
+      "../src/machines/research/_shared.js"
+    );
+
+    const payload = {
+      summary: "test",
+      signals: { bugs: [] },
+      items: [1, 2],
+      score: 8,
+    };
+
+    const result = requirePayloadFields(
+      payload,
+      { summary: "string", signals: "object", items: "array", score: "number" },
+      "test_step",
+    );
+    assert.equal(result, payload);
+  });
+
+  it("requirePayloadFields throws on missing required fields", async () => {
+    const { requirePayloadFields } = await import(
+      "../src/machines/research/_shared.js"
+    );
+
+    assert.throws(
+      () =>
+        requirePayloadFields(
+          { summary: "test" },
+          { summary: "string", issues: "array" },
+          "test_step",
+        ),
+      /issues: expected array, got missing/,
+    );
+  });
+
+  it("requirePayloadFields throws on wrong types", async () => {
+    const { requirePayloadFields } = await import(
+      "../src/machines/research/_shared.js"
+    );
+
+    assert.throws(
+      () =>
+        requirePayloadFields(
+          { items: "not-an-array", score: "not-a-number" },
+          { items: "array", score: "number" },
+          "test_step",
+        ),
+      /payload contract violation/,
+    );
+  });
+
+  it("normalizeVerdict maps to known values", async () => {
+    const { normalizeVerdict } = await import(
+      "../src/machines/research/_shared.js"
+    );
+
+    assert.equal(
+      normalizeVerdict("approve", ["approve", "revise"], "revise"),
+      "approve",
+    );
+    assert.equal(
+      normalizeVerdict("APPROVED", ["approve", "revise"], "revise"),
+      "approve",
+    );
+    assert.equal(
+      normalizeVerdict("**revise**", ["approve", "revise"], "revise"),
+      "revise",
+    );
+    assert.equal(
+      normalizeVerdict("REVISE", ["approve", "revise"], "revise"),
+      "revise",
+    );
+    assert.equal(
+      normalizeVerdict("unknown-junk", ["approve", "revise"], "revise"),
+      "revise",
+    );
+    assert.equal(
+      normalizeVerdict("", ["approve", "revise"], "revise"),
+      "revise",
+    );
+    assert.equal(
+      normalizeVerdict(null, ["approve", "revise"], "revise"),
+      "revise",
+    );
+  });
+});
+
 describe("session state helpers", () => {
   let tmp;
 
