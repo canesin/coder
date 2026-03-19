@@ -2,6 +2,7 @@ import { z } from "zod";
 import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
+  ensureArtifactOnDisk,
   loadPipeline,
   resolveArtifact,
   runStructuredStep,
@@ -74,10 +75,11 @@ export default defineMachine({
       )
       .join("\n");
 
-    const briefSummary =
-      typeof analysisBrief === "object" && analysisBrief
-        ? JSON.stringify(analysisBrief).slice(0, 3000)
-        : String(analysisBrief || "").slice(0, 3000);
+    const briefPath = ensureArtifactOnDisk(
+      input.stepsDir,
+      "analysis-brief",
+      analysisBrief,
+    );
 
     const categories =
       input.categories.length > 0
@@ -96,7 +98,7 @@ ${categories}
 ${input.constraints || "No specific constraints."}
 
 ## Analysis Context
-${briefSummary}
+Read the analysis brief from: ${briefPath}
 
 ## Web References
 ${refSummary || "No web references available."}

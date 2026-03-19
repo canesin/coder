@@ -108,7 +108,7 @@ The develop pipeline can run in **loop mode** to process multiple issues autonom
 Turns ideas into validated, reference-grounded issue backlogs:
 
 ```
-context-gather → deep-research → tech-selection → poc-validation → issue-synthesis → issue-critique → spec-publish
+context-gather → deep-research → tech-selection → poc-validation → issue-synthesis → issue-critique → issue-publish
 ```
 
 ```

@@ -83,7 +83,11 @@ export default defineMachine({
       "utf8",
     );
 
-    // Chunk pointers
+    // Write full input to a reference file agents can read
+    const fullInputPath = path.join(pointersDir, "full-input.md");
+    writeFileSync(fullInputPath, `${ideaPointers}\n`, "utf8");
+
+    // Chunk pointers (no upper limit — full input is always preserved)
     const pointerChunks = chunkPointers(ideaPointers);
     if (pointerChunks.length === 0) {
       throw new Error("Unable to derive pointer chunks from input.");
@@ -107,11 +111,27 @@ export default defineMachine({
     for (let i = 0; i < pointerChunks.length; i++) {
       checkCancel(ctx);
 
-      const chunkPrompt = `Summarize pointer chunk ${i + 1}/${pointerChunks.length} for issue decomposition.
+      const chunkFile = path.join(
+        pointersDir,
+        `chunk-${String(i + 1).padStart(2, "0")}.txt`,
+      );
+      const chunkPrompt = `Analyze pointer chunk ${i + 1}/${pointerChunks.length} for issue decomposition.
 
 Repo root: ${repoRoot}
-Chunk:
-${pointerChunks[i]}
+Read the chunk file at: ${chunkFile}
+${pointerChunks.length > 1 ? `Full input available at: ${fullInputPath}` : ""}
+
+## Phase 1: Codebase Exploration (MANDATORY)
+Before analyzing the pointers, explore the codebase at \`${repoRoot}\`:
+- List top-level directory structure to understand project layout
+- Identify key files: package.json/Cargo.toml/go.mod, README, config files
+- Search for code related to the ideas mentioned in the chunk
+- Note project structure, patterns, test conventions, and existing implementations
+- Map pointer ideas to specific existing files/modules you find
+
+## Phase 2: Chunk Analysis
+With codebase context in mind, analyze the chunk for issue decomposition.
+Ground your analysis in what actually exists in the codebase.
 
 Return ONLY valid JSON in this schema:
 {
@@ -136,13 +156,28 @@ Return ONLY valid JSON in this schema:
       chunkSummaries.push(chunkRes.payload);
     }
 
-    // Aggregate analysis
+    // Aggregate analysis — write summaries to file for agent to read
     ctx.log({ event: "research_aggregate_analysis" });
+    const summariesPath = path.join(stepsDir, "chunk-summaries.json");
+    writeFileSync(
+      summariesPath,
+      `${JSON.stringify(chunkSummaries, null, 2)}\n`,
+    );
+
     const analysisPrompt = `Aggregate pointer chunk summaries into a normalized analysis brief.
 
 Repo root: ${repoRoot}
-Chunk summaries:
-${JSON.stringify(chunkSummaries, null, 2)}
+Full input: ${fullInputPath}
+Read chunk summaries from: ${summariesPath}
+
+## Codebase Validation (MANDATORY)
+Before aggregating, explore the codebase at \`${repoRoot}\` to validate and enrich the analysis:
+- Verify that files/modules referenced in the chunk summaries actually exist
+- Identify the project's architecture patterns, directory conventions, and module boundaries
+- Find the test framework, test file locations, and test naming conventions
+- Note any existing implementations relevant to the problem spaces
+
+Ground the aggregated analysis in what you find in the actual codebase.
 
 Return ONLY valid JSON in this schema:
 {

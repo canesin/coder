@@ -1,10 +1,14 @@
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
+  ensureArtifactOnDisk,
   loadPipeline,
   resolveArtifact,
   runStructuredStep,
+  sanitizeFilenameSegment,
 } from "./_shared.js";
 
 export default defineMachine({
@@ -55,89 +59,52 @@ export default defineMachine({
 
     checkCancel(ctx);
 
-    const asLines = (v) =>
-      Array.isArray(v)
-        ? v.map((x) => String(x || "").trim()).filter(Boolean)
-        : [];
+    // Write issues to file for agent to read (instead of inlining/truncating)
+    const issuesPath = path.join(
+      input.stepsDir,
+      `${sanitizeFilenameSegment("critique-input-issues")}.json`,
+    );
+    writeFileSync(issuesPath, `${JSON.stringify(input.issues, null, 2)}\n`);
 
-    const issuesSummary = input.issues
-      .map((issue, i) => {
-        const parts = [
-          `### Issue ${i + 1}: ${issue.title || issue.id || `issue-${i}`}`,
-          `- Priority: ${issue.priority || "P2"}`,
-          `- Objective: ${(issue.objective || "").slice(0, 300)}`,
-          `- Changes: ${(issue.changes || []).join(", ").slice(0, 300)}`,
-          `- Dependencies: ${(issue.depends_on || []).join(", ") || "none"}`,
-        ];
-        const ac = asLines(issue.acceptance_criteria);
-        if (ac.length > 0)
-          parts.push(`- Acceptance criteria: ${ac.join("; ")}`);
-        if (issue.verification)
-          parts.push(
-            `- Verification: ${String(issue.verification).slice(0, 200)}`,
-          );
-        const risks = asLines(issue.risks);
-        if (risks.length > 0) parts.push(`- Risks: ${risks.join("; ")}`);
-        const ts = issue.testing_strategy;
-        if (ts) {
-          const existing = asLines(ts.existing_tests);
-          const newTests = asLines(ts.new_tests);
-          if (existing.length > 0 || newTests.length > 0) {
-            parts.push(
-              `- Testing: ${existing.length} existing, ${newTests.length} new` +
-                (ts.test_patterns
-                  ? ` (${String(ts.test_patterns).slice(0, 100)})`
-                  : ""),
-            );
-          }
-        }
-        const refs = Array.isArray(issue.references) ? issue.references : [];
-        if (refs.length > 0)
-          parts.push(
-            `- References: ${refs.length} (${refs
-              .map((r) => r.title || r.url || "")
-              .join(", ")
-              .slice(0, 200)})`,
-          );
-        return parts.join("\n");
-      })
-      .join("\n\n");
+    // Ensure research artifacts are on disk
+    const hasContent = (v) =>
+      v != null && typeof v === "object" && Object.keys(v).length > 0;
+    const briefPath = ensureArtifactOnDisk(
+      input.stepsDir,
+      "analysis-brief",
+      analysisBrief,
+    );
+    const webRefPath = ensureArtifactOnDisk(
+      input.stepsDir,
+      "web-references",
+      webReferenceMap,
+    );
+    const validationPath = ensureArtifactOnDisk(
+      input.stepsDir,
+      "validation-results",
+      validationResults,
+    );
 
     const priorFeedbackSection =
       input.priorFeedback.length > 0
         ? `## Prior Feedback (address these)\n${input.priorFeedback.map((f) => `- ${f}`).join("\n")}`
         : "";
 
-    const hasContent = (v) =>
-      v != null && typeof v === "object" && Object.keys(v).length > 0;
-
-    const briefSummary = hasContent(analysisBrief)
-      ? JSON.stringify(analysisBrief).slice(0, 3000)
-      : "";
-
-    const refSummary = hasContent(webReferenceMap)
-      ? JSON.stringify(webReferenceMap).slice(0, 2000)
-      : "";
-
-    const validationSummary = hasContent(validationResults)
-      ? JSON.stringify(validationResults).slice(0, 2000)
-      : "";
-
     const prompt = `You are a senior engineering reviewer. Critique this issue backlog for completeness, correctness, and actionability.
 
-## Issue Backlog
-${issuesSummary}
+## Input Artifacts (read these files)
+- Issue backlog: ${issuesPath}
+${hasContent(analysisBrief) ? `- Analysis brief: ${briefPath}` : "- Analysis brief: (not available)"}
+${hasContent(webReferenceMap) ? `- Web references: ${webRefPath}` : "- Web references: (not available)"}
+${hasContent(validationResults) ? `- Validation results: ${validationPath}` : "- Validation results: (not available)"}
 
 ${priorFeedbackSection}
 
-## Research Context
-${briefSummary || "No analysis brief available."}
-
-## Web References
-${refSummary || "No web references available."}
-
-## Validation Results
-${validationSummary || "No validation data available."}
+## Phase 1: Codebase Exploration (MANDATORY)
+Before critiquing, explore the codebase at \`${input.repoRoot}\` to verify the issues:
+- Check that files and modules referenced in issues actually exist
+- Verify that architecture patterns described in issues match the real codebase
+- Confirm test file paths and test framework conventions are accurate
 
 ## Review Criteria
 1. **Completeness**: Does each issue have clear scope, acceptance criteria, verification command?
@@ -148,6 +115,7 @@ ${validationSummary || "No validation data available."}
 6. **Actionability**: Can a developer pick up each issue and start working immediately?
 7. **Risk**: Are high-risk items identified and mitigated?
 8. **Testing**: Does each issue include a testing strategy with references to existing tests and concrete new tests to write?
+9. **Codebase Grounding**: Do issues reference real files and patterns from the actual codebase?
 
 Return JSON:
 {

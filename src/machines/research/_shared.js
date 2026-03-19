@@ -43,11 +43,12 @@ export function saveSessionState(runDir, state) {
 
 /**
  * Chunk a large pointer text into manageable pieces for analysis.
+ * No upper limit on chunk count — the full input is always preserved.
  * @param {string} text
- * @param {{ maxChars?: number, maxChunks?: number }} [opts]
+ * @param {{ maxChars?: number }} [opts]
  * @returns {string[]}
  */
-export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
+export function chunkPointers(text, { maxChars = 24000 } = {}) {
   const normalized = String(text || "")
     .replace(/\r\n/g, "\n")
     .trim();
@@ -55,7 +56,7 @@ export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
 
   const chunks = [];
   let cursor = 0;
-  while (cursor < normalized.length && chunks.length < maxChunks) {
+  while (cursor < normalized.length) {
     let end = Math.min(cursor + maxChars, normalized.length);
     if (end < normalized.length) {
       const newlineBoundary = normalized.lastIndexOf("\n", end);
@@ -66,12 +67,6 @@ export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
     const chunk = normalized.slice(cursor, end).trim();
     if (chunk) chunks.push(chunk);
     cursor = end;
-  }
-
-  if (cursor < normalized.length && chunks.length > 0) {
-    const omitted = normalized.length - cursor;
-    chunks[chunks.length - 1] +=
-      `\n\n[TRUNCATED: ${omitted} chars omitted due to chunk limit]`;
   }
 
   return chunks;
@@ -206,6 +201,31 @@ export async function runStructuredStep({
     },
   );
   return { payload, agentName, outputPath, relOutputPath };
+}
+
+/**
+ * Ensure an artifact is written to disk (idempotent).
+ * Artifacts from prior pipeline steps are already on disk via runStructuredStep,
+ * but when a machine is called standalone with params, they may not be.
+ * @param {string} stepsDir
+ * @param {string} artifactName
+ * @param {any} data
+ * @returns {string} absolute path to the artifact file
+ */
+export function ensureArtifactOnDisk(stepsDir, artifactName, data) {
+  const p = path.join(
+    stepsDir,
+    `${sanitizeFilenameSegment(artifactName)}.json`,
+  );
+  if (
+    !existsSync(p) &&
+    data != null &&
+    typeof data === "object" &&
+    Object.keys(data).length > 0
+  ) {
+    writeFileSync(p, `${JSON.stringify(data, null, 2)}\n`);
+  }
+  return p;
 }
 
 /**

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
+  ensureArtifactOnDisk,
   loadPipeline,
   loadSessionState,
   loadStepArtifact,
@@ -89,19 +90,33 @@ export default defineMachine({
           ? priorFeedback.map((f) => `- ${f}`).join("\n")
           : "(none)";
 
+      // Ensure artifacts are on disk for agent file-path references
+      const briefPath = ensureArtifactOnDisk(
+        stepsDir,
+        "analysis-brief",
+        analysisBrief,
+      );
+      const webRefPath = ensureArtifactOnDisk(
+        stepsDir,
+        "web-references",
+        webReferenceMap,
+      );
+      const validationPath = ensureArtifactOnDisk(
+        stepsDir,
+        "validation-results",
+        validationResults,
+      );
+
       // Draft
       ctx.log({ event: "research_draft_iteration", iteration: i });
       const draftPrompt = `Synthesize a research-ready issue backlog from validated inputs.
 
 Repo root: ${repoRoot}
-Pointer analysis:
-${JSON.stringify(analysisBrief, null, 2)}
 
-Web references:
-${JSON.stringify(webReferenceMap, null, 2)}
-
-Validation results:
-${JSON.stringify(validationResults, null, 2)}
+## Input Artifacts (read these files)
+- Pointer analysis: ${briefPath}
+- Web references: ${webRefPath}
+- Validation results: ${validationPath}
 
 Clarifications:
 ${clarifications || "(none provided)"}
@@ -109,13 +124,23 @@ ${clarifications || "(none provided)"}
 Feedback to incorporate:
 ${feedbackSection}
 
+## Phase 1: Codebase Exploration (MANDATORY)
+Before drafting issues, explore the codebase at \`${repoRoot}\`:
+- Search for existing test files and understand the test framework/conventions
+- Identify project structure, key modules, and architecture patterns
+- Find existing implementations related to the problem spaces in the analysis brief
+- Note file paths that issues should reference
+
+## Phase 2: Issue Drafting
+With codebase context, draft the issue backlog. Ground every issue in actual files and patterns you found.
+
 Rules:
 - Return EXACTLY ${maxIssues} issues (or fewer only if the analysis genuinely warrants fewer).
 - Keep issues small, independently verifiable, and dependency-light.
 - Include references and validation metadata per issue.
 - Do not use issues/ as scratch storage; this workflow uses .coder/scratchpad.
 - Do NOT re-add issues that prior feedback explicitly asked to drop.
-- Each issue MUST include a "testing_strategy" field. Search the codebase for existing test files covering related functionality before writing this. Include: existing tests to leverage, new tests to write with expected behavior, and the repo's test framework/conventions.
+- Each issue MUST include a "testing_strategy" field grounded in actual test files you found in the codebase. Include: existing tests to leverage (with real file paths), new tests to write with expected behavior, and the repo's test framework/conventions.
 
 Return ONLY valid JSON in this schema:
 {
@@ -214,8 +239,7 @@ Return ONLY valid JSON in this schema:
       ctx.log({ event: "research_critique_iteration", iteration: i });
       const reviewPrompt = `Critique this proposed issue backlog for sequencing, overlap, scope creep, weak references, and missing validation.
 
-Backlog JSON:
-${JSON.stringify(draftPayload, null, 2)}
+Read the draft backlog from: ${draftRes.outputPath}
 
 Return ONLY valid JSON in this schema:
 {

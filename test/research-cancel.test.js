@@ -625,6 +625,260 @@ describe("tech-selection cancel", () => {
   });
 });
 
+describe("prompt content — codebase grounding", () => {
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "prompt-content-"));
+    mkdirSync(path.join(tmp, ".coder", "scratchpad"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function makeCtx(capturedPrompts) {
+    return {
+      workspaceDir: tmp,
+      cancelToken: { cancelled: false, paused: false },
+      log: () => {},
+      config: { workflow: { timeouts: { researchStep: 60000 } } },
+      agentPool: {
+        getAgent: () => ({
+          agentName: "test",
+          agent: {
+            execute: async (prompt) => {
+              capturedPrompts.push(prompt);
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  summary: "test",
+                  signals: {
+                    bugs: [],
+                    ideas: [],
+                    constraints: [],
+                    domains: [],
+                    tools: [],
+                  },
+                  actionable_pointers: [],
+                  problem_spaces: [],
+                  constraints: [],
+                  suspected_work_types: ["idea"],
+                  priority_signals: [],
+                  unknowns: [],
+                }),
+              };
+            },
+          },
+        }),
+      },
+      secrets: {},
+      artifactsDir: path.join(tmp, ".coder", "artifacts"),
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+    };
+  }
+
+  it("context-gather chunk prompt includes codebase exploration and repoRoot", async () => {
+    const { default: contextGatherMachine } = await import(
+      "../src/machines/research/context-gather.machine.js"
+    );
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: tmp, stdio: "pipe" });
+
+    const capturedPrompts = [];
+    const ctx = makeCtx(capturedPrompts);
+
+    await contextGatherMachine.run(
+      { pointers: "Add a caching layer to the API", repoPath: "." },
+      ctx,
+    );
+
+    // Chunk prompt (first call)
+    assert.ok(capturedPrompts.length >= 1, "should have at least 1 prompt");
+    const chunkPrompt = capturedPrompts[0];
+    assert.ok(
+      chunkPrompt.includes("explore the codebase"),
+      "chunk prompt should include codebase exploration instruction",
+    );
+    assert.ok(
+      chunkPrompt.includes(tmp),
+      "chunk prompt should include repoRoot path",
+    );
+    assert.ok(
+      chunkPrompt.includes("Phase 1"),
+      "chunk prompt should have Phase 1 for codebase exploration",
+    );
+
+    // Aggregation prompt (second call)
+    if (capturedPrompts.length >= 2) {
+      const aggPrompt = capturedPrompts[1];
+      assert.ok(
+        aggPrompt.includes("Codebase Validation"),
+        "aggregation prompt should include codebase validation instruction",
+      );
+    }
+  });
+
+  it("issue-synthesis draft prompt references artifact file paths", async () => {
+    const { default: issueSynthesisMachine } = await import(
+      "../src/machines/research/issue-synthesis.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({
+        version: 1,
+        runId: "test",
+        current: "init",
+        history: [],
+        steps: {},
+      }) + "\n",
+    );
+    writeFileSync(
+      path.join(stepsDir, "analysis-brief.json"),
+      JSON.stringify({
+        problem_spaces: [
+          { name: "caching", description: "add cache", signals: [] },
+        ],
+      }),
+    );
+
+    const capturedPrompts = [];
+    const ctx = makeCtx(capturedPrompts);
+    // Override agent to return valid issues
+    ctx.agentPool.getAgent = () => ({
+      agentName: "test",
+      agent: {
+        execute: async (prompt) => {
+          capturedPrompts.push(prompt);
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              issues: [{ id: "IDEA-01", title: "Test Issue" }],
+              assumptions: [],
+              open_questions: [],
+            }),
+          };
+        },
+      },
+    });
+
+    await issueSynthesisMachine.run(
+      {
+        stepsDir,
+        scratchpadPath,
+        pipelinePath,
+        repoRoot: tmp,
+        iterations: 1,
+        maxIssues: 6,
+      },
+      ctx,
+    );
+
+    assert.ok(capturedPrompts.length >= 1, "should have at least 1 prompt");
+    const draftPrompt = capturedPrompts[0];
+    // Should reference file paths, not inline JSON
+    assert.ok(
+      draftPrompt.includes("analysis-brief.json"),
+      "draft prompt should reference analysis-brief file path",
+    );
+    assert.ok(
+      draftPrompt.includes("explore the codebase"),
+      "draft prompt should include codebase exploration",
+    );
+    assert.ok(
+      !draftPrompt.includes('"problem_spaces"'),
+      "draft prompt should NOT inline analysisBrief JSON",
+    );
+  });
+
+  it("issue-critique prompt references artifact file paths and codebase grounding", async () => {
+    const { default: issueCritiqueMachine } = await import(
+      "../src/machines/research/issue-critique.machine.js"
+    );
+
+    const stepsDir = path.join(tmp, "steps");
+    const scratchpadPath = path.join(tmp, "SCRATCHPAD.md");
+    const pipelinePath = path.join(tmp, "pipeline.json");
+    mkdirSync(stepsDir, { recursive: true });
+    writeFileSync(scratchpadPath, "# Test\n", "utf8");
+    writeFileSync(
+      pipelinePath,
+      JSON.stringify({ version: 1, current: "init", history: [], steps: {} }) +
+        "\n",
+    );
+    writeFileSync(
+      path.join(stepsDir, "analysis-brief.json"),
+      JSON.stringify({ problem_spaces: [] }),
+    );
+
+    const capturedPrompts = [];
+    const ctx = makeCtx(capturedPrompts);
+    // Override agent to return valid critique
+    ctx.agentPool.getAgent = () => ({
+      agentName: "test",
+      agent: {
+        execute: async (prompt) => {
+          capturedPrompts.push(prompt);
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              verdict: "approve",
+              overallScore: 8,
+              issueReviews: [],
+              backlogIssues: {},
+              summary: "good",
+              feedback: [],
+            }),
+          };
+        },
+      },
+    });
+
+    await issueCritiqueMachine.run(
+      {
+        issues: [
+          {
+            id: "IDEA-01",
+            title: "Test",
+            objective: "test obj",
+            changes: ["file.js"],
+          },
+        ],
+        repoRoot: tmp,
+        stepsDir,
+        scratchpadPath,
+        pipelinePath,
+      },
+      ctx,
+    );
+
+    assert.ok(capturedPrompts.length >= 1, "should have at least 1 prompt");
+    const critiquePrompt = capturedPrompts[0];
+    assert.ok(
+      critiquePrompt.includes("critique-input-issues.json"),
+      "critique prompt should reference issues file path",
+    );
+    assert.ok(
+      critiquePrompt.includes("Codebase Grounding"),
+      "critique prompt should include Codebase Grounding review criterion",
+    );
+    assert.ok(
+      critiquePrompt.includes("Codebase Exploration"),
+      "critique prompt should include codebase exploration instruction",
+    );
+    assert.ok(
+      critiquePrompt.includes(tmp),
+      "critique prompt should include repoRoot",
+    );
+  });
+});
+
 describe("session state helpers", () => {
   let tmp;
 

@@ -2,9 +2,9 @@ import { registerMachine } from "../machines/_registry.js";
 import contextGatherMachine from "../machines/research/context-gather.machine.js";
 import deepResearchMachine from "../machines/research/deep-research.machine.js";
 import issueCritiqueMachine from "../machines/research/issue-critique.machine.js";
+import issuePublishMachine from "../machines/research/issue-publish.machine.js";
 import issueSynthesisMachine from "../machines/research/issue-synthesis.machine.js";
 import pocValidationMachine from "../machines/research/poc-validation.machine.js";
-import specPublishMachine from "../machines/research/spec-publish.machine.js";
 import techSelectionMachine from "../machines/research/tech-selection.machine.js";
 import { runPreflight } from "../preflight.js";
 import { WorkflowRunner } from "./_base.js";
@@ -13,9 +13,9 @@ export {
   contextGatherMachine,
   deepResearchMachine,
   issueCritiqueMachine,
+  issuePublishMachine,
   issueSynthesisMachine,
   pocValidationMachine,
-  specPublishMachine,
   techSelectionMachine,
 };
 
@@ -26,7 +26,7 @@ export const researchMachines = [
   pocValidationMachine,
   issueSynthesisMachine,
   issueCritiqueMachine,
-  specPublishMachine,
+  issuePublishMachine,
 ];
 
 /**
@@ -140,7 +140,7 @@ export async function runResearchPipeline(opts, ctx) {
         },
       },
       {
-        machine: specPublishMachine,
+        machine: issuePublishMachine,
         inputMapper: (prev, state) => {
           const gatherData = state.results[0]?.data || {};
           const researchData = state.results[1]?.data || {};
