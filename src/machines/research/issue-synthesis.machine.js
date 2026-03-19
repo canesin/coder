@@ -73,6 +73,23 @@ export default defineMachine({
     let finalReview = null;
     let prevIssueCount = 0;
 
+    // Ensure artifacts are on disk for agent file-path references (once, before loop)
+    const briefPath = ensureArtifactOnDisk(
+      stepsDir,
+      "analysis-brief",
+      analysisBrief,
+    );
+    const webRefPath = ensureArtifactOnDisk(
+      stepsDir,
+      "web-references",
+      webReferenceMap,
+    );
+    const validationPath = ensureArtifactOnDisk(
+      stepsDir,
+      "validation-results",
+      validationResults,
+    );
+
     for (let i = 1; i <= iterations; i++) {
       // Skip already-completed iterations (resume support)
       const iterKey = `synthesis_iteration_${i}`;
@@ -90,23 +107,6 @@ export default defineMachine({
         priorFeedback.length > 0
           ? priorFeedback.map((f) => `- ${f}`).join("\n")
           : "(none)";
-
-      // Ensure artifacts are on disk for agent file-path references
-      const briefPath = ensureArtifactOnDisk(
-        stepsDir,
-        "analysis-brief",
-        analysisBrief,
-      );
-      const webRefPath = ensureArtifactOnDisk(
-        stepsDir,
-        "web-references",
-        webReferenceMap,
-      );
-      const validationPath = ensureArtifactOnDisk(
-        stepsDir,
-        "validation-results",
-        validationResults,
-      );
 
       // Draft
       ctx.log({ event: "research_draft_iteration", iteration: i });
