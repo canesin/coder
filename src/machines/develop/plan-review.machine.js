@@ -66,7 +66,9 @@ export function parsePlanVerdict(critiqueMd) {
       return "PROCEED_WITH_CAUTION";
   }
 
-  // Pass 2: last-position-wins across the section
+  // Pass 2: last-position-wins across the section.
+  // Guard: if 3+ distinct verdict categories appear, this is likely an echoed
+  // template or truncated output — return UNKNOWN to avoid false positives.
   const kwPatterns = [
     { pattern: /\bAPPROVED\b/g, verdict: "APPROVED" },
     { pattern: /\bREJECT\b/g, verdict: "REJECT" },
@@ -76,14 +78,19 @@ export function parsePlanVerdict(critiqueMd) {
   ];
   let bestVerdict = "UNKNOWN";
   let bestPos = -1;
+  const foundCategories = new Set();
   for (const { pattern, verdict } of kwPatterns) {
     let last = null;
     for (const m of raw.matchAll(pattern)) last = m;
-    if (last && last.index > bestPos) {
-      bestPos = last.index;
-      bestVerdict = verdict;
+    if (last) {
+      foundCategories.add(verdict);
+      if (last.index > bestPos) {
+        bestPos = last.index;
+        bestVerdict = verdict;
+      }
     }
   }
+  if (foundCategories.size >= 3) return "UNKNOWN";
   return bestVerdict;
 }
 

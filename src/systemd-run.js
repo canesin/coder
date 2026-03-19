@@ -17,7 +17,7 @@ function maybeTmpFile(command, tmpDir = "/tmp") {
     return command;
   const tmpPath = `${tmpDir}/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
   writeFileSync(tmpPath, command, { mode: 0o600 });
-  return `bash "${tmpPath}"; __coder_rc=$?; rm -f "${tmpPath}"; exit $__coder_rc`;
+  return `. "${tmpPath}"; __coder_rc=$?; rm -f "${tmpPath}"; exit $__coder_rc`;
 }
 
 const SYSTEMD_PROBE_TIMEOUT_MS = 2000;

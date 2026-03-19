@@ -98,6 +98,18 @@ REVISE`;
   assert.equal(parsePlanVerdict(md), "REVISE");
 });
 
+test("parsePlanVerdict: echoed template without final verdict returns UNKNOWN", () => {
+  // Truncated output that only contains the echoed prompt template —
+  // no standalone verdict, and pass 2 finds 3+ categories → UNKNOWN.
+  const md = `## Verdict
+One of:
+- REJECT (major rework needed)
+- REVISE (fix issues first)
+- PROCEED WITH CAUTION (minor)
+- APPROVED (rare)`;
+  assert.equal(parsePlanVerdict(md), "UNKNOWN");
+});
+
 test("parsePlanVerdict: verdict keyword on line after narrative, before next heading", () => {
   const md = `## 4. Critical Issues
 None found.
