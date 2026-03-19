@@ -99,7 +99,7 @@ function loadLocalIssues(issuesDir) {
  * @param {string} cwd - Directory to run gh in (repo root)
  * @returns {object[]}
  */
-function fetchGithubIssues(cwd) {
+export function fetchGithubIssues(cwd) {
   const res = spawnSync(
     "gh",
     [
@@ -149,7 +149,7 @@ function fetchGithubIssues(cwd) {
  * @param {string} cwd - Directory to run glab in (repo root)
  * @returns {object[]}
  */
-function fetchGitlabIssues(cwd) {
+export function fetchGitlabIssues(cwd) {
   const allIssues = [];
 
   for (let page = 1; page <= 10; page++) {
