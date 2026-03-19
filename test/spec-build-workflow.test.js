@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { z } from "zod";
 import { defineMachine } from "../src/machines/_base.js";
 import { requirePayloadFields } from "../src/machines/research/_shared.js";
+import specRenderMachine from "../src/machines/research/spec-render.machine.js";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
   registerSpecBuildMachines,
@@ -271,4 +281,199 @@ test("registerSpecBuildMachines is a function", () => {
 
 test("runSpecBuildPipeline is a function", () => {
   assert.equal(typeof runSpecBuildPipeline, "function");
+});
+
+// --- Real spec_render machine tests ---
+
+function makeTempDirs() {
+  const base = path.join(
+    tmpdir(),
+    `spec-render-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  const runDir = path.join(base, "run");
+  const issuesDir = path.join(runDir, "issues");
+  const stepsDir = path.join(runDir, "steps");
+  const workspace = path.join(base, "workspace");
+  mkdirSync(issuesDir, { recursive: true });
+  mkdirSync(stepsDir, { recursive: true });
+  mkdirSync(path.join(workspace, ".coder"), { recursive: true });
+
+  // Write minimal pipeline.json and SCRATCHPAD.md
+  writeFileSync(path.join(runDir, "pipeline.json"), "null", "utf8");
+  writeFileSync(path.join(runDir, "SCRATCHPAD.md"), "# Scratch\n", "utf8");
+
+  return {
+    base,
+    runDir,
+    issuesDir,
+    stepsDir,
+    workspace,
+    scratchpadPath: path.join(runDir, "SCRATCHPAD.md"),
+    pipelinePath: path.join(runDir, "pipeline.json"),
+    cleanup: () => rmSync(base, { recursive: true, force: true }),
+  };
+}
+
+test("spec_render build mode: emits spec files, bridge manifest with file field, and phase issueIds", async () => {
+  const dirs = makeTempDirs();
+  try {
+    const result = await specRenderMachine.run(
+      {
+        runDir: dirs.runDir,
+        stepsDir: dirs.stepsDir,
+        issuesDir: dirs.issuesDir,
+        scratchpadPath: dirs.scratchpadPath,
+        pipelinePath: dirs.pipelinePath,
+        repoRoot: dirs.workspace,
+        repoPath: ".",
+        mode: "build",
+        domains: [
+          {
+            name: "auth",
+            description: "Authentication domain",
+            gaps: ["No MFA support"],
+          },
+        ],
+        decisions: [
+          {
+            id: "ADR-001",
+            title: "Use JWT",
+            status: "accepted",
+            rationale: "Stateless auth",
+          },
+        ],
+        phases: [
+          {
+            id: "phase-1",
+            title: "Foundation",
+            issueSpecs: [{ title: "Add JWT support" }],
+          },
+        ],
+        issueSpecs: [
+          {
+            title: "Add JWT support",
+            objective: "Implement JWT auth",
+            priority: "P1",
+          },
+          { title: "Add MFA", objective: "Multi-factor", priority: "P2" },
+        ],
+        parsedDomains: [],
+        parsedDecisions: [],
+      },
+      {
+        workspaceDir: dirs.workspace,
+        log: () => {},
+      },
+    );
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.data.issueCount, 2);
+
+    // Spec files exist
+    const specDir = path.join(dirs.runDir, "spec");
+    assert.ok(existsSync(path.join(specDir, "01-OVERVIEW.md")));
+    assert.ok(existsSync(path.join(specDir, "02-ARCHITECTURE.md")));
+    assert.ok(existsSync(path.join(specDir, "03-AUTH.md")));
+    assert.ok(
+      existsSync(path.join(specDir, "decisions", "ADR-001-use-jwt.md")),
+    );
+    assert.ok(
+      existsSync(path.join(specDir, "phases", "PHASE-01-foundation.md")),
+    );
+
+    // Overview includes domain and decision content (not boilerplate)
+    const overview = readFileSync(path.join(specDir, "01-OVERVIEW.md"), "utf8");
+    assert.ok(overview.includes("auth"), "overview should mention domain name");
+    assert.ok(overview.includes("Use JWT"), "overview should mention decision");
+
+    // Architecture includes gaps
+    const arch = readFileSync(path.join(specDir, "02-ARCHITECTURE.md"), "utf8");
+    assert.ok(
+      arch.includes("No MFA support"),
+      "architecture should include domain gaps",
+    );
+
+    // Domain doc includes gaps
+    const domainDoc = readFileSync(path.join(specDir, "03-AUTH.md"), "utf8");
+    assert.ok(
+      domainDoc.includes("No MFA support"),
+      "domain doc should include gaps",
+    );
+
+    // Spec manifest has issueManifestPath and correct phase issueIds
+    const specManifest = JSON.parse(
+      readFileSync(path.join(specDir, "manifest.json"), "utf8"),
+    );
+    assert.ok(
+      specManifest.issueManifestPath,
+      "spec manifest should have issueManifestPath",
+    );
+    assert.equal(specManifest.phases[0].issueIds.length, 1);
+    assert.equal(specManifest.phases[0].issueIds[0], "SPEC-01");
+
+    // Bridge manifest: uses `file` field (not filePath), files exist in local-issues dir
+    const bridgeDir = path.join(dirs.workspace, ".coder", "local-issues");
+    const bridgeManifest = JSON.parse(
+      readFileSync(path.join(bridgeDir, "manifest.json"), "utf8"),
+    );
+    assert.equal(bridgeManifest.issues.length, 2);
+    for (const issue of bridgeManifest.issues) {
+      assert.ok(issue.file, "bridge issue should have file field");
+      assert.ok(!issue.filePath, "bridge issue should not have filePath field");
+      const mdPath = path.join(bridgeDir, issue.file);
+      assert.ok(existsSync(mdPath), `issue file should exist at ${mdPath}`);
+    }
+    assert.equal(bridgeManifest.issues[0].id, "SPEC-01");
+    assert.equal(bridgeManifest.repoPath, ".");
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test("spec_render ingest mode: writes bridge manifest without spec dir", async () => {
+  const dirs = makeTempDirs();
+  try {
+    const result = await specRenderMachine.run(
+      {
+        runDir: dirs.runDir,
+        stepsDir: dirs.stepsDir,
+        issuesDir: dirs.issuesDir,
+        scratchpadPath: dirs.scratchpadPath,
+        pipelinePath: dirs.pipelinePath,
+        repoRoot: dirs.workspace,
+        repoPath: ".",
+        mode: "ingest",
+        domains: [],
+        decisions: [],
+        phases: [],
+        issueSpecs: [
+          { title: "Fix gap", objective: "Address blocker", priority: "P1" },
+        ],
+        parsedDomains: [],
+        parsedDecisions: [],
+      },
+      {
+        workspaceDir: dirs.workspace,
+        log: () => {},
+      },
+    );
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.data.specDir, null);
+    assert.equal(result.data.issueCount, 1);
+
+    // No spec dir created
+    assert.ok(!existsSync(path.join(dirs.runDir, "spec")));
+
+    // Bridge manifest exists and uses file field
+    const bridgeDir = path.join(dirs.workspace, ".coder", "local-issues");
+    const bridgeManifest = JSON.parse(
+      readFileSync(path.join(bridgeDir, "manifest.json"), "utf8"),
+    );
+    assert.equal(bridgeManifest.issues.length, 1);
+    assert.ok(bridgeManifest.issues[0].file);
+    assert.ok(existsSync(path.join(bridgeDir, bridgeManifest.issues[0].file)));
+  } finally {
+    dirs.cleanup();
+  }
 });

@@ -19,26 +19,34 @@ import {
 export function parsePlanVerdict(critiqueMd) {
   if (!critiqueMd) return "UNKNOWN";
 
-  const verdictLines = [];
-  // Match heading-based verdict sections: "## [N.] Verdict" then value on next non-empty line
-  for (const match of critiqueMd.matchAll(
-    /^#{1,6}\s+(?:\d+\.\s+)?Verdict\b[^\n]*\n\s*([^\n]+)/gim,
-  )) {
-    verdictLines.push(match[1]);
+  const verdictSections = [];
+  // Capture ALL text between a Verdict heading and the next heading (or EOF).
+  // This handles cases where the verdict keyword isn't on the first line after
+  // the heading (e.g. Gemini writes narrative before the keyword).
+  const headingPattern = /^(#{1,6})\s+(?:\d+\.\s+)?(.+)$/gm;
+  const headings = [...critiqueMd.matchAll(headingPattern)];
+  for (let i = 0; i < headings.length; i++) {
+    const label = headings[i][2].replace(/[*_`]/g, "").trim();
+    if (!/^Verdict\b/i.test(label)) continue;
+    const start = headings[i].index + headings[i][0].length;
+    const end =
+      i + 1 < headings.length ? headings[i + 1].index : critiqueMd.length;
+    const section = critiqueMd.slice(start, end).trim();
+    if (section) verdictSections.push(section);
   }
 
   // Fallback: inline "**Verdict**: VALUE" or "Verdict: VALUE"
-  if (verdictLines.length === 0) {
+  if (verdictSections.length === 0) {
     for (const match of critiqueMd.matchAll(
       /\*{0,2}Verdict\*{0,2}\s*[:-]\s*([^\n]+)/gi,
     )) {
-      verdictLines.push(match[1]);
+      verdictSections.push(match[1]);
     }
   }
 
-  if (verdictLines.length === 0) return "UNKNOWN";
+  if (verdictSections.length === 0) return "UNKNOWN";
 
-  const raw = verdictLines[verdictLines.length - 1]
+  const raw = verdictSections[verdictSections.length - 1]
     .trim()
     .toUpperCase()
     .replace(/[*_`[\]()]/g, "");

@@ -178,6 +178,22 @@ export async function readWorkflowStatus(workspaceDir) {
   const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
 
+  // Auto-transition stale runs to "failed" so they don't stay "running" forever
+  // after a service restart (orphaned workflows).
+  if (isStale && loopState.runId && !activeRuns.has(loopState.runId)) {
+    const snapshot = await loadWorkflowSnapshot(workspaceDir);
+    const wfName = snapshot?.workflow || "develop";
+    await markRunTerminalOnDisk(
+      workspaceDir,
+      loopState.runId,
+      wfName,
+      "failed",
+    );
+    // Re-read the now-updated loop state
+    const updated = await loadLoopState(workspaceDir);
+    Object.assign(loopState, updated);
+  }
+
   // Status contract: when currentStage is develop_starting, we are pre-merge.
   // Suppress stale failed/skipped entries so status shows a fresh retryable view.
   // Scoped to develop only; other workflows may have different semantics.
