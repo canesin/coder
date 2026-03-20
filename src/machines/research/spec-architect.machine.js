@@ -87,13 +87,15 @@ Return ONLY valid JSON:
 
       requirePayloadFields(
         res.payload,
-        ["domains", "decisions", "phases"],
+        {
+          domains: "array",
+          decisions: "array",
+          phases: "array",
+          issueSpecs: "array",
+        },
         "spec_architect (build)",
       );
-      const { domains, decisions, phases } = res.payload;
-      const issueSpecs = Array.isArray(res.payload.issueSpecs)
-        ? res.payload.issueSpecs
-        : [];
+      const { domains, decisions, phases, issueSpecs } = res.payload;
 
       appendScratchpad(scratchpadPath, "Spec Architect (build)", [
         `- domains: ${domains.length}`,
@@ -171,7 +173,7 @@ Return ONLY valid JSON:
 
     requirePayloadFields(
       res.payload,
-      ["phases", "issueSpecs"],
+      { phases: "array", issueSpecs: "array" },
       "spec_architect (ingest)",
     );
     const { phases, issueSpecs } = res.payload;

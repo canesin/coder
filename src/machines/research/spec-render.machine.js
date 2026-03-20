@@ -245,37 +245,33 @@ export default defineMachine({
     }
 
     // --- Remap depends_on references to stable SPEC IDs ---
-    // Track duplicate titles so we can skip ambiguous remapping rather than
-    // silently mapping to the wrong issue.
-    const titleToId = new Map();
-    const ambiguousTitles = new Set();
+    // Collect ALL IDs per title so duplicate-title dependencies resolve to
+    // every matching issue (conservative: depend on all rather than guess).
+    const titleToIds = new Map();
     for (const gi of generatedIssues) {
       const key = gi.title.toLowerCase();
-      if (titleToId.has(key)) {
-        ambiguousTitles.add(key);
+      const ids = titleToIds.get(key) || [];
+      ids.push(gi.id);
+      titleToIds.set(key, ids);
+    }
+    for (const [key, ids] of titleToIds) {
+      if (ids.length > 1) {
         ctx.log({
           event: "spec_render_duplicate_title",
           level: "warn",
-          title: gi.title,
-          duplicateId: gi.id,
-          originalId: titleToId.get(key),
-          message: `Duplicate issue title "${gi.title}" (${gi.id} vs ${titleToId.get(key)}). depends_on references to this title will not be remapped.`,
+          title: key,
+          ids,
+          message: `Duplicate issue title "${key}" maps to ${ids.join(", ")}. depends_on references will expand to all matching IDs.`,
         });
-      } else {
-        titleToId.set(key, gi.id);
       }
     }
     for (const gi of generatedIssues) {
       gi.depends_on = gi.depends_on
-        .map((dep) => {
+        .flatMap((dep) => {
           // Already a SPEC ID?
-          if (/^SPEC-\d+$/i.test(dep)) return dep;
-          const key = dep.toLowerCase();
-          // Skip remapping for ambiguous (duplicate) titles — keep the
-          // original string so it fails loudly rather than resolving to
-          // the wrong issue.
-          if (ambiguousTitles.has(key)) return dep;
-          return titleToId.get(key) || dep;
+          if (/^SPEC-\d+$/i.test(dep)) return [dep];
+          const ids = titleToIds.get(dep.toLowerCase());
+          return ids || [dep];
         })
         .filter(Boolean);
     }
