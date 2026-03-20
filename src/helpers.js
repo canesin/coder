@@ -602,9 +602,13 @@ Reference specific sections in the plan when identifying over-engineering.`;
   const result = spawnSync("bash", ["-lc", cmd], {
     cwd: repoDir,
     encoding: "utf8",
-    timeout: 300000, // 5 minute timeout
+    timeout: 900000, // 15 minute timeout
     maxBuffer: 10 * 1024 * 1024, // 10MB buffer
   });
+
+  // Detect timeout: spawnSync sets status=null, signal='SIGTERM' on timeout
+  const timedOut =
+    result.signal === "SIGTERM" || result.error?.code === "ETIMEDOUT";
 
   const output = (result.stdout || "") + (result.stderr || "");
   // Two-pass sanitization: strip leading noise first, then remove any remaining
@@ -620,7 +624,13 @@ Reference specific sections in the plan when identifying over-engineering.`;
     critique = critiqueLines.slice(firstHeader).join("\n").trim();
   }
 
-  writeFileSync(critiquePath, critique + "\n");
+  if (timedOut) {
+    const partial = critique || "(review timed out — no output captured)";
+    writeFileSync(critiquePath, `${partial}\n`);
+    return 1;
+  }
+
+  writeFileSync(critiquePath, `${critique}\n`);
   return result.status ?? 0;
 }
 

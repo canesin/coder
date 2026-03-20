@@ -179,7 +179,7 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
  * transition occurs.
  */
 async function reapStaleRun(workspaceDir, loopState, isStale) {
-  if (!isStale || !loopState.runId || activeRuns.has(loopState.runId)) return;
+  if (!isStale || !loopState.runId || loopState.status === "paused" || activeRuns.has(loopState.runId)) return;
   const snapshot = await loadWorkflowSnapshot(workspaceDir);
   const wfName = snapshot?.workflow || "develop";
   await markRunTerminalOnDisk(workspaceDir, loopState.runId, wfName, "failed");
@@ -188,16 +188,23 @@ async function reapStaleRun(workspaceDir, loopState, isStale) {
 }
 
 export async function readWorkflowStatus(workspaceDir) {
-  const loopState = await loadLoopState(workspaceDir);
-  const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+  let loopState = await loadLoopState(workspaceDir);
+  let { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
 
+  // Capture pre-merge stage before auto-transition (which clears currentStage).
+  const originalStage = loopState.currentStage;
+
   await reapStaleRun(workspaceDir, loopState, isStale);
+  // Re-read staleness after potential reap (loopState mutated in place)
+  ({ heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+    detectStaleness(loopState));
 
   // Status contract: when currentStage is develop_starting, we are pre-merge.
   // Suppress stale failed/skipped entries so status shows a fresh retryable view.
   // Scoped to develop only; other workflows may have different semantics.
-  const isPreMerge = loopState.currentStage === "develop_starting";
+  // Use originalStage so auto-transition doesn't break the pre-merge filter.
+  const isPreMerge = originalStage === "develop_starting";
   const queueForStatus = isPreMerge
     ? loopState.issueQueue.filter(
         (e) => e.status !== "failed" && e.status !== "skipped",

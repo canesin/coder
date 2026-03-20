@@ -74,6 +74,90 @@ test("parsePlanVerdict: takes last verdict when multiple sections exist", () => 
   assert.equal(parsePlanVerdict(md), "APPROVED");
 });
 
+test("parsePlanVerdict: narrative preamble before verdict keyword", () => {
+  const md = `## Verdict
+
+The plan addresses the core requirements adequately.
+There are no critical issues that would prevent implementation.
+
+**APPROVED**`;
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
+test("parsePlanVerdict: Gemini 'One of:' echo before actual verdict", () => {
+  const md = `## Verdict
+
+One of:
+- REJECT
+- REVISE
+- PROCEED WITH CAUTION
+- APPROVED
+
+REVISE`;
+  // Last-position-wins: REVISE appears after the echoed option list.
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: echoed template without final verdict returns UNKNOWN", () => {
+  // Truncated output that only contains the echoed prompt template —
+  // no standalone verdict, and pass 2 finds 3+ categories → UNKNOWN.
+  const md = `## Verdict
+One of:
+- REJECT (major rework needed)
+- REVISE (fix issues first)
+- PROCEED WITH CAUTION (minor)
+- APPROVED (rare)`;
+  assert.equal(parsePlanVerdict(md), "UNKNOWN");
+});
+
+test("parsePlanVerdict: verdict keyword on line after narrative, before next heading", () => {
+  const md = `## 4. Critical Issues
+None found.
+
+## 5. Verdict
+After careful review of the implementation plan, the approach is sound
+and addresses all requirements from the issue specification.
+
+REVISE
+
+## 6. Summary
+Overall good plan.`;
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: verdict with dash-separated explanation", () => {
+  const md = `## Verdict
+APPROVED - proceed with caution around rollout`;
+  // Keyword followed by separator (dash) matches pass 1.
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
+test("parsePlanVerdict: verdict keyword then prose mentioning another keyword", () => {
+  const md = `## Verdict
+REVISE
+
+Not approved until the API surface is verified.`;
+  // Line-start pass finds REVISE first (bottom-up: prose line doesn't start
+  // with a keyword, then REVISE does). "approved" in prose is not a false positive.
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: explanation starting with keyword does not override verdict", () => {
+  const md = `## Verdict
+REVISE
+
+Approved once the API surface is verified.`;
+  // "Approved once..." is a sentence, not a standalone keyword — pass 1 skips it.
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: verdict embedded in prose falls back to last-position-wins", () => {
+  const md = `## Verdict
+The plan is APPROVED.`;
+  // No line starts with a keyword, so pass 2 finds APPROVED.
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
 // ---------------------------------------------------------------------------
 // runPlanLoop
 // ---------------------------------------------------------------------------

@@ -1,9 +1,12 @@
+import path from "node:path";
 import { z } from "zod";
-import { defineMachine } from "../_base.js";
+import { checkCancel, defineMachine } from "../_base.js";
 import {
   loadPipeline,
+  loadSessionState,
   resolveArtifact,
   runStructuredStep,
+  saveSessionState,
   skipPipelineStep,
 } from "./_shared.js";
 
@@ -47,6 +50,8 @@ export default defineMachine({
       "web-references",
     );
 
+    const runDir = path.dirname(stepsDir);
+    const sessionState = loadSessionState(runDir);
     const stepOpts = { stepsDir, scratchpadPath, pipeline, pipelinePath, ctx };
 
     let validationPlan = { tracks: [] };
@@ -77,6 +82,7 @@ export default defineMachine({
     }
 
     // Plan validation tracks
+    checkCancel(ctx);
     ctx.log({ event: "research_plan_validation" });
     const validationPlanPrompt = `Create a validation plan for these pointers and references.
 
@@ -111,10 +117,14 @@ Return ONLY valid JSON in this schema:
       prompt: validationPlanPrompt,
       timeoutMs: ctx.config.workflow.timeouts.researchStep,
       ...stepOpts,
+      sessionState,
+      sessionKey: "pocPlanSessionId",
     });
     validationPlan = validationPlanRes.payload || validationPlan;
+    saveSessionState(runDir, sessionState);
 
     // Execute validation tracks
+    checkCancel(ctx);
     const tracks = Array.isArray(validationPlan?.tracks)
       ? validationPlan.tracks
       : [];
@@ -154,8 +164,11 @@ Return ONLY valid JSON in this schema:
         prompt: validationExecPrompt,
         timeoutMs: ctx.config.workflow.timeouts.pocValidation,
         ...stepOpts,
+        sessionState,
+        sessionKey: "pocExecSessionId",
       });
       validationResults = validationExecRes.payload || validationResults;
+      saveSessionState(runDir, sessionState);
     } else {
       skipPipelineStep(
         pipeline,

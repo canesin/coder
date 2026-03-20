@@ -1,10 +1,17 @@
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
-import { defineMachine } from "../_base.js";
+import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,
+  ensureArtifactOnDisk,
   loadPipeline,
+  loadSessionState,
+  loadStepArtifact,
+  requirePayloadFields,
   resolveArtifact,
   runStructuredStep,
+  saveSessionState,
 } from "./_shared.js";
 
 export default defineMachine({
@@ -57,6 +64,8 @@ export default defineMachine({
       "validation-results",
     );
 
+    const runDir = path.dirname(stepsDir);
+    const sessionState = loadSessionState(runDir);
     const stepOpts = { stepsDir, scratchpadPath, pipeline, pipelinePath, ctx };
 
     let priorFeedback = [];
@@ -64,7 +73,36 @@ export default defineMachine({
     let finalReview = null;
     let prevIssueCount = 0;
 
+    // Ensure artifacts are on disk for agent file-path references (once, before loop)
+    const briefPath = ensureArtifactOnDisk(
+      stepsDir,
+      "analysis-brief",
+      analysisBrief,
+    );
+    const webRefPath = ensureArtifactOnDisk(
+      stepsDir,
+      "web-references",
+      webReferenceMap,
+    );
+    const validationPath = ensureArtifactOnDisk(
+      stepsDir,
+      "validation-results",
+      validationResults,
+    );
+
     for (let i = 1; i <= iterations; i++) {
+      // Skip already-completed iterations (resume support)
+      const iterKey = `synthesis_iteration_${i}`;
+      if (pipeline.steps[iterKey]?.status === "completed") {
+        finalDraft =
+          loadStepArtifact(stepsDir, `draft-${String(i).padStart(2, "0")}`) ||
+          finalDraft;
+        ctx.log({ event: "research_iteration_skipped", iteration: i });
+        continue;
+      }
+
+      checkCancel(ctx);
+
       const feedbackSection =
         priorFeedback.length > 0
           ? priorFeedback.map((f) => `- ${f}`).join("\n")
@@ -75,14 +113,11 @@ export default defineMachine({
       const draftPrompt = `Synthesize a research-ready issue backlog from validated inputs.
 
 Repo root: ${repoRoot}
-Pointer analysis:
-${JSON.stringify(analysisBrief, null, 2)}
 
-Web references:
-${JSON.stringify(webReferenceMap, null, 2)}
-
-Validation results:
-${JSON.stringify(validationResults, null, 2)}
+## Input Artifacts (read these files)
+- Pointer analysis: ${briefPath}
+- Web references: ${webRefPath}
+- Validation results: ${validationPath}
 
 Clarifications:
 ${clarifications || "(none provided)"}
@@ -90,13 +125,23 @@ ${clarifications || "(none provided)"}
 Feedback to incorporate:
 ${feedbackSection}
 
+## Phase 1: Codebase Exploration (MANDATORY)
+Before drafting issues, explore the codebase at \`${repoRoot}\`:
+- Search for existing test files and understand the test framework/conventions
+- Identify project structure, key modules, and architecture patterns
+- Find existing implementations related to the problem spaces in the analysis brief
+- Note file paths that issues should reference
+
+## Phase 2: Issue Drafting
+With codebase context, draft the issue backlog. Ground every issue in actual files and patterns you found.
+
 Rules:
 - Return EXACTLY ${maxIssues} issues (or fewer only if the analysis genuinely warrants fewer).
 - Keep issues small, independently verifiable, and dependency-light.
 - Include references and validation metadata per issue.
 - Do not use issues/ as scratch storage; this workflow uses .coder/scratchpad.
 - Do NOT re-add issues that prior feedback explicitly asked to drop.
-- Each issue MUST include a "testing_strategy" field. Search the codebase for existing test files covering related functionality before writing this. Include: existing tests to leverage, new tests to write with expected behavior, and the repo's test framework/conventions.
+- Each issue MUST include a "testing_strategy" field grounded in actual test files you found in the codebase. Include: existing tests to leverage (with real file paths), new tests to write with expected behavior, and the repo's test framework/conventions.
 
 Return ONLY valid JSON in this schema:
 {
@@ -149,15 +194,18 @@ Return ONLY valid JSON in this schema:
         prompt: draftPrompt,
         timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
+        sessionState,
+        sessionKey: "synthesisDraftSessionId",
       });
-      const draftPayload = draftRes.payload;
-      if (
-        !draftPayload ||
-        !Array.isArray(draftPayload.issues) ||
-        draftPayload.issues.length === 0
-      ) {
+      saveSessionState(runDir, sessionState);
+      const draftPayload = requirePayloadFields(
+        draftRes.payload,
+        { issues: "array" },
+        `draft_issue_backlog_${i}`,
+      );
+      if (draftPayload.issues.length === 0) {
         throw new Error(
-          `${draftRes.agentName} returned no issues for pointers-based drafting.`,
+          `${draftRes.agentName} returned empty issues array for pointers-based drafting.`,
         );
       }
       finalDraft = draftPayload;
@@ -178,15 +226,21 @@ Return ONLY valid JSON in this schema:
         `- draft_json: ${draftRes.relOutputPath}`,
       ]);
 
-      // Skip critique on last iteration
-      if (i >= iterations) break;
+      // Skip critique on last iteration — mark completed and break
+      if (i >= iterations) {
+        pipeline.steps[iterKey] = {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+        };
+        writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+        break;
+      }
 
       // Critique
       ctx.log({ event: "research_critique_iteration", iteration: i });
       const reviewPrompt = `Critique this proposed issue backlog for sequencing, overlap, scope creep, weak references, and missing validation.
 
-Backlog JSON:
-${JSON.stringify(draftPayload, null, 2)}
+Read the draft backlog from: ${draftRes.outputPath}
 
 Return ONLY valid JSON in this schema:
 {
@@ -205,22 +259,25 @@ Return ONLY valid JSON in this schema:
         prompt: reviewPrompt,
         timeoutMs: ctx.config.workflow.timeouts.researchStep,
         ...stepOpts,
+        sessionState,
+        sessionKey: "synthesisCritiqueSessionId",
       });
-      finalReview = reviewRes.payload;
+      saveSessionState(runDir, sessionState);
+      finalReview = requirePayloadFields(
+        reviewRes.payload,
+        { must_fix: "array", should_fix: "array" },
+        `review_issue_backlog_${i}`,
+      );
 
-      const mustFix = Array.isArray(finalReview?.must_fix)
-        ? finalReview.must_fix
-        : [];
-      const shouldFix = Array.isArray(finalReview?.should_fix)
-        ? finalReview.should_fix
-        : [];
-      const referenceGaps = Array.isArray(finalReview?.reference_gaps)
+      const mustFix = finalReview.must_fix;
+      const shouldFix = finalReview.should_fix;
+      const referenceGaps = Array.isArray(finalReview.reference_gaps)
         ? finalReview.reference_gaps
         : [];
-      const validationGaps = Array.isArray(finalReview?.validation_gaps)
+      const validationGaps = Array.isArray(finalReview.validation_gaps)
         ? finalReview.validation_gaps
         : [];
-      const testingGaps = Array.isArray(finalReview?.testing_gaps)
+      const testingGaps = Array.isArray(finalReview.testing_gaps)
         ? finalReview.testing_gaps
         : [];
       priorFeedback = [
@@ -243,6 +300,13 @@ Return ONLY valid JSON in this schema:
         `- testing_gaps: ${testingGaps.length}`,
         `- review_json: ${reviewRes.relOutputPath}`,
       ]);
+
+      // Mark iteration complete in pipeline
+      pipeline.steps[iterKey] = {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      };
+      writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
     }
 
     return {
