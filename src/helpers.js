@@ -160,14 +160,26 @@ export function detectRemoteType(repoDir, remoteName = "origin") {
 
 export { DEFAULT_PASS_ENV };
 
+/** Default API key env names when a model entry omits apiKeyEnv (Zod leaves it ""). */
+const DEFAULT_MODEL_KEY_ENV = {
+  gemini: "GEMINI_API_KEY",
+  claude: "ANTHROPIC_API_KEY",
+  codex: "OPENAI_API_KEY",
+};
+
 /** Collect apiKeyEnv names from models.* so secrets are passed without duplicating them in passEnv. */
 function modelApiKeyEnvNames(config) {
   const models = config.models;
   if (!models || typeof models !== "object") return [];
   const out = [];
   for (const role of ["gemini", "claude", "codex"]) {
-    const env = models[role]?.apiKeyEnv;
-    if (typeof env === "string" && env.trim()) out.push(env.trim());
+    const entry = models[role];
+    if (!entry || typeof entry !== "object") continue;
+    let name = entry.apiKeyEnv;
+    if (typeof name !== "string" || !name.trim()) {
+      name = DEFAULT_MODEL_KEY_ENV[role];
+    }
+    if (typeof name === "string" && name.trim()) out.push(name.trim());
   }
   return out;
 }

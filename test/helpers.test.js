@@ -189,6 +189,17 @@ test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
   assert.ok(r.includes("OPENROUTER_API_KEY"));
 });
 
+test("resolvePassEnv uses default key env when models.gemini omits apiKeyEnv", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "", apiKeyEnv: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GEMINI_API_KEY"));
+});
+
 test("resolvePassEnv merges passEnvPatterns matches from env", () => {
   const config = {
     sandbox: {
