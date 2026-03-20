@@ -674,35 +674,6 @@ export function registerWorkflowTools(server, resolveWorkspace) {
         }
 
         if (action === "start") {
-          // Guard: reject start if a run is already in progress, unless forceRestart
-          const hasActiveRun = [...activeRuns.values()].some(
-            (r) => r.workspace === ws,
-          );
-          const diskLoopState = await loadLoopState(ws);
-          const diskRunInProgress =
-            diskLoopState.status === "running" ||
-            diskLoopState.status === "paused";
-          if (
-            (hasActiveRun || diskRunInProgress) &&
-            params.forceRestart !== true
-          ) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify({
-                    action,
-                    workflow,
-                    status: "blocked",
-                    reason: "run_already_in_progress",
-                    runId: diskLoopState.runId || null,
-                    hint: "Use action: 'status' to monitor. To replace the running workflow, pass forceRestart: true.",
-                  }),
-                },
-              ],
-            };
-          }
-
           let startContext;
           try {
             startContext = await withStartLock(ws, async () => {
@@ -753,6 +724,30 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                 }
               }
 
+              // Guard: after orphan cleanup, reject if a run is still genuinely active
+              {
+                const hasActiveRun = [...activeRuns.values()].some(
+                  (r) => r.workspace === ws,
+                );
+                const postCleanupState = await loadLoopState(ws);
+                const diskRunInProgress =
+                  postCleanupState.status === "running" ||
+                  postCleanupState.status === "paused";
+                if (
+                  (hasActiveRun || diskRunInProgress) &&
+                  params.forceRestart !== true
+                ) {
+                  return {
+                    action,
+                    workflow,
+                    status: "blocked",
+                    reason: "run_already_in_progress",
+                    runId: postCleanupState.runId || null,
+                    hint: "Use action: 'status' to monitor. To replace the running workflow, pass forceRestart: true.",
+                  };
+                }
+              }
+
               const nextRunId = randomUUID().slice(0, 8);
               const initialAgent = params.agentRoles?.issueSelector || "gemini";
 
@@ -798,6 +793,18 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             }
             throw err;
           }
+          // Guard returned a blocked response instead of start context
+          if (startContext?.status === "blocked") {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(startContext),
+                },
+              ],
+            };
+          }
+
           const { nextRunId, initialAgent } = startContext;
 
           startWorkflowActor({

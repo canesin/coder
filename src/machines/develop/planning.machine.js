@@ -48,8 +48,11 @@ export default defineMachine({
       if (existsSync(paths.plan)) {
         return { status: "ok", data: { planMd: "(cached)" } };
       }
-      // wrotePlan is true but PLAN.md missing — clear flag and run planner
+      // wrotePlan is true but PLAN.md missing — clear flag and session so
+      // the planner starts fresh instead of resuming a stale session
       state.steps.wrotePlan = false;
+      state.planningSessionId = null;
+      state.plannerAgentName = null;
       await saveState(ctx.workspaceDir, state);
     }
 
