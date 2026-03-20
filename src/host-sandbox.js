@@ -285,6 +285,7 @@ class HostSandboxInstance extends EventEmitter {
       let killTimer = null;
       let hangTimer = null;
       let escalationTimer = null;
+      let forceSettleTimer = null;
       /** When set, defer settle until child exits (avoids retry starting while process still alive). */
       let pendingFatalError = null;
       /** Timestamp when fatal pattern first matched (for elapsed-ms in close log). */
@@ -310,12 +311,31 @@ class HostSandboxInstance extends EventEmitter {
           } catch {}
         }
       };
+      /** If SIGKILL/stopSystemdUnit does not yield `close`, avoid hanging forever. */
+      const FORCE_SETTLE_AFTER_KILL_MS = 15_000;
+      const scheduleForceSettle = (err) => {
+        if (forceSettleTimer) clearTimeout(forceSettleTimer);
+        forceSettleTimer = setTimeout(() => {
+          forceSettleTimer = null;
+          if (settled) return;
+          if (log) {
+            log({
+              event: "sandbox_force_settle",
+              reason: "no_close_after_kill",
+              pid: child.pid ?? null,
+            });
+          }
+          settle(err);
+        }, FORCE_SETTLE_AFTER_KILL_MS);
+      };
+
       const settle = (err, result) => {
         if (settled) return;
         settled = true;
         if (killTimer) clearTimeout(killTimer);
         if (hangTimer) clearTimeout(hangTimer);
         if (escalationTimer) clearTimeout(escalationTimer);
+        if (forceSettleTimer) clearTimeout(forceSettleTimer);
         this.currentChild = null;
         this.currentCommand = null;
         this.currentUnit = null;
@@ -328,6 +348,7 @@ class HostSandboxInstance extends EventEmitter {
           ? setTimeout(() => {
               if (pendingFatalError) {
                 terminateChild("SIGKILL", "timeout_escalate");
+                scheduleForceSettle(pendingFatalError);
                 return;
               }
               terminateChild("SIGTERM", "timeout");
@@ -342,6 +363,7 @@ class HostSandboxInstance extends EventEmitter {
           hangTimer = setTimeout(() => {
             if (pendingFatalError) {
               terminateChild("SIGKILL", "hang_escalate");
+              scheduleForceSettle(pendingFatalError);
               return;
             }
             terminateChild("SIGTERM", "hang");
@@ -393,6 +415,7 @@ class HostSandboxInstance extends EventEmitter {
                   });
                 }
                 terminateChild("SIGKILL", "fatal_escalate");
+                scheduleForceSettle(pendingFatalError);
               }
             }, FATAL_ESCALATION_MS);
           }
@@ -440,6 +463,7 @@ class HostSandboxInstance extends EventEmitter {
                   });
                 }
                 terminateChild("SIGKILL", "fatal_escalate");
+                scheduleForceSettle(pendingFatalError);
               }
             }, FATAL_ESCALATION_MS);
           }

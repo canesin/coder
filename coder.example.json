@@ -50,6 +50,7 @@
       "sqlitePath": ".coder/state.db"
     },
     "issueSource": "github",
+    "issueListPromptMaxIssues": 50,
     "localIssuesDir": "",
     "maxPlanRevisions": 3,
     "resumeStepState": true,
@@ -62,6 +63,7 @@
     "hooks": [],
     "timeouts": {
       "issueSelection": 600000,
+      "issueSelectionHangMs": 0,
       "issueDraft": 600000,
       "planning": 2400000,
       "planReview": 2400000,

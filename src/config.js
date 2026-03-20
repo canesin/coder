@@ -115,6 +115,8 @@ export const WorkflowTimeoutsSchema = z.object({
   webSearch: z.number().int().positive().default(900_000),
   pocValidation: z.number().int().positive().default(720_000),
   issueSelection: z.number().int().positive().default(600_000),
+  /** 0 = no hang kill during issue list; wall-clock still bounded by issueSelection. */
+  issueSelectionHangMs: z.number().int().nonnegative().default(0),
   issueDraft: z.number().int().positive().default(600_000),
   planning: z.number().int().positive().default(2_400_000),
   planReview: z.number().int().positive().default(2_400_000),
@@ -258,6 +260,13 @@ export const CoderConfigSchema = z.object({
       issueSource: z
         .enum(["github", "linear", "gitlab", "local"])
         .default("github"),
+      /** Cap how many fetched issues are embedded in the issue-selector LLM prompt. */
+      issueListPromptMaxIssues: z
+        .number()
+        .int()
+        .positive()
+        .max(1000)
+        .default(50),
       localIssuesDir: z.string().default(""),
       hooks: z.array(HookSchema).default([]),
       preflight: z
