@@ -831,3 +831,63 @@ export async function runHostTests(
     `No tests detected for repo ${repoDir}. Pass --test-cmd "..." or --allow-no-tests.`,
   );
 }
+
+/**
+ * Parse `<!-- spec-meta ... -->` HTML comment blocks into key-value pairs.
+ * @param {string} text - Markdown document content
+ * @returns {Record<string, string>} Parsed metadata (empty object if no block found)
+ */
+export function parseSpecMeta(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  const match = normalized.match(/<!--\s*spec-meta\n([\s\S]*?)-->/);
+  if (!match) return {};
+  const result = {};
+  for (const line of match[1].split("\n")) {
+    const sep = line.indexOf(":");
+    if (sep === -1) continue;
+    const key = line.slice(0, sep).trim();
+    const value = line.slice(sep + 1).trim();
+    if (key && value) result[key] = value;
+  }
+  return result;
+}
+
+/**
+ * Extract the `status` field from an `<!-- adr-meta ... -->` HTML comment block.
+ * @param {string} text - ADR markdown document content
+ * @returns {string | null} The status value, or null if no block/status found
+ */
+export function parseAdrStatus(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  const match = normalized.match(/<!--\s*adr-meta\n([\s\S]*?)-->/);
+  if (!match) return null;
+  for (const line of match[1].split("\n")) {
+    const sep = line.indexOf(":");
+    if (sep === -1) continue;
+    const key = line.slice(0, sep).trim();
+    const value = line.slice(sep + 1).trim();
+    if (key === "status" && value) return value;
+  }
+  return null;
+}
+
+/**
+ * Parse gap checklist items from spec markdown (e.g. `- [ ] **1. Gap** — Desc. Domain: X. Severity: Y.`).
+ * @param {string} text - Spec document content
+ * @returns {Array<{description: string, domain: string, severity: string, status: "open"|"done"}>}
+ */
+export function parseSpecGaps(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  const gaps = [];
+  const re =
+    /^-\s+\[([ x])\]\s+\*\*\d+\.\s+[^*]+\*\*\s*—\s*(.+?)\s*Domain:\s*(.+?)\.?\s*Severity:\s*(\S+?)\.?\s*$/gm;
+  for (const m of normalized.matchAll(re)) {
+    gaps.push({
+      description: m[2].trim(),
+      domain: m[3].replace(/\.$/, ""),
+      severity: m[4].replace(/\.$/, ""),
+      status: m[1] === "x" ? "done" : "open",
+    });
+  }
+  return gaps;
+}

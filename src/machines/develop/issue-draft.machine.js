@@ -95,12 +95,21 @@ function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
       try {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
         const entry = manifest.issues?.find((e) => e.id === id);
-        const file = entry?.file || entry?.filePath;
-        if (file) {
-          const mdPath = path.isAbsolute(file)
-            ? file
-            : path.join(localIssuesDir, file);
-          if (existsSync(mdPath)) return readFileSync(mdPath, "utf8");
+        if (entry) {
+          let mdPath;
+          if (entry.file) {
+            // file is relative to localIssuesDir
+            mdPath = path.isAbsolute(entry.file)
+              ? entry.file
+              : path.join(localIssuesDir, entry.file);
+          } else if (entry.filePath) {
+            // filePath is workspace-relative (resolve from manifest root)
+            const wsRoot = manifest.repoRoot || manifest.repoPath || repoRoot;
+            mdPath = path.isAbsolute(entry.filePath)
+              ? entry.filePath
+              : path.resolve(wsRoot, entry.filePath);
+          }
+          if (mdPath && existsSync(mdPath)) return readFileSync(mdPath, "utf8");
         }
       } catch {
         // fall through to filename heuristic

@@ -29,6 +29,40 @@ export const ProjectsPayloadSchema = z.object({
   ),
 });
 
+export const SpecManifestSchema = z.object({
+  specId: z.string().min(1),
+  version: z.number().int().min(1),
+  repoPath: z.string().default("."),
+  domains: z.array(
+    z.object({
+      name: z.string().min(1),
+      docPath: z.string().min(1),
+    }),
+  ),
+  decisions: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        title: z.string().min(1),
+        status: z.enum(["proposed", "accepted", "deprecated", "superseded"]),
+        docPath: z.string().min(1),
+      }),
+    )
+    .default([]),
+  phases: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        title: z.string().min(1),
+        issueIds: z.array(z.string()).default([]),
+        docPath: z.string().min(1),
+      }),
+    )
+    .default([]),
+  issueManifestPath: z.string().default(""),
+  createdAt: z.string().min(1),
+});
+
 export const TestConfigSchema = z.object({
   setup: z.array(z.string()).default([]),
   healthCheck: z

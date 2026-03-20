@@ -23,6 +23,7 @@ import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
+import { runSpecBuildPipeline } from "../../workflows/spec-build.workflow.js";
 
 const HEARTBEAT_STALE_MS = 900_000;
 
@@ -172,6 +173,20 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   return true;
 }
 
+/**
+ * Transition orphaned stale runs to "failed" so they don't stay "running"
+ * forever after a service restart. Mutates loopState in place when a
+ * transition occurs.
+ */
+async function reapStaleRun(workspaceDir, loopState, isStale) {
+  if (!isStale || !loopState.runId || loopState.status === "paused" || activeRuns.has(loopState.runId)) return;
+  const snapshot = await loadWorkflowSnapshot(workspaceDir);
+  const wfName = snapshot?.workflow || "develop";
+  await markRunTerminalOnDisk(workspaceDir, loopState.runId, wfName, "failed");
+  const updated = await loadLoopState(workspaceDir);
+  Object.assign(loopState, updated);
+}
+
 export async function readWorkflowStatus(workspaceDir) {
   let loopState = await loadLoopState(workspaceDir);
   let { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
@@ -180,23 +195,10 @@ export async function readWorkflowStatus(workspaceDir) {
   // Capture pre-merge stage before auto-transition (which clears currentStage).
   const originalStage = loopState.currentStage;
 
-  // Auto-transition orphaned stale runs to "failed" on status read.
-  // This handles service restarts that leave runs stuck in "running".
-  // Skip paused runs — they are intentionally inactive, not stuck.
-  if (
-    isStale &&
-    loopState.runId &&
-    loopState.status !== "paused" &&
-    !activeRuns.has(loopState.runId)
-  ) {
-    const snapshot = await loadWorkflowSnapshot(workspaceDir);
-    const wf = snapshot?.workflow || "develop";
-    await markRunTerminalOnDisk(workspaceDir, loopState.runId, wf, "failed");
-    // Re-read state after terminal transition
-    loopState = await loadLoopState(workspaceDir);
-    ({ heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
-      detectStaleness(loopState));
-  }
+  await reapStaleRun(workspaceDir, loopState, isStale);
+  // Re-read staleness after potential reap (loopState mutated in place)
+  ({ heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+    detectStaleness(loopState));
 
   // Status contract: when currentStage is develop_starting, we are pre-merge.
   // Suppress stale failed/skipped entries so status shows a fresh retryable view.
@@ -384,13 +386,13 @@ export function registerWorkflowTools(server, resolveWorkspace) {
     {
       description:
         "Unified workflow control plane. Use this to start, inspect, and control " +
-        "named workflows (workflow=develop|research|design).",
+        "named workflows (workflow=develop|research|design|spec-build).",
       inputSchema: {
         action: z
           .enum(["start", "status", "events", "cancel", "pause", "resume"])
           .describe("Workflow control action"),
         workflow: z
-          .enum(["develop", "research", "design"])
+          .enum(["develop", "research", "design", "spec-build"])
           .default("develop")
           .describe("Workflow type"),
         workspace: z
@@ -507,6 +509,19 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           .string()
           .default("")
           .describe("Design start-only: design intent description"),
+        // Spec-build-specific
+        existingSpecDir: z
+          .string()
+          .default("")
+          .describe(
+            "Spec-build start-only: path to existing spec directory to ingest",
+          ),
+        researchRunId: z
+          .string()
+          .default("")
+          .describe(
+            "Spec-build start-only: research run ID whose output to synthesize",
+          ),
         // Events pagination
         afterSeq: z
           .number()
@@ -779,6 +794,15 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                     screenshotPaths: [],
                     projectName: "",
                     style: params.clarifications || "",
+                  },
+                  workflowCtx,
+                );
+              } else if (workflow === "spec-build") {
+                result = await runSpecBuildPipeline(
+                  {
+                    repoPath: params.repoPath,
+                    existingSpecDir: params.existingSpecDir,
+                    researchRunId: params.researchRunId,
                   },
                   workflowCtx,
                 );
