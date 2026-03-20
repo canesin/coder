@@ -822,6 +822,11 @@ export async function runHostTests(
   );
 }
 
+/**
+ * Parse `<!-- spec-meta ... -->` HTML comment blocks into key-value pairs.
+ * @param {string} text - Markdown document content
+ * @returns {Record<string, string>} Parsed metadata (empty object if no block found)
+ */
 export function parseSpecMeta(text) {
   const normalized = String(text || "").replace(/\r\n/g, "\n");
   const match = normalized.match(/<!--\s*spec-meta\n([\s\S]*?)-->/);
@@ -837,6 +842,11 @@ export function parseSpecMeta(text) {
   return result;
 }
 
+/**
+ * Extract the `status` field from an `<!-- adr-meta ... -->` HTML comment block.
+ * @param {string} text - ADR markdown document content
+ * @returns {string | null} The status value, or null if no block/status found
+ */
 export function parseAdrStatus(text) {
   const normalized = String(text || "").replace(/\r\n/g, "\n");
   const match = normalized.match(/<!--\s*adr-meta\n([\s\S]*?)-->/);
@@ -851,6 +861,11 @@ export function parseAdrStatus(text) {
   return null;
 }
 
+/**
+ * Parse gap checklist items from spec markdown (e.g. `- [ ] **1. Gap** — Desc. Domain: X. Severity: Y.`).
+ * @param {string} text - Spec document content
+ * @returns {Array<{description: string, domain: string, severity: string, status: "open"|"done"}>}
+ */
 export function parseSpecGaps(text) {
   const normalized = String(text || "").replace(/\r\n/g, "\n");
   const gaps = [];

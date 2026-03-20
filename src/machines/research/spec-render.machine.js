@@ -33,10 +33,11 @@ function isSubsetMatch(subset, superset) {
  * using ALL shared fields (not just title) to find the correct ID.
  */
 function buildPhaseIssueIds(phases, issueSpecs, generatedIssues) {
-  // Tag each flat spec with its assigned issue ID
+  // Build an index-based lookup without mutating the input issueSpecs
+  const specIdByIndex = new Map();
   for (let i = 0; i < issueSpecs.length; i++) {
     if (i < generatedIssues.length) {
-      issueSpecs[i]._issueId = generatedIssues[i].id;
+      specIdByIndex.set(i, generatedIssues[i].id);
     }
   }
 
@@ -53,14 +54,16 @@ function buildPhaseIssueIds(phases, issueSpecs, generatedIssues) {
         }
         continue;
       }
-      // Match against tagged flat specs using all shared fields
-      const idx = issueSpecs.findIndex((flat) => {
-        if (!flat._issueId || used.has(flat._issueId)) return false;
+      // Match against flat specs using all shared fields
+      const idx = issueSpecs.findIndex((flat, fi) => {
+        const assignedId = specIdByIndex.get(fi);
+        if (!assignedId || used.has(assignedId)) return false;
         return isSubsetMatch(s, flat);
       });
       if (idx >= 0) {
-        used.add(issueSpecs[idx]._issueId);
-        ids.push(issueSpecs[idx]._issueId);
+        const matchedId = specIdByIndex.get(idx);
+        used.add(matchedId);
+        ids.push(matchedId);
       }
     }
     return ids;
@@ -215,6 +218,9 @@ export default defineMachine({
       });
     }
 
+    // --- Compute bridgeDir once for both modes ---
+    const bridgeDir = path.join(ctx.workspaceDir, ".coder", "local-issues");
+
     // --- Build mode: render spec documents ---
     let specDir = null;
 
@@ -300,7 +306,6 @@ export default defineMachine({
       }
 
       // Bridge manifest path (relative to runDir)
-      const bridgeDir = path.join(ctx.workspaceDir, ".coder", "local-issues");
       const bridgeManifestRelPath = path.relative(
         runDir,
         path.join(bridgeDir, "manifest.json"),
@@ -338,7 +343,6 @@ export default defineMachine({
     }
 
     // --- Bridge manifest: point at the generated issues/ directory via filePath ---
-    const bridgeDir = path.join(ctx.workspaceDir, ".coder", "local-issues");
     mkdirSync(bridgeDir, { recursive: true });
 
     const bridgeIssues = generatedIssues.map((gi) => ({

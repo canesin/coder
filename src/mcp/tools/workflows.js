@@ -173,26 +173,26 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   return true;
 }
 
+/**
+ * Transition orphaned stale runs to "failed" so they don't stay "running"
+ * forever after a service restart. Mutates loopState in place when a
+ * transition occurs.
+ */
+async function reapStaleRun(workspaceDir, loopState, isStale) {
+  if (!isStale || !loopState.runId || activeRuns.has(loopState.runId)) return;
+  const snapshot = await loadWorkflowSnapshot(workspaceDir);
+  const wfName = snapshot?.workflow || "develop";
+  await markRunTerminalOnDisk(workspaceDir, loopState.runId, wfName, "failed");
+  const updated = await loadLoopState(workspaceDir);
+  Object.assign(loopState, updated);
+}
+
 export async function readWorkflowStatus(workspaceDir) {
   const loopState = await loadLoopState(workspaceDir);
   const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
 
-  // Auto-transition stale runs to "failed" so they don't stay "running" forever
-  // after a service restart (orphaned workflows).
-  if (isStale && loopState.runId && !activeRuns.has(loopState.runId)) {
-    const snapshot = await loadWorkflowSnapshot(workspaceDir);
-    const wfName = snapshot?.workflow || "develop";
-    await markRunTerminalOnDisk(
-      workspaceDir,
-      loopState.runId,
-      wfName,
-      "failed",
-    );
-    // Re-read the now-updated loop state
-    const updated = await loadLoopState(workspaceDir);
-    Object.assign(loopState, updated);
-  }
+  await reapStaleRun(workspaceDir, loopState, isStale);
 
   // Status contract: when currentStage is develop_starting, we are pre-merge.
   // Suppress stale failed/skipped entries so status shows a fresh retryable view.
