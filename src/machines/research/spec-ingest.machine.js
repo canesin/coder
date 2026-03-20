@@ -99,9 +99,12 @@ export default defineMachine({
       const parsedDecisions = decisionFiles
         .map((f) => {
           const status = parseAdrStatus(f.content);
-          return status
-            ? { id: f.name.replace(/\.md$/, ""), status, file: f.name }
-            : null;
+          if (!status) return null;
+          // Extract clean ADR ID prefix (e.g. "ADR-001") from filenames
+          // like "ADR-001-use-jwt.md" rather than using the full slug.
+          const adrMatch = f.name.match(/^(ADR-\d+)/i);
+          const id = adrMatch ? adrMatch[1] : f.name.replace(/\.md$/, "");
+          return { id, status, file: f.name };
         })
         .filter(Boolean);
 
@@ -114,7 +117,11 @@ export default defineMachine({
         })
         .flatMap((f) => parseSpecGaps(f.content));
 
-      // Parse existing phase docs so spec_architect can preserve rollout ordering
+      // Parse existing phase docs so spec_architect can preserve rollout ordering.
+      // Recover original phase IDs from the spec manifest when available, since
+      // build mode persists ph.id verbatim. Fall back to index-based IDs only
+      // when no manifest entry matches.
+      const manifestPhases = specManifest?.phases || [];
       const phasesDir = path.join(specDir, "phases");
       const parsedPhases = existsSync(phasesDir)
         ? readdirSync(phasesDir)
@@ -123,11 +130,17 @@ export default defineMachine({
             .map((f, i) => {
               const content = readFileSync(path.join(phasesDir, f), "utf8");
               const titleMatch = content.match(/^#\s+(.+)/m);
+              const title = titleMatch
+                ? titleMatch[1].trim()
+                : f.replace(/\.md$/, "");
+              // Match against manifest by docPath suffix or title to recover
+              // the original phase id (e.g. "phase-1") instead of renumbering.
+              const manifestEntry = manifestPhases.find(
+                (mp) => mp.docPath?.endsWith(f) || mp.title === title,
+              );
               return {
-                id: `phase-${i + 1}`,
-                title: titleMatch
-                  ? titleMatch[1].trim()
-                  : f.replace(/\.md$/, ""),
+                id: manifestEntry?.id || `phase-${i + 1}`,
+                title,
                 file: f,
               };
             })

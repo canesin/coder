@@ -245,20 +245,21 @@ export default defineMachine({
     }
 
     // --- Remap depends_on references to stable SPEC IDs ---
-    // Use first-match for duplicate titles to preserve ordering.
-    // Warn when duplicate titles are detected since title-based dependency
-    // resolution is inherently ambiguous in that case.
+    // Track duplicate titles so we can skip ambiguous remapping rather than
+    // silently mapping to the wrong issue.
     const titleToId = new Map();
+    const ambiguousTitles = new Set();
     for (const gi of generatedIssues) {
       const key = gi.title.toLowerCase();
       if (titleToId.has(key)) {
+        ambiguousTitles.add(key);
         ctx.log({
           event: "spec_render_duplicate_title",
           level: "warn",
           title: gi.title,
           duplicateId: gi.id,
           originalId: titleToId.get(key),
-          message: `Duplicate issue title "${gi.title}" (${gi.id} vs ${titleToId.get(key)}). depends_on references to this title will resolve to ${titleToId.get(key)}.`,
+          message: `Duplicate issue title "${gi.title}" (${gi.id} vs ${titleToId.get(key)}). depends_on references to this title will not be remapped.`,
         });
       } else {
         titleToId.set(key, gi.id);
@@ -269,8 +270,12 @@ export default defineMachine({
         .map((dep) => {
           // Already a SPEC ID?
           if (/^SPEC-\d+$/i.test(dep)) return dep;
-          // Try title match
-          return titleToId.get(dep.toLowerCase()) || dep;
+          const key = dep.toLowerCase();
+          // Skip remapping for ambiguous (duplicate) titles — keep the
+          // original string so it fails loudly rather than resolving to
+          // the wrong issue.
+          if (ambiguousTitles.has(key)) return dep;
+          return titleToId.get(key) || dep;
         })
         .filter(Boolean);
     }
