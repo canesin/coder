@@ -18,7 +18,7 @@ import {
   runPpcommitNative,
 } from "../src/ppcommit.js";
 
-/** Config to bypass gitleaks so tests exercise task/markdown/parser behavior. */
+/** Config to bypass gitleaks so tests exercise comment-lint/markdown/parser behavior. */
 const NO_GITLEAKS = { blockSecrets: false };
 
 const EMOJI_SMILE = 0x1f642;
