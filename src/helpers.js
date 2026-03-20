@@ -160,9 +160,35 @@ export function detectRemoteType(repoDir, remoteName = "origin") {
 
 export { DEFAULT_PASS_ENV };
 
+/** Default API key env names when a model entry omits apiKeyEnv entirely. */
+const DEFAULT_MODEL_KEY_ENV = {
+  gemini: "GEMINI_API_KEY",
+  claude: "ANTHROPIC_API_KEY",
+  codex: "OPENAI_API_KEY",
+};
+
+/** Collect apiKeyEnv names from models.* so secrets are passed without duplicating them in passEnv. */
+function modelApiKeyEnvNames(config) {
+  const models = config.models;
+  if (!models || typeof models !== "object") return [];
+  const out = [];
+  for (const role of ["gemini", "claude", "codex"]) {
+    const entry = models[role];
+    if (!entry || typeof entry !== "object") continue;
+    // Only fall back to the built-in default when apiKeyEnv is undefined
+    // (omitted).  An explicit empty string means "don't forward any key".
+    const name =
+      entry.apiKeyEnv === undefined
+        ? DEFAULT_MODEL_KEY_ENV[role]
+        : entry.apiKeyEnv;
+    if (typeof name === "string" && name.trim()) out.push(name.trim());
+  }
+  return out;
+}
+
 /**
  * Build the effective passEnv list from config.
- * Merges `sandbox.passEnv` (explicit names) with any env var names
+ * Merges `sandbox.passEnv` (explicit names), `models.*.apiKeyEnv`, and any env var names
  * matching `sandbox.passEnvPatterns` (glob-style, e.g. "AWS_*").
  *
  * @param {object} config - Parsed CoderConfigSchema
@@ -171,9 +197,11 @@ export { DEFAULT_PASS_ENV };
  */
 export function resolvePassEnv(config, env = process.env) {
   const explicit = config.sandbox?.passEnv ?? DEFAULT_PASS_ENV;
+  const fromModels = modelApiKeyEnvNames(config);
+  const mergedExplicit = [...new Set([...explicit, ...fromModels])];
   const patterns = config.sandbox?.passEnvPatterns ?? [];
 
-  if (patterns.length === 0) return explicit;
+  if (patterns.length === 0) return mergedExplicit;
 
   const regexes = patterns.map((p) => {
     // Convert simple glob pattern to regex (only * wildcards supported)
@@ -185,7 +213,7 @@ export function resolvePassEnv(config, env = process.env) {
     regexes.some((re) => re.test(key)),
   );
 
-  return [...new Set([...explicit, ...matched])];
+  return [...new Set([...mergedExplicit, ...matched])];
 }
 
 const AGENT_NOISE_LINE_PATTERNS = [
@@ -355,30 +383,90 @@ export function extractJson(stdout) {
  * Parse Gemini output where `-o json` returns an envelope with a `response`
  * field that may itself contain JSON (often fenced markdown).
  */
+const GEMINI_ENVELOPE_INNER_PARSE_PREFIX =
+  "[coder] Gemini -o json: could not parse issues payload from envelope response";
+const GEMINI_ENVELOPE_BAD_RESPONSE_PREFIX =
+  "[coder] Gemini -o json: envelope response field is missing or not a usable issues payload";
+
+/** @param {unknown} obj */
+function isIssuesPayloadShape(obj) {
+  return (
+    !!obj &&
+    typeof obj === "object" &&
+    !Array.isArray(obj) &&
+    Array.isArray(/** @type {{ issues?: unknown }} */ (obj).issues) &&
+    typeof (
+      /** @type {{ recommended_index?: unknown }} */ (obj).recommended_index
+    ) === "number"
+  );
+}
+
 export function extractGeminiPayloadJson(stdout) {
   const parsed = extractJson(stdout);
-  if (
-    parsed &&
-    typeof parsed === "object" &&
-    !Array.isArray(parsed) &&
-    typeof parsed.response === "string"
-  ) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  // Direct issues payload (no envelope wrapper)
+  if (isIssuesPayloadShape(parsed)) {
+    return parsed;
+  }
+
+  // Standard envelope: { response: "..." }
+  if (typeof parsed.response === "string") {
+    /** @type {unknown} */
+    let lastInnerError;
     try {
       return extractJson(parsed.response);
-    } catch {
+    } catch (e) {
+      lastInnerError = e;
       // Some envelopes encode escaped newlines (e.g. "\\n") literally.
-      // Normalize and retry before falling back to the raw envelope.
       try {
         const normalized = parsed.response
           .replace(/\\r\\n/g, "\n")
           .replace(/\\n/g, "\n")
           .replace(/\\t/g, "\t");
         return extractJson(normalized);
-      } catch {
-        // Keep envelope if response is not structured JSON.
+      } catch (e2) {
+        lastInnerError = e2;
       }
     }
+    const raw = parsed.response;
+    const preview = raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
+    const err = new Error(`${GEMINI_ENVELOPE_INNER_PARSE_PREFIX}\n${preview}`);
+    if (lastInnerError instanceof Error) err.cause = lastInnerError;
+    throw err;
   }
+
+  // Session envelope: { session_id: "...", response: ... }
+  if (
+    typeof (/** @type {{ session_id?: unknown }} */ (parsed).session_id) ===
+    "string"
+  ) {
+    // Return any non-null object payload (issues, web-research, poc-runner, etc.)
+    if (
+      parsed.response &&
+      typeof parsed.response === "object" &&
+      !Array.isArray(parsed.response)
+    ) {
+      return /** @type {object} */ (parsed.response);
+    }
+    let preview;
+    if (parsed.response === undefined) {
+      preview = "(response field missing)";
+    } else if (parsed.response === null) {
+      preview = "(response is null)";
+    } else {
+      try {
+        const s = JSON.stringify(parsed.response);
+        preview = s.length > 400 ? `${s.slice(0, 400)}…` : s;
+      } catch {
+        preview = String(parsed.response);
+      }
+    }
+    throw new Error(`${GEMINI_ENVELOPE_BAD_RESPONSE_PREFIX}\n${preview}`);
+  }
+
   return parsed;
 }
 

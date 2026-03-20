@@ -270,6 +270,125 @@ test("extractGeminiPayloadJson unwraps fenced JSON in Gemini envelope response",
   assert.deepEqual(parsed, { issues: [], recommended_index: 0 });
 });
 
+test("extractGeminiPayloadJson throws when envelope response is not parseable JSON (no silent envelope return)", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: "not json at all {{{",
+    stats: {},
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: could not parse issues payload from envelope response\n/,
+      );
+      assert.match(err.message, /not json at all/);
+      assert.ok(err.cause instanceof Error);
+      return true;
+    },
+  );
+});
+
+test("extractGeminiPayloadJson throws when Gemini envelope omits response (no silent envelope return)", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    stats: { tokens: 1 },
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
+      );
+      assert.match(err.message, /response field missing/);
+      return true;
+    },
+  );
+});
+
+test("extractGeminiPayloadJson unwraps object response on envelope when it matches issues payload shape", () => {
+  const inner = { issues: [], recommended_index: 0 };
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: inner,
+    stats: {},
+  });
+  const parsed = extractGeminiPayloadJson(stdout);
+  assert.deepEqual(parsed, inner);
+});
+
+test("extractGeminiPayloadJson returns non-issues object payloads from session envelopes", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: { references: ["a"], searchSummary: "ok" },
+    stats: {},
+  });
+  const result = extractGeminiPayloadJson(stdout);
+  assert.deepStrictEqual(result, { references: ["a"], searchSummary: "ok" });
+});
+
+test("extractGeminiPayloadJson throws when session envelope response is null", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: null,
+  });
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
+      );
+      return true;
+    },
+  );
+});
+
+test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
+  const config = {
+    models: {
+      claude: {
+        model: "m",
+        apiEndpoint: "https://openrouter.ai/api",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+      },
+    },
+    sandbox: { passEnv: ["GITLAB_TOKEN"], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GITLAB_TOKEN"));
+  assert.ok(r.includes("OPENROUTER_API_KEY"));
+});
+
+test("resolvePassEnv uses default key env when models.gemini omits apiKeyEnv", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GEMINI_API_KEY"));
+});
+
+test("resolvePassEnv skips key env when apiKeyEnv is explicitly empty", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "", apiKeyEnv: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(!r.includes("GEMINI_API_KEY"));
+});
+
 test("gitCleanOrThrow automatically ignores .gemini/ directory", () => {
   const { repoDir } = setupGitRepo({
     "README.md": "hello\n",

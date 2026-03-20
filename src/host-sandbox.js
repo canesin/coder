@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import {
   buildSystemdRunArgs,
   canUseSystemdRun,
+  killSystemdUnit,
   makeSystemdUnitName,
   stopSystemdUnit,
 } from "./systemd-run.js";
@@ -264,26 +265,73 @@ class HostSandboxInstance extends EventEmitter {
         return buf;
       };
 
+      const FATAL_ESCALATION_MS = 2000;
+      const FORCE_SETTLE_AFTER_KILL_MS = 15_000;
+      const log = typeof options.log === "function" ? options.log : null;
+
       let settled = false;
       let killTimer = null;
       let hangTimer = null;
-      const terminateChild = () => {
+      let escalationTimer = null;
+      let forceSettleTimer = null;
+      /** When set, defer settle until child exits (avoids retry starting while process still alive). */
+      let pendingFatalError = null;
+      /** Timestamp when fatal pattern first matched (for elapsed-ms in close log). */
+      let fatalMatchTs = null;
+      const terminateChild = (signal = "SIGTERM", reason = "unknown") => {
+        if (log && child.pid) {
+          log({
+            event: "sandbox_terminate_signal",
+            pid: child.pid,
+            signal: this.currentUnit
+              ? signal === "SIGKILL"
+                ? "systemd_kill"
+                : "systemd_stop"
+              : signal,
+            reason,
+          });
+        }
         if (this.currentUnit) {
-          stopSystemdUnit(this.currentUnit);
+          if (signal === "SIGKILL") {
+            killSystemdUnit(this.currentUnit, "SIGKILL");
+          } else {
+            stopSystemdUnit(this.currentUnit);
+          }
           return;
         }
-        // Kill the full process group to avoid orphaned grandchildren.
         try {
-          if (child.pid) process.kill(-child.pid, "SIGTERM");
+          if (child.pid) process.kill(-child.pid, signal);
         } catch {
-          child.kill("SIGTERM");
+          try {
+            child.kill(signal);
+          } catch {
+            /* ESRCH expected after process exit */
+          }
         }
+      };
+      /** If SIGKILL does not yield `close`, avoid hanging forever. */
+      const scheduleForceSettle = (err) => {
+        if (forceSettleTimer) clearTimeout(forceSettleTimer);
+        forceSettleTimer = setTimeout(() => {
+          forceSettleTimer = null;
+          if (settled) return;
+          if (log) {
+            log({
+              event: "sandbox_force_settle",
+              reason: "no_close_after_kill",
+              pid: child.pid ?? null,
+            });
+          }
+          settle(err);
+        }, FORCE_SETTLE_AFTER_KILL_MS);
       };
       const settle = (err, result) => {
         if (settled) return;
         settled = true;
         if (killTimer) clearTimeout(killTimer);
         if (hangTimer) clearTimeout(hangTimer);
+        if (escalationTimer) clearTimeout(escalationTimer);
+        if (forceSettleTimer) clearTimeout(forceSettleTimer);
         this.currentChild = null;
         this.currentCommand = null;
         this.currentUnit = null;
@@ -294,7 +342,12 @@ class HostSandboxInstance extends EventEmitter {
       killTimer =
         timeoutMs > 0
           ? setTimeout(() => {
-              terminateChild();
+              if (pendingFatalError) {
+                terminateChild("SIGKILL", "timeout_escalate");
+                scheduleForceSettle(pendingFatalError);
+                return;
+              }
+              terminateChild("SIGTERM", "timeout");
               settle(new CommandTimeoutError(command, timeoutMs));
             }, timeoutMs)
           : null;
@@ -304,12 +357,56 @@ class HostSandboxInstance extends EventEmitter {
         if (hangTimeoutMs > 0) {
           if (hangTimer) clearTimeout(hangTimer);
           hangTimer = setTimeout(() => {
-            terminateChild();
+            if (pendingFatalError) {
+              terminateChild("SIGKILL", "hang_escalate");
+              scheduleForceSettle(pendingFatalError);
+              return;
+            }
+            terminateChild("SIGTERM", "hang");
             settle(new CommandTimeoutError(command, hangTimeoutMs));
           }, hangTimeoutMs);
         }
       };
       resetHangTimer();
+
+      const handleFatalMatch = (stream, patterns, chunk, ErrorClass) => {
+        if (patterns.length === 0) return;
+        const lower = chunk.toLowerCase();
+        const hit = patterns.find((p) =>
+          lower.includes(p.pattern.toLowerCase()),
+        );
+        if (!hit || pendingFatalError) return;
+        fatalMatchTs = Date.now();
+        if (log) {
+          log({
+            event: "sandbox_fatal_match",
+            stream,
+            pattern: hit.pattern,
+            category: hit.category,
+            pid: child.pid,
+          });
+        }
+        terminateChild("SIGTERM", "fatal");
+        const err = new ErrorClass(hit.pattern, hit.category);
+        err.stdout = stdout;
+        err.stderr = stderr;
+        pendingFatalError = err;
+        if (escalationTimer) clearTimeout(escalationTimer);
+        escalationTimer = setTimeout(() => {
+          if (pendingFatalError) {
+            if (log) {
+              log({
+                event: "sandbox_fatal_escalate_sigkill",
+                pattern: pendingFatalError.pattern,
+                category: pendingFatalError.category,
+                pid: child.pid,
+              });
+            }
+            terminateChild("SIGKILL", "fatal_escalate");
+            scheduleForceSettle(pendingFatalError);
+          }
+        }, FATAL_ESCALATION_MS);
+      };
 
       child.stdout.on("data", (buf) => {
         const chunk = buf.toString();
@@ -318,20 +415,12 @@ class HostSandboxInstance extends EventEmitter {
         resetHangTimer();
         options.onStdout?.(chunk);
         this.emit("stdout", chunk);
-
-        if (killOnStdoutPatterns.length > 0) {
-          const lower = chunk.toLowerCase();
-          const hit = killOnStdoutPatterns.find((p) =>
-            lower.includes(p.pattern.toLowerCase()),
-          );
-          if (hit) {
-            terminateChild();
-            const err = new CommandFatalStdoutError(hit.pattern, hit.category);
-            err.stdout = stdout;
-            err.stderr = stderr;
-            settle(err);
-          }
-        }
+        handleFatalMatch(
+          "stdout",
+          killOnStdoutPatterns,
+          chunk,
+          CommandFatalStdoutError,
+        );
       });
       child.stderr.on("data", (buf) => {
         const chunk = buf.toString();
@@ -340,27 +429,37 @@ class HostSandboxInstance extends EventEmitter {
         if (hangResetOnStderr) resetHangTimer();
         options.onStderr?.(chunk);
         this.emit("stderr", chunk);
-
-        if (killOnStderrPatterns.length > 0) {
-          const lower = chunk.toLowerCase();
-          const hit = killOnStderrPatterns.find((p) =>
-            lower.includes(p.pattern.toLowerCase()),
-          );
-          if (hit) {
-            terminateChild();
-            const err = new CommandFatalStderrError(hit.pattern, hit.category);
-            err.stdout = stdout;
-            err.stderr = stderr;
-            settle(err);
-          }
-        }
+        handleFatalMatch(
+          "stderr",
+          killOnStderrPatterns,
+          chunk,
+          CommandFatalStderrError,
+        );
       });
 
       child.on("error", (err) => {
         settle(err);
       });
 
-      child.on("close", (code) => {
+      const hadKillPatterns =
+        killOnStderrPatterns.length > 0 || killOnStdoutPatterns.length > 0;
+      child.on("close", (code, signal) => {
+        if (log && child.pid && hadKillPatterns) {
+          const elapsedMs = fatalMatchTs ? Date.now() - fatalMatchTs : null;
+          log({
+            event: "sandbox_process_close",
+            pid: child.pid,
+            exitCode: code ?? null,
+            signal: signal ?? null,
+            pattern: pendingFatalError?.pattern ?? null,
+            category: pendingFatalError?.category ?? null,
+            elapsedMs,
+          });
+        }
+        if (pendingFatalError) {
+          settle(pendingFatalError);
+          return;
+        }
         const exitCode = code ?? 0;
         if (throwOnNonZero && exitCode !== 0) {
           const err = new Error(

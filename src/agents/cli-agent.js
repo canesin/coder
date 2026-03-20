@@ -312,18 +312,35 @@ export class CliAgent extends AgentAdapter {
             : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
     // Claude emits "Session ID X is already in use" to stdout, not stderr — kill on both
+    const hasSessionOpts = !!(opts.resumeId || opts.sessionId);
     const killOnStdoutPatterns =
       opts.killOnStdoutPatterns ??
-      (isClaude && (opts.resumeId || opts.sessionId)
-        ? CLAUDE_RESUME_FAILURE_PATTERNS
-        : []);
+      (isClaude && hasSessionOpts ? CLAUDE_RESUME_FAILURE_PATTERNS : []);
 
+    if (this._log && (hasSessionOpts || killOnStderrPatterns.length > 0)) {
+      this._log({
+        event: "cli_agent_execute_opts",
+        agentName: this.name,
+        hasSessionOpts,
+        sessionId: opts.sessionId ?? null,
+        resumeId: opts.resumeId ?? null,
+        killPatternsCount:
+          (killOnStderrPatterns?.length ?? 0) +
+          (killOnStdoutPatterns?.length ?? 0),
+      });
+    }
+
+    const hasKillPatterns =
+      (killOnStderrPatterns?.length ?? 0) +
+        (killOnStdoutPatterns?.length ?? 0) >
+      0;
     const result = await sandbox.commands.run(cmd, {
       timeoutMs: opts.timeoutMs ?? 1000 * 60 * 10,
       hangTimeoutMs,
       hangResetOnStderr,
       killOnStderrPatterns,
       killOnStdoutPatterns,
+      log: hasKillPatterns && this._log ? this._log : undefined,
     });
 
     if (isCodex && opts.execWithJsonCapture && result.stdout) {

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import {
   extractGeminiPayloadJson,
   extractJson,
@@ -133,7 +134,20 @@ export function ensureGitignore(workspaceDir) {
 }
 
 export function resolveRepoRoot(workspaceDir, repoPath) {
-  return path.resolve(workspaceDir, repoPath || ".");
+  const resolved = path.resolve(workspaceDir, repoPath || ".");
+  try {
+    const stat = statSync(resolved);
+    if (stat.isFile()) {
+      const dir = path.dirname(resolved);
+      process.stderr.write(
+        `[coder] resolveRepoRoot: corrected file path to directory: ${resolved} → ${dir}\n`,
+      );
+      return dir;
+    }
+  } catch {
+    // Path may not exist yet; use as-is
+  }
+  return resolved;
 }
 
 export function normalizeRepoPath(workspaceDir, repoPath) {

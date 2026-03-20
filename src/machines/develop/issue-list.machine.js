@@ -12,7 +12,47 @@ import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
 import { parseAgentPayload, requireExitZero } from "./_shared.js";
 
-const HANG_TIMEOUT_MS = 1000 * 60 * 2;
+function resolveIssueListHangTimeoutMs(ctx) {
+  const ms = ctx.config.workflow.timeouts.issueSelectionHangMs;
+  return typeof ms === "number" && ms > 0 ? ms : 0;
+}
+
+/**
+ * Shrink GitHub issues for the selector prompt (drop comments; trim body).
+ * @param {object[]} issues
+ * @param {number} maxN
+ */
+function slimGithubIssuesForPrompt(issues, maxN) {
+  return issues.slice(0, maxN).map((issue) => ({
+    number: issue.number,
+    title: issue.title,
+    labels: (issue.labels || []).map((l) =>
+      typeof l === "string" ? l : (l.name ?? String(l)),
+    ),
+    body: typeof issue.body === "string" ? issue.body.slice(0, 400) : "",
+    url: issue.url,
+  }));
+}
+
+/**
+ * @param {object[]} issues
+ * @param {number} maxN
+ */
+function slimGitlabIssuesForPrompt(issues, maxN) {
+  return issues.slice(0, maxN).map((issue) => ({
+    iid: issue.iid,
+    title: issue.title,
+    description: (issue.description || "").slice(0, 400),
+    labels: issue.labels,
+    web_url: issue.web_url,
+  }));
+}
+
+export {
+  resolveIssueListHangTimeoutMs,
+  slimGithubIssuesForPrompt,
+  slimGitlabIssuesForPrompt,
+};
 
 function isNoiseOnlyGeminiResult(agentName, res) {
   if (agentName !== "gemini") return "";
@@ -99,7 +139,7 @@ function loadLocalIssues(issuesDir) {
  * @param {string} cwd - Directory to run gh in (repo root)
  * @returns {object[]}
  */
-export function fetchGithubIssues(cwd) {
+export function fetchGithubIssues(cwd, { limit = 50 } = {}) {
   const res = spawnSync(
     "gh",
     [
@@ -110,7 +150,7 @@ export function fetchGithubIssues(cwd) {
       "--state",
       "open",
       "--limit",
-      "50",
+      String(limit),
     ],
     { cwd, encoding: "utf8", timeout: 15000 },
   );
@@ -149,10 +189,11 @@ export function fetchGithubIssues(cwd) {
  * @param {string} cwd - Directory to run glab in (repo root)
  * @returns {object[]}
  */
-export function fetchGitlabIssues(cwd) {
+export function fetchGitlabIssues(cwd, { limit = 1000 } = {}) {
   const allIssues = [];
+  const maxPages = Math.max(1, Math.ceil(limit / 100));
 
-  for (let page = 1; page <= 10; page++) {
+  for (let page = 1; page <= maxPages; page++) {
     const res = spawnSync(
       "glab",
       ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
@@ -191,7 +232,7 @@ export function fetchGitlabIssues(cwd) {
         title: issue.title,
         description: (issue.description || "").slice(0, 500),
         labels: (issue.labels || []).map((label) =>
-          typeof label === "string" ? label : label.name || String(label),
+          typeof label === "string" ? label : (label.name ?? String(label)),
         ),
         web_url: issue.web_url,
       })),
@@ -289,7 +330,8 @@ export default defineMachine({
     if (issueIds && (issueSource === "github" || issueSource === "gitlab")) {
       const fetchFn =
         issueSource === "github" ? fetchGithubIssues : fetchGitlabIssues;
-      const raw = fetchFn(ctx.workspaceDir);
+      // Use a generous limit so forced IDs beyond the default 50 are found.
+      const raw = fetchFn(ctx.workspaceDir, { limit: 1000 });
       const idLower = issueIds.map((id) => id.toLowerCase());
       const idSet = new Set(idLower);
       const matched = raw
@@ -333,6 +375,8 @@ export default defineMachine({
     });
     const state = await loadState(ctx.workspaceDir);
     state.steps ||= {};
+    const hangTimeoutMs = resolveIssueListHangTimeoutMs(ctx);
+    const promptMaxIssues = ctx.config.workflow.issueListPromptMaxIssues;
 
     // Sub-step: list Linear teams when source is linear
     if (
@@ -357,7 +401,7 @@ Return ONLY valid JSON in this schema:
         const projRes = await agent.executeWithRetry(projPrompt, {
           structured: true,
           timeoutMs: ctx.config.workflow.timeouts.issueSelection,
-          hangTimeoutMs: HANG_TIMEOUT_MS,
+          hangTimeoutMs,
           retries: 2,
           retryOnRateLimit: true,
           isTransientResult: (res) => isNoiseOnlyGeminiResult(agentName, res),
@@ -396,7 +440,7 @@ Return ONLY valid JSON in this schema:
     ctx.log({ event: "step1_list_issues", issueSource });
 
     const TAIL = `
-Estimate implementation difficulty and directness for each issue (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path.
+Estimate implementation difficulty and directness for each issue (prefer small, self-contained changes). Keep this lightweight: do not do deep repository scans unless absolutely required to disambiguate repo_path. IMPORTANT: repo_path must be a directory path (e.g. "." or "packages/foo"), never a file path like "lib/foo/bar.ex".
 
 For each issue, also identify any dependency relationships — if an issue explicitly references or requires another issue to be completed first, include the dependency in "depends_on" as the issue ID string.
 
@@ -407,7 +451,7 @@ Return ONLY valid JSON in this schema:
       "source": "<source>",
       "id": "string",
       "title": "string",
-      "repo_path": "string (relative path to repo subfolder in workspace, or empty if unknown)",
+      "repo_path": "string (relative path to repo directory or subfolder, e.g. '.' or 'packages/foo' — must be a directory, NOT a file path; use empty if unknown)",
       "difficulty": 1 | 2 | 3 | 4 | 5,
       "reason": "short explanation",
       "depends_on": ["issue-id-1"]
@@ -418,15 +462,26 @@ Return ONLY valid JSON in this schema:
 
     let listPrompt;
     if (issueSource === "github") {
-      const issues = fetchGithubIssues(ctx.workspaceDir);
+      const issues = fetchGithubIssues(ctx.workspaceDir, {
+        limit: promptMaxIssues,
+      });
       ctx.log({
         event: "step1_fetch",
         source: "github",
         count: issues.length,
       });
+      const forPrompt = slimGithubIssuesForPrompt(issues, promptMaxIssues);
+      if (issues.length > forPrompt.length) {
+        ctx.log({
+          event: "step1_prompt_trimmed",
+          source: "github",
+          fetched: issues.length,
+          promptIssues: forPrompt.length,
+        });
+      }
       const issueList =
-        issues.length > 0
-          ? `Here are the open GitHub issues for this repo (fetched via gh CLI):\n${JSON.stringify(issues, null, 2)}`
+        forPrompt.length > 0
+          ? `Here are the open GitHub issues for this repo (fetched via gh CLI; ${forPrompt.length} of ${issues.length} shown, comments omitted, bodies truncated):\n${JSON.stringify(forPrompt, null, 2)}`
           : "No open GitHub issues found.";
       listPrompt = `${issueList}
 
@@ -439,9 +494,18 @@ ${TAIL}`;
         source: "gitlab",
         count: issues.length,
       });
+      const forPrompt = slimGitlabIssuesForPrompt(issues, promptMaxIssues);
+      if (issues.length > forPrompt.length) {
+        ctx.log({
+          event: "step1_prompt_trimmed",
+          source: "gitlab",
+          fetched: issues.length,
+          promptIssues: forPrompt.length,
+        });
+      }
       const issueList =
-        issues.length > 0
-          ? `Here are the open GitLab issues for this repo (fetched via glab CLI):\n${JSON.stringify(issues, null, 2)}`
+        forPrompt.length > 0
+          ? `Here are the open GitLab issues for this repo (fetched via glab CLI; ${forPrompt.length} of ${issues.length} shown, descriptions truncated):\n${JSON.stringify(forPrompt, null, 2)}`
           : "No open GitLab issues found.";
       listPrompt = `${issueList}
 
@@ -464,7 +528,7 @@ ${TAIL}`;
     const res = await agent.executeWithRetry(listPrompt, {
       structured: true,
       timeoutMs: ctx.config.workflow.timeouts.issueSelection,
-      hangTimeoutMs: HANG_TIMEOUT_MS,
+      hangTimeoutMs,
       retries: 2,
       retryOnRateLimit: true,
       isTransientResult: (r) => isNoiseOnlyGeminiResult(agentName, r),

@@ -118,6 +118,13 @@ test("resolveConfig: deep overrides merge correctly", () => {
   assert.equal(config.test.timeoutMs, 600000); // default preserved
 });
 
+test("resolveConfig: issue list hang and prompt caps default", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir);
+  assert.equal(config.workflow.timeouts.issueSelectionHangMs, 0);
+  assert.equal(config.workflow.issueListPromptMaxIssues, 50);
+});
+
 test("resolveConfig: workflow agent roles can be overridden", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
   const config = resolveConfig(dir, {

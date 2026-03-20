@@ -132,6 +132,23 @@ export function stopSystemdUnit(unitName) {
   }
 }
 
+/**
+ * Send a specific signal to the main process of a systemd unit.
+ * Unlike `stop` (which requests a graceful shutdown), this maps to
+ * `systemctl kill --signal=<sig>` for real escalation semantics.
+ */
+export function killSystemdUnit(unitName, signal = "SIGKILL") {
+  if (!unitName) return;
+  try {
+    spawnSync("systemctl", ["--user", "kill", "--signal", signal, unitName], {
+      encoding: "utf8",
+      timeout: 3000,
+    });
+  } catch {
+    // best-effort
+  }
+}
+
 export function runShellSync(
   command,
   {
