@@ -164,6 +164,7 @@ export default defineMachine({
           scratchpadPath,
           pipelinePath,
           repoRoot: effectiveRepoRoot,
+          repoPath: effectiveRepoPath,
           mode: "ingest",
           parsedDomains,
           parsedDecisions,

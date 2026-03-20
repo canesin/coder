@@ -245,11 +245,24 @@ export default defineMachine({
     }
 
     // --- Remap depends_on references to stable SPEC IDs ---
-    // Use first-match for duplicate titles to preserve ordering
+    // Use first-match for duplicate titles to preserve ordering.
+    // Warn when duplicate titles are detected since title-based dependency
+    // resolution is inherently ambiguous in that case.
     const titleToId = new Map();
     for (const gi of generatedIssues) {
       const key = gi.title.toLowerCase();
-      if (!titleToId.has(key)) titleToId.set(key, gi.id);
+      if (titleToId.has(key)) {
+        ctx.log({
+          event: "spec_render_duplicate_title",
+          level: "warn",
+          title: gi.title,
+          duplicateId: gi.id,
+          originalId: titleToId.get(key),
+          message: `Duplicate issue title "${gi.title}" (${gi.id} vs ${titleToId.get(key)}). depends_on references to this title will resolve to ${titleToId.get(key)}.`,
+        });
+      } else {
+        titleToId.set(key, gi.id);
+      }
     }
     for (const gi of generatedIssues) {
       gi.depends_on = gi.depends_on

@@ -135,11 +135,11 @@ ${phaseInstruction}Tasks:
 2. Categorize each gap into a domain
 3. Assign priority and severity
 4. ${hasExistingPhases ? "Assign each gap to the existing phases above, preserving their IDs and titles. Only create new phases if a gap does not fit any existing phase." : "Group gaps into implementation phases with dependency ordering"}
-5. For each gap, produce an issue-shaped object
+5. For each gap, produce an issue-shaped object and reference it in the phase's issueSpecs by title
 
 Return ONLY valid JSON:
 {
-  "phases": [{"id": "phase-N", "title": "string"}],
+  "phases": [{"id": "phase-N", "title": "string", "issueSpecs": [{"title": "matching issue title"}]}],
   "issueSpecs": [
     {
       "title": "string",
