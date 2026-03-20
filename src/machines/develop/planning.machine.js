@@ -44,7 +44,13 @@ export default defineMachine({
     }
 
     if (state.steps.wrotePlan && !input.priorCritique) {
-      return { status: "ok", data: { planMd: "(cached)" } };
+      // Verify artifact exists — state can be stale (clean loop, backup restore, crash)
+      if (existsSync(paths.plan)) {
+        return { status: "ok", data: { planMd: "(cached)" } };
+      }
+      // wrotePlan is true but PLAN.md missing — clear flag and run planner
+      state.steps.wrotePlan = false;
+      await saveState(ctx.workspaceDir, state);
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);

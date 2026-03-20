@@ -6,7 +6,7 @@ import merge from "deepmerge";
 import { z } from "zod";
 import { DEFAULT_PASS_ENV } from "./pass-env.js";
 
-const modelNameRegex = /^[a-zA-Z0-9._/-]+$/;
+const modelNameRegex = /^[a-zA-Z0-9._/:-]+$/;
 
 export const ModelEntrySchema = z.object({
   model: z.string().regex(modelNameRegex, "Invalid model name"),
@@ -115,6 +115,8 @@ export const WorkflowTimeoutsSchema = z.object({
   webSearch: z.number().int().positive().default(900_000),
   pocValidation: z.number().int().positive().default(720_000),
   issueSelection: z.number().int().positive().default(600_000),
+  /** 0 = no hang kill during issue list; wall-clock still bounded by issueSelection. */
+  issueSelectionHangMs: z.number().int().nonnegative().default(0),
   issueDraft: z.number().int().positive().default(600_000),
   planning: z.number().int().positive().default(2_400_000),
   planReview: z.number().int().positive().default(2_400_000),
@@ -253,6 +255,13 @@ export const CoderConfigSchema = z.object({
       maxMachineRetries: z.number().int().min(0).default(2),
       retryBackoffMs: z.number().int().min(0).default(5000),
       maxPlanRevisions: z.number().int().min(1).max(10).default(3),
+      /** Cap how many fetched issues are embedded in the issue-selector LLM prompt. */
+      issueListPromptMaxIssues: z
+        .number()
+        .int()
+        .positive()
+        .max(1000)
+        .default(50),
       issueSource: z
         .enum(["github", "linear", "gitlab", "local"])
         .default("github"),

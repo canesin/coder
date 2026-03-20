@@ -438,8 +438,9 @@ export async function saveLoopState(
     });
   setWriteChain(workspaceDir, chain);
   await chain;
-  if (guarded) return;
+  if (guarded) return false;
   if (writeErr) throw writeErr;
+  return true;
 }
 
 // --- CLI control signals (file-based cancel/pause/resume) ---
