@@ -88,6 +88,19 @@ test("fetchGithubIssues returns [] on empty stdout", async (t) => {
   assert.deepEqual(fetchGithubIssues("/tmp"), []);
 });
 
+test("fetchGithubIssues returns [] on empty JSON array", async (t) => {
+  mockChildProcess(t, () => ({
+    error: null,
+    status: 0,
+    stdout: "[]",
+    stderr: "",
+  }));
+  const { fetchGithubIssues } = await import(
+    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  );
+  assert.deepEqual(fetchGithubIssues("/tmp"), []);
+});
+
 test("fetchGithubIssues returns parsed array on valid JSON", async (t) => {
   const payload = [
     {
@@ -176,7 +189,20 @@ test("fetchGitlabIssues throws on non-array JSON output", async (t) => {
   assert.throws(() => fetchGitlabIssues("/tmp"), /non-array JSON/);
 });
 
-test("fetchGitlabIssues returns [] on empty first page", async (t) => {
+test("fetchGitlabIssues returns [] on empty stdout (first page)", async (t) => {
+  mockChildProcess(t, () => ({
+    error: null,
+    status: 0,
+    stdout: "",
+    stderr: "",
+  }));
+  const { fetchGitlabIssues } = await import(
+    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  );
+  assert.deepEqual(fetchGitlabIssues("/tmp"), []);
+});
+
+test("fetchGitlabIssues returns [] on empty JSON array", async (t) => {
   mockChildProcess(t, () => ({
     error: null,
     status: 0,
@@ -215,4 +241,89 @@ test("fetchGitlabIssues returns mapped data on valid JSON", async (t) => {
   assert.equal(result[0].description, "Long description here");
   assert.deepEqual(result[0].labels, ["bug"]);
   assert.equal(result[0].web_url, "https://gl.example.com/7");
+});
+
+test("fetchGitlabIssues handles string labels alongside object labels", async (t) => {
+  const payload = [
+    {
+      iid: 10,
+      title: "Mixed labels",
+      description: "",
+      labels: ["plain-string", { name: "object-label" }, 42],
+      web_url: "https://gl.example.com/10",
+    },
+  ];
+  mockChildProcess(t, () => ({
+    error: null,
+    status: 0,
+    stdout: JSON.stringify(payload),
+    stderr: "",
+  }));
+  const { fetchGitlabIssues } = await import(
+    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  );
+  const result = fetchGitlabIssues("/tmp");
+  assert.deepEqual(result[0].labels, ["plain-string", "object-label", "42"]);
+});
+
+test("fetchGitlabIssues truncates description to 500 chars", async (t) => {
+  const longDesc = "x".repeat(600);
+  const payload = [
+    {
+      iid: 11,
+      title: "Long desc",
+      description: longDesc,
+      labels: [],
+      web_url: "https://gl.example.com/11",
+    },
+  ];
+  mockChildProcess(t, () => ({
+    error: null,
+    status: 0,
+    stdout: JSON.stringify(payload),
+    stderr: "",
+  }));
+  const { fetchGitlabIssues } = await import(
+    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  );
+  const result = fetchGitlabIssues("/tmp");
+  assert.equal(result[0].description.length, 500);
+});
+
+test("fetchGitlabIssues paginates across multiple pages", async (t) => {
+  let callCount = 0;
+  const page1 = Array.from({ length: 100 }, (_, i) => ({
+    iid: i + 1,
+    title: `Issue ${i + 1}`,
+    description: "",
+    labels: [],
+    web_url: `https://gl.example.com/${i + 1}`,
+  }));
+  const page2 = [
+    {
+      iid: 101,
+      title: "Issue 101",
+      description: "",
+      labels: [],
+      web_url: "https://gl.example.com/101",
+    },
+  ];
+
+  mockChildProcess(t, () => {
+    callCount++;
+    return {
+      error: null,
+      status: 0,
+      stdout: JSON.stringify(callCount === 1 ? page1 : page2),
+      stderr: "",
+    };
+  });
+  const { fetchGitlabIssues } = await import(
+    `../src/machines/develop/issue-list.machine.js?t=${++cacheId}`
+  );
+  const result = fetchGitlabIssues("/tmp");
+  assert.equal(result.length, 101);
+  assert.equal(result[0].iid, 1);
+  assert.equal(result[100].iid, 101);
+  assert.equal(callCount, 2);
 });
