@@ -238,7 +238,13 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
  * transition occurs.
  */
 async function reapStaleRun(workspaceDir, loopState, isStale) {
-  if (!isStale || !loopState.runId || loopState.status === "paused" || activeRuns.has(loopState.runId)) return;
+  if (
+    !isStale ||
+    !loopState.runId ||
+    loopState.status === "paused" ||
+    activeRuns.has(loopState.runId)
+  )
+    return;
   const snapshot = await loadWorkflowSnapshot(workspaceDir);
   const wfName = snapshot?.workflow || "develop";
   await markRunTerminalOnDisk(workspaceDir, loopState.runId, wfName, "failed");
@@ -247,7 +253,7 @@ async function reapStaleRun(workspaceDir, loopState, isStale) {
 }
 
 export async function readWorkflowStatus(workspaceDir) {
-  let loopState = await loadLoopState(workspaceDir);
+  const loopState = await loadLoopState(workspaceDir);
   let { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
 

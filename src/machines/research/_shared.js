@@ -607,5 +607,3 @@ ${pointers}
 - Next action:
 `;
 }
-
-
