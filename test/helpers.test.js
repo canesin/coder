@@ -297,6 +297,80 @@ test("extractGeminiPayloadJson unwraps fenced JSON in Gemini envelope response",
   assert.deepEqual(parsed, { issues: [], recommended_index: 0 });
 });
 
+test("extractGeminiPayloadJson throws when envelope response is not parseable JSON (no silent envelope return)", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: "not json at all {{{",
+    stats: {},
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: could not parse issues payload from envelope response\n/,
+      );
+      assert.match(err.message, /not json at all/);
+      assert.ok(err.cause instanceof Error);
+      return true;
+    },
+  );
+});
+
+test("extractGeminiPayloadJson throws when Gemini envelope omits response (no silent envelope return)", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    stats: { tokens: 1 },
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
+      );
+      assert.match(err.message, /response field missing/);
+      return true;
+    },
+  );
+});
+
+test("extractGeminiPayloadJson unwraps object response on envelope when it matches issues payload shape", () => {
+  const inner = { issues: [], recommended_index: 0 };
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: inner,
+    stats: {},
+  });
+  const parsed = extractGeminiPayloadJson(stdout);
+  assert.deepEqual(parsed, inner);
+});
+
+test("extractGeminiPayloadJson throws when envelope response object is not a usable issues payload", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: { foo: 1 },
+    stats: {},
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
+      );
+      assert.match(err.message, /"foo":1/);
+      return true;
+    },
+  );
+});
+
 test("gitCleanOrThrow automatically ignores .gemini/ directory", () => {
   const { repoDir } = setupGitRepo({
     "README.md": "hello\n",

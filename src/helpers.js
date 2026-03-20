@@ -381,30 +381,81 @@ export function extractJson(stdout) {
  * Parse Gemini output where `-o json` returns an envelope with a `response`
  * field that may itself contain JSON (often fenced markdown).
  */
+const GEMINI_ENVELOPE_INNER_PARSE_PREFIX =
+  "[coder] Gemini -o json: could not parse issues payload from envelope response";
+const GEMINI_ENVELOPE_BAD_RESPONSE_PREFIX =
+  "[coder] Gemini -o json: envelope response field is missing or not a usable issues payload";
+
+/** @param {unknown} obj */
+function isIssuesPayloadShape(obj) {
+  return (
+    !!obj &&
+    typeof obj === "object" &&
+    !Array.isArray(obj) &&
+    Array.isArray(/** @type {{ issues?: unknown }} */ (obj).issues) &&
+    typeof (
+      /** @type {{ recommended_index?: unknown }} */ (obj).recommended_index
+    ) === "number"
+  );
+}
+
 export function extractGeminiPayloadJson(stdout) {
   const parsed = extractJson(stdout);
-  if (
-    parsed &&
-    typeof parsed === "object" &&
-    !Array.isArray(parsed) &&
-    typeof parsed.response === "string"
-  ) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  if (isIssuesPayloadShape(parsed)) {
+    return parsed;
+  }
+
+  if (typeof parsed.response === "string") {
+    /** @type {unknown} */
+    let lastInnerError;
     try {
       return extractJson(parsed.response);
-    } catch {
-      // Some envelopes encode escaped newlines (e.g. "\\n") literally.
-      // Normalize and retry before falling back to the raw envelope.
+    } catch (e) {
+      lastInnerError = e;
       try {
         const normalized = parsed.response
           .replace(/\\r\\n/g, "\n")
           .replace(/\\n/g, "\n")
           .replace(/\\t/g, "\t");
         return extractJson(normalized);
-      } catch {
-        // Keep envelope if response is not structured JSON.
+      } catch (e2) {
+        lastInnerError = e2;
       }
     }
+    const raw = parsed.response;
+    const preview = raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
+    const err = new Error(`${GEMINI_ENVELOPE_INNER_PARSE_PREFIX}\n${preview}`);
+    if (lastInnerError instanceof Error) err.cause = lastInnerError;
+    throw err;
   }
+
+  if (
+    typeof (/** @type {{ session_id?: unknown }} */ (parsed).session_id) ===
+    "string"
+  ) {
+    if (isIssuesPayloadShape(parsed.response)) {
+      return /** @type {object} */ (parsed.response);
+    }
+    let preview;
+    if (parsed.response === undefined) {
+      preview = "(response field missing)";
+    } else if (parsed.response === null) {
+      preview = "(response is null)";
+    } else {
+      try {
+        const s = JSON.stringify(parsed.response);
+        preview = s.length > 400 ? `${s.slice(0, 400)}…` : s;
+      } catch {
+        preview = String(parsed.response);
+      }
+    }
+    throw new Error(`${GEMINI_ENVELOPE_BAD_RESPONSE_PREFIX}\n${preview}`);
+  }
+
   return parsed;
 }
 
