@@ -304,6 +304,26 @@ function gitleaksSpawnSkipReason() {
 
 const gitleaksSpawnSkip = gitleaksSpawnSkipReason();
 
+/** Probe: can we execute a shell script from tmpdir? noexec mounts block this. */
+function tmpNoexecSkipReason() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-noexec-probe-"));
+  try {
+    const script = path.join(dir, "probe");
+    writeFileSync(script, "#!/bin/sh\nexit 0\n", "utf8");
+    chmodSync(script, FILE_MODE_EXECUTABLE);
+    const r = spawnSync(script, [], {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
+    });
+    if (r.error) return `tmpdir noexec (${r.error.code})`;
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const tmpNoexecSkip = tmpNoexecSkipReason();
+
 test("ppcommit: gitleaks missing from PATH produces actionable error", {
   skip: gitleaksSpawnSkip,
 }, async () => {
@@ -422,7 +442,7 @@ test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
 });
 
 test("ppcommit: gitleaks version check failure produces distinct error", {
-  skip: gitleaksSpawnSkip,
+  skip: gitleaksSpawnSkip || tmpNoexecSkip,
 }, async () => {
   const repo = makeRepo();
   writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
