@@ -245,6 +245,22 @@ export default defineMachine({
       });
     }
 
+    // --- Remap depends_on references to stable SPEC IDs ---
+    const titleToId = new Map();
+    for (const gi of generatedIssues) {
+      titleToId.set(gi.title.toLowerCase(), gi.id);
+    }
+    for (const gi of generatedIssues) {
+      gi.depends_on = gi.depends_on
+        .map((dep) => {
+          // Already a SPEC ID?
+          if (/^SPEC-\d+$/i.test(dep)) return dep;
+          // Try title match
+          return titleToId.get(dep.toLowerCase()) || dep;
+        })
+        .filter(Boolean);
+    }
+
     // --- Compute bridgeDir once for both modes ---
     const bridgeDir = path.join(ctx.workspaceDir, ".coder", "local-issues");
 

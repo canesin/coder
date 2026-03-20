@@ -870,7 +870,7 @@ export function parseSpecGaps(text) {
   const normalized = String(text || "").replace(/\r\n/g, "\n");
   const gaps = [];
   const re =
-    /^-\s+\[([ x])\]\s+\*\*\d+\.\s+[^*]+\*\*\s*—\s*(.+?)\s*Domain:\s*(\S+?)\.?\s*Severity:\s*(\S+?)\.?\s*$/gm;
+    /^-\s+\[([ x])\]\s+\*\*\d+\.\s+[^*]+\*\*\s*—\s*(.+?)\s*Domain:\s*(.+?)\.?\s*Severity:\s*(\S+?)\.?\s*$/gm;
   for (const m of normalized.matchAll(re)) {
     gaps.push({
       description: m[2].trim(),

@@ -85,7 +85,14 @@ export default defineMachine({
         })
         .filter(Boolean);
 
-      const parsedGaps = mdFiles.flatMap((f) => parseSpecGaps(f.content));
+      // Skip synthetic docs (overview, architecture) to avoid duplicate gaps —
+      // architecture doc repeats every domain gap; only parse per-domain docs.
+      const parsedGaps = mdFiles
+        .filter((f) => {
+          const meta = parseSpecMeta(f.content);
+          return !meta.domain || !SYNTHETIC_DOMAINS.has(meta.domain);
+        })
+        .flatMap((f) => parseSpecGaps(f.content));
 
       endPipelineStep(
         pipeline,
