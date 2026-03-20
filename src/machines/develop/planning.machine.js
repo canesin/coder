@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
+import { stripAgentNoise } from "../../helpers.js";
 import {
   clearAllSessionIdsAndDisable,
   loadState,
@@ -10,10 +12,49 @@ import {
 import { defineMachine } from "../_base.js";
 import {
   artifactPaths,
+  buildStepCliOpts,
   ensureBranch,
   requireExitZero,
   resolveRepoRoot,
 } from "./_shared.js";
+
+/** CLI opts for planner — shared by normal and auth-retry execute() paths. */
+export function buildPlannerExecuteOpts(ctx) {
+  return buildStepCliOpts(ctx.config.workflow.timeouts.planning);
+}
+
+/**
+ * Gated stdout salvage: critique output is short and verdict-scoped; plans are
+ * long and often mixed with tool noise — only persist when structure matches.
+ */
+function planStdoutLooksSalvageable(text) {
+  const t = text.trim();
+  if (t.length < 800) return false;
+  const h2 = (t.match(/^##\s+\S/gm) || []).length;
+  if (h2 < 2) return false;
+  if (
+    !/\b(Approach|Summary|Files to Modify|Testing Strategy|Implementation|Phase \d+)\b/i.test(
+      t,
+    )
+  )
+    return false;
+  return true;
+}
+
+function trySalvagePlanFromStdout(res, planPath, log) {
+  if (!res || typeof res.stdout !== "string") return false;
+  const cleaned = stripAgentNoise(res.stdout, { dropLeadingOnly: true });
+  const filtered = stripAgentNoise(cleaned).trim();
+  if (!planStdoutLooksSalvageable(filtered)) return false;
+  mkdirSync(path.dirname(planPath), { recursive: true });
+  writeFileSync(planPath, `${filtered}\n`, "utf8");
+  log({
+    event: "plan_salvaged_from_stdout",
+    planPath,
+    salvagedChars: filtered.length,
+  });
+  return true;
+}
 
 export default defineMachine({
   name: "develop.planning",
@@ -238,6 +279,9 @@ if they modify different, independent sections.
 ${branchSections}`;
     }
 
+    const plannerCli = buildPlannerExecuteOpts(ctx);
+    let lastPlannerResult = null;
+
     // Allow one retry when the planner violates the no-source-edit constraint.
     // Retries resume the existing session so the agent has the violation as context.
     let constraintNote = "";
@@ -285,7 +329,7 @@ ${branchSections}`;
         try {
           res = await plannerAgent.execute(prompt, {
             ...sessionOpts,
-            timeoutMs: ctx.config.workflow.timeouts.planning,
+            ...plannerCli,
           });
         } catch (err) {
           const isAuthError =
@@ -309,7 +353,7 @@ ${branchSections}`;
             clearAllSessionIdsAndDisable(state);
             await saveState(ctx.workspaceDir, state);
             const retryOpts = {
-              timeoutMs: ctx.config.workflow.timeouts.planning,
+              ...plannerCli,
               sessionId: undefined,
               resumeId: undefined,
               killOnStderrPatterns: [],
@@ -339,6 +383,7 @@ ${branchSections}`;
           }
         }
         requireExitZero(plannerName, "plan generation failed", res);
+        lastPlannerResult = res;
       } catch (err) {
         state.planningSessionId = null;
         await saveState(ctx.workspaceDir, state);
@@ -399,8 +444,40 @@ ${branchSections}`;
         `Retry now: write ONLY ${paths.plan} and do not edit any source files.`;
     }
 
-    if (!existsSync(paths.plan))
-      throw new Error(`PLAN.md not found: ${paths.plan}`);
+    if (!existsSync(paths.plan)) {
+      let artifactDirEntries = [];
+      try {
+        if (existsSync(ctx.artifactsDir)) {
+          artifactDirEntries = readdirSync(ctx.artifactsDir).slice(0, 40);
+        }
+      } catch {
+        /* ignore */
+      }
+      ctx.log({
+        event: "plan_missing_after_planner",
+        planPath: paths.plan,
+        artifactsDir: ctx.artifactsDir,
+        repoPath: state.repoPath ?? null,
+        artifactDirEntries,
+      });
+      trySalvagePlanFromStdout(lastPlannerResult, paths.plan, ctx.log);
+    }
+    if (!existsSync(paths.plan)) {
+      ctx.log({
+        event: "plan_missing_final",
+        planPath: paths.plan,
+        stdoutLen: lastPlannerResult
+          ? (lastPlannerResult.stdout || "").length
+          : 0,
+        stderrLen: lastPlannerResult
+          ? (lastPlannerResult.stderr || "").length
+          : 0,
+      });
+      throw new Error(
+        `PLAN.md not found at ${paths.plan} (artifactsDir=${ctx.artifactsDir}). ` +
+          `Planner exited 0 but did not write the file. See plan_missing_after_planner and plan_missing_final logs.`,
+      );
+    }
     state.steps.wrotePlan = true;
     await saveState(ctx.workspaceDir, state);
 

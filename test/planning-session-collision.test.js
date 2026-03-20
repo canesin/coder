@@ -52,8 +52,10 @@ test("planning: retries without session when session ID is already in use (creat
 
     let callCount = 0;
     const logEvents = [];
+    const executeOptsLog = [];
     const mockAgent = {
-      async execute(_prompt, _opts) {
+      async execute(_prompt, opts) {
+        executeOptsLog.push(opts);
         callCount++;
         if (callCount === 1) {
           throw makeCommandFatalStderrError(
@@ -79,6 +81,11 @@ test("planning: retries without session when session ID is already in use (creat
 
     assert.equal(result.status, "ok");
     assert.equal(callCount, 2, "should retry once after session collision");
+    assert.equal(executeOptsLog.length, 2);
+    assert.equal(executeOptsLog[0].hangTimeoutMs, 0);
+    assert.equal(executeOptsLog[1].hangTimeoutMs, 0);
+    assert.equal(executeOptsLog[0].timeoutMs, 60000);
+    assert.equal(executeOptsLog[1].timeoutMs, 60000);
     assert.ok(
       logEvents.some(
         (e) => e.event === "session_auth_failed" && e.wasCreating === true,

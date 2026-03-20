@@ -3,7 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { getStatus } from "../src/mcp/tools/status.js";
+import {
+  deriveDevelopArtifactPhase,
+  getStatus,
+} from "../src/mcp/tools/status.js";
 
 function makeWorkspace() {
   const ws = mkdtempSync(path.join(os.tmpdir(), "coder-status-test-"));
@@ -54,6 +57,52 @@ test("getStatus merges currentStage etc from loop-state when develop is running"
   }
 });
 
+test("getStatus includes derivedArtifactPhase when develop run is active", async () => {
+  const ws = makeWorkspace();
+  try {
+    writeFileSync(
+      path.join(ws, ".coder", "loop-state.json"),
+      JSON.stringify({
+        runId: "run-d",
+        status: "running",
+        currentStage: "develop_starting",
+        lastHeartbeatAt: "2025-01-01T12:00:00.000Z",
+        activeAgent: "gemini",
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      path.join(ws, ".coder", "state.json"),
+      JSON.stringify({
+        steps: { wroteIssue: true, wrotePlan: true },
+      }),
+      "utf8",
+    );
+    writeFileSync(path.join(ws, ".coder", "artifacts", "ISSUE.md"), "# i\n");
+    writeFileSync(path.join(ws, ".coder", "artifacts", "PLAN.md"), "# p\n");
+
+    const status = await getStatus(ws);
+    assert.equal(status.runStatus, "running");
+    assert.equal(status.derivedArtifactPhase, "plan_review");
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("deriveDevelopArtifactPhase returns null when no develop artifacts touched", () => {
+  assert.equal(
+    deriveDevelopArtifactPhase(
+      { steps: {} },
+      {
+        issueExists: false,
+        planExists: false,
+        critiqueExists: false,
+      },
+    ),
+    null,
+  );
+});
+
 test("getStatus merges from workflow-state when loop state is idle", async () => {
   const ws = makeWorkspace();
   try {
@@ -80,6 +129,43 @@ test("getStatus merges from workflow-state when loop state is idle", async () =>
     assert.equal(status.activeAgent, "gemini");
     assert.equal(status.runId, "research-abc");
     assert.equal(status.runStatus, "running");
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("getStatus omits derivedArtifactPhase when a non-develop workflow is running", async () => {
+  const ws = makeWorkspace();
+  try {
+    writeFileSync(
+      path.join(ws, ".coder", "workflow-state.json"),
+      JSON.stringify({
+        version: 2,
+        workflow: "research",
+        runId: "research-abc",
+        value: "running",
+        context: {
+          currentStage: "research.deep_research",
+          lastHeartbeatAt: "2025-01-01T12:00:00.000Z",
+          activeAgent: "gemini",
+        },
+        updatedAt: "2025-01-01T12:00:00.000Z",
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      path.join(ws, ".coder", "state.json"),
+      JSON.stringify({
+        steps: { wroteIssue: true, wrotePlan: true },
+      }),
+      "utf8",
+    );
+    writeFileSync(path.join(ws, ".coder", "artifacts", "ISSUE.md"), "# i\n");
+    writeFileSync(path.join(ws, ".coder", "artifacts", "PLAN.md"), "# p\n");
+
+    const status = await getStatus(ws);
+    assert.equal(status.runStatus, "running");
+    assert.equal(status.derivedArtifactPhase, null);
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }
