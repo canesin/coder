@@ -62,12 +62,17 @@ export default defineMachine({
             }))
         : [];
 
+      // Filter out synthetic domains emitted by build mode (overview, architecture)
+      const SYNTHETIC_DOMAINS = new Set(["overview", "architecture"]);
       const parsedDomains = mdFiles
         .map((f) => {
           const meta = parseSpecMeta(f.content);
-          return meta.domain
-            ? { name: meta.domain, version: meta.version || "1", file: f.name }
-            : null;
+          if (!meta.domain || SYNTHETIC_DOMAINS.has(meta.domain)) return null;
+          return {
+            name: meta.domain,
+            version: meta.version || "1",
+            file: f.name,
+          };
         })
         .filter(Boolean);
 

@@ -19,7 +19,18 @@ import {
 function isSubsetMatch(subset, superset) {
   for (const key of Object.keys(subset)) {
     if (key.startsWith("_")) continue;
-    if (subset[key] !== superset[key]) return false;
+    const a = subset[key];
+    const b = superset[key];
+    if (a === b) continue;
+    // Deep-compare non-scalar values (arrays, objects from AI output)
+    if (typeof a === "object" && typeof b === "object") {
+      try {
+        if (JSON.stringify(a) === JSON.stringify(b)) continue;
+      } catch {
+        /* fall through to false */
+      }
+    }
+    return false;
   }
   return true;
 }
@@ -378,6 +389,7 @@ export default defineMachine({
       difficulty: gi.difficulty,
       priority: gi.priority,
       depends_on: gi.depends_on,
+      ...(repoPath && repoPath !== "." ? { repo_path: repoPath } : {}),
     }));
 
     const bridgeManifestPath = path.join(bridgeDir, "manifest.json");
