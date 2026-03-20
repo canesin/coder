@@ -55,6 +55,8 @@ export default defineMachine({
       state.steps.wroteCritique = false;
       state.planningSessionId = null;
       state.plannerAgentName = null;
+      state.planReviewSessionId = null;
+      state.planReviewAgentName = null;
       try {
         if (existsSync(paths.critique)) unlinkSync(paths.critique);
       } catch {}
