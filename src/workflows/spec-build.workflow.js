@@ -58,7 +58,7 @@ export async function runSpecBuildPipeline(opts, ctx) {
           scratchpadPath: ingestData.scratchpadPath,
           pipelinePath: ingestData.pipelinePath,
           repoRoot: ingestData.repoRoot,
-          repoPath: opts.repoPath || ".",
+          repoPath: ingestData.repoPath || opts.repoPath || ".",
           mode: ingestData.mode,
           domains: prev.data.domains || [],
           decisions: prev.data.decisions || [],

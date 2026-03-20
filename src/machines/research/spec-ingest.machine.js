@@ -132,6 +132,17 @@ export default defineMachine({
       }
       const researchManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 
+      // Inherit repoPath from the research manifest when the caller didn't
+      // provide one explicitly (avoids monorepo root mismatch).
+      const effectiveRepoPath =
+        input.repoPath && input.repoPath !== "."
+          ? input.repoPath
+          : researchManifest.repoPath || input.repoPath || ".";
+      const effectiveRepoRoot = path.resolve(
+        ctx.workspaceDir,
+        effectiveRepoPath,
+      );
+
       endPipelineStep(
         pipeline,
         pipelinePath,
@@ -143,6 +154,7 @@ export default defineMachine({
       appendScratchpad(scratchpadPath, "Spec Ingest (build mode)", [
         `- researchRunId: ${input.researchRunId}`,
         `- issues: ${researchManifest.issues?.length || 0}`,
+        `- repoPath: ${effectiveRepoPath}`,
       ]);
 
       return {
@@ -154,7 +166,8 @@ export default defineMachine({
           issuesDir,
           scratchpadPath,
           pipelinePath,
-          repoRoot,
+          repoRoot: effectiveRepoRoot,
+          repoPath: effectiveRepoPath,
           mode: "build",
           researchManifest,
         },

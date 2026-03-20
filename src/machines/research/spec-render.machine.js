@@ -112,6 +112,20 @@ function renderOverview(domains, decisions, phases) {
 }
 
 /**
+ * Format a gap as a checklist item that `parseSpecGaps()` can round-trip.
+ * Format: `- [ ] **N. Gap** — description Domain: DOMAIN. Severity: medium.`
+ */
+function formatGapChecklist(gap, index, domainName) {
+  const desc = typeof gap === "string" ? gap : gap.description || String(gap);
+  const domain =
+    (typeof gap === "object" && gap.domain) || domainName || "unknown";
+  const severity = (typeof gap === "object" && gap.severity) || "medium";
+  const done = typeof gap === "object" && gap.status === "done";
+  const check = done ? "x" : " ";
+  return `- [${check}] **${index + 1}. Gap** — ${desc} Domain: ${domain}. Severity: ${severity}.`;
+}
+
+/**
  * Render the 02-ARCHITECTURE.md content from domains (with gaps).
  */
 function renderArchitecture(domains) {
@@ -130,7 +144,9 @@ function renderArchitecture(domains) {
     const gaps = Array.isArray(d.gaps) ? d.gaps : [];
     if (gaps.length > 0) {
       lines.push("### Gaps", "");
-      for (const g of gaps) lines.push(`- ${g}`);
+      for (let gi = 0; gi < gaps.length; gi++) {
+        lines.push(formatGapChecklist(gaps[gi], gi, d.name));
+      }
       lines.push("");
     }
   }
@@ -257,7 +273,7 @@ export default defineMachine({
         const gaps = Array.isArray(d.gaps) ? d.gaps : [];
         const gapsSection =
           gaps.length > 0
-            ? `\n## Gaps\n\n${gaps.map((g) => `- ${g}`).join("\n")}\n`
+            ? `\n## Gaps\n\n${gaps.map((g, gi) => formatGapChecklist(g, gi, d.name)).join("\n")}\n`
             : "";
         writeFileSync(
           path.join(specDir, `${num}-${slug}.md`),
@@ -266,15 +282,19 @@ export default defineMachine({
         );
       }
 
-      // Decisions
+      // Decisions — preserve authored ADR IDs when present
       for (let i = 0; i < decisions.length; i++) {
         const dec = decisions[i];
-        const num = String(i + 1).padStart(3, "0");
+        // Use the original ID prefix if it looks like an ADR identifier
+        const adrMatch = String(dec.id || "").match(/^ADR-(\d+)/i);
+        const prefix = adrMatch
+          ? `ADR-${adrMatch[1]}`
+          : `ADR-${String(i + 1).padStart(3, "0")}`;
         const slug = sanitizeFilenameSegment(dec.title || dec.id, {
           fallback: `adr-${i + 1}`,
         });
         writeFileSync(
-          path.join(specDir, "decisions", `ADR-${num}-${slug}.md`),
+          path.join(specDir, "decisions", `${prefix}-${slug}.md`),
           `<!-- adr-meta\nstatus: ${dec.status || "proposed"}\n-->\n\n# ${dec.title || dec.id}\n\n${dec.rationale || ""}\n`,
           "utf8",
         );
@@ -320,12 +340,18 @@ export default defineMachine({
           name: d.name,
           docPath: `spec/${String(i + 3).padStart(2, "0")}-${sanitizeFilenameSegment(d.name, { fallback: `domain-${i + 1}` }).toUpperCase()}.md`,
         })),
-        decisions: decisions.map((dec, i) => ({
-          id: dec.id || `ADR-${String(i + 1).padStart(3, "0")}`,
-          title: dec.title || dec.id,
-          status: dec.status || "proposed",
-          docPath: `spec/decisions/ADR-${String(i + 1).padStart(3, "0")}-${sanitizeFilenameSegment(dec.title || dec.id, { fallback: `adr-${i + 1}` })}.md`,
-        })),
+        decisions: decisions.map((dec, i) => {
+          const adrMatch = String(dec.id || "").match(/^ADR-(\d+)/i);
+          const prefix = adrMatch
+            ? `ADR-${adrMatch[1]}`
+            : `ADR-${String(i + 1).padStart(3, "0")}`;
+          return {
+            id: dec.id || prefix,
+            title: dec.title || dec.id,
+            status: dec.status || "proposed",
+            docPath: `spec/decisions/${prefix}-${sanitizeFilenameSegment(dec.title || dec.id, { fallback: `adr-${i + 1}` })}.md`,
+          };
+        }),
         phases: phases.map((ph, i) => ({
           id: ph.id || `phase-${i + 1}`,
           title: ph.title || ph.id,
