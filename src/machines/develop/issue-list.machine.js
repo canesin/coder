@@ -139,7 +139,7 @@ function loadLocalIssues(issuesDir) {
  * @param {string} cwd - Directory to run gh in (repo root)
  * @returns {object[]}
  */
-export function fetchGithubIssues(cwd) {
+export function fetchGithubIssues(cwd, { limit = 50 } = {}) {
   const res = spawnSync(
     "gh",
     [
@@ -150,7 +150,7 @@ export function fetchGithubIssues(cwd) {
       "--state",
       "open",
       "--limit",
-      "50",
+      String(limit),
     ],
     { cwd, encoding: "utf8", timeout: 15000 },
   );
@@ -189,10 +189,11 @@ export function fetchGithubIssues(cwd) {
  * @param {string} cwd - Directory to run glab in (repo root)
  * @returns {object[]}
  */
-export function fetchGitlabIssues(cwd) {
+export function fetchGitlabIssues(cwd, { limit = 1000 } = {}) {
   const allIssues = [];
+  const maxPages = Math.max(1, Math.ceil(limit / 100));
 
-  for (let page = 1; page <= 10; page++) {
+  for (let page = 1; page <= maxPages; page++) {
     const res = spawnSync(
       "glab",
       ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
@@ -329,7 +330,8 @@ export default defineMachine({
     if (issueIds && (issueSource === "github" || issueSource === "gitlab")) {
       const fetchFn =
         issueSource === "github" ? fetchGithubIssues : fetchGitlabIssues;
-      const raw = fetchFn(ctx.workspaceDir);
+      // Use a generous limit so forced IDs beyond the default 50 are found.
+      const raw = fetchFn(ctx.workspaceDir, { limit: 1000 });
       const idLower = issueIds.map((id) => id.toLowerCase());
       const idSet = new Set(idLower);
       const matched = raw
@@ -460,7 +462,9 @@ Return ONLY valid JSON in this schema:
 
     let listPrompt;
     if (issueSource === "github") {
-      const issues = fetchGithubIssues(ctx.workspaceDir);
+      const issues = fetchGithubIssues(ctx.workspaceDir, {
+        limit: promptMaxIssues,
+      });
       ctx.log({
         event: "step1_fetch",
         source: "github",
