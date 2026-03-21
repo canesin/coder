@@ -91,17 +91,29 @@ export function registerMachineTools(server, resolveWorkspace) {
           // timeouts/cancellations propagate into running machines.
           if (extra?.signal) {
             if (extra.signal.aborted) {
-              ctx.cancelToken.cancelled = true;
-            } else {
-              extra.signal.addEventListener(
-                "abort",
-                () => {
-                  ctx.cancelToken.cancelled = true;
-                  if (ctx.agentPool) ctx.agentPool.killAll().catch(() => {});
-                },
-                { once: true },
-              );
+              // Already cancelled before we started — skip machine execution entirely.
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify(
+                      { status: "cancelled", error: "request aborted" },
+                      null,
+                      2,
+                    ),
+                  },
+                ],
+                isError: true,
+              };
             }
+            extra.signal.addEventListener(
+              "abort",
+              () => {
+                ctx.cancelToken.cancelled = true;
+                if (ctx.agentPool) ctx.agentPool.killAll().catch(() => {});
+              },
+              { once: true },
+            );
           }
 
           const result = await machine.run(machineInput, ctx);

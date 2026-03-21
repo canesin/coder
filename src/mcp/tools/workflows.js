@@ -465,13 +465,21 @@ async function reapOrphanedRunsOnStartup(resolveWorkspace) {
 
 export function registerWorkflowTools(server, resolveWorkspace) {
   // Background watchdog: periodically check active runs for staleness.
+  // reapStaleRun() skips runs in the activeRuns map (they're "managed"),
+  // so the watchdog must evict stale entries first to allow reaping.
   if (!_reaperInterval) {
     _reaperInterval = setInterval(async () => {
-      for (const [_runId, entry] of activeRuns) {
+      for (const [runId, entry] of activeRuns) {
         try {
           const loopState = await loadLoopState(entry.workspace);
           const { isStale } = detectStaleness(loopState);
           if (isStale) {
+            // Force-cancel the stale in-memory entry so reapStaleRun proceeds.
+            entry.cancelToken.cancelled = true;
+            if (entry.agentPool) {
+              await entry.agentPool.killAll().catch(() => {});
+            }
+            activeRuns.delete(runId);
             await reapStaleRun(entry.workspace, loopState, isStale);
           }
         } catch {
