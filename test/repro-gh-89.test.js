@@ -190,7 +190,8 @@ test("CliAgent does NOT add resume patterns for gemini with resumeId", async () 
     ),
     "should include Gemini auth failure pattern",
   );
-  assert.equal(capturedOpts.killOnStderrPatterns.length, 5);
+  // 2 auth + 3 transient + 2 rate_limit = 7
+  assert.equal(capturedOpts.killOnStderrPatterns.length, 7);
 });
 
 // ---------------------------------------------------------------------------

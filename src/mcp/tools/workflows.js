@@ -444,7 +444,74 @@ async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
   };
 }
 
+let _reaperInterval = null;
+
+/**
+ * Reap orphaned runs from a previous server process on startup.
+ * In HTTP mode resolveWorkspace() requires an explicit workspace param,
+ * so this is a no-op there — orphaned HTTP runs are reaped lazily on
+ * the next status/start request for that workspace.
+ */
+async function reapOrphanedRunsOnStartup(resolveWorkspace) {
+  let ws;
+  try {
+    ws = resolveWorkspace();
+  } catch {
+    // HTTP mode (WORKSPACE_REQUIRED) or no default workspace — skip.
+    return;
+  }
+  try {
+    const loopState = await loadLoopState(ws);
+    if (!loopState.runId) return;
+    const { isStale } = detectStaleness(loopState);
+    if (isStale) {
+      await reapStaleRun(ws, loopState, isStale);
+    }
+  } catch {
+    /* best effort — workspace may not have loop-state yet */
+  }
+}
+
 export function registerWorkflowTools(server, resolveWorkspace) {
+  // Background watchdog: periodically check active runs for staleness.
+  // reapStaleRun() skips runs in the activeRuns map (they're "managed"),
+  // so the watchdog must evict stale entries first to allow reaping.
+  if (!_reaperInterval) {
+    _reaperInterval = setInterval(async () => {
+      for (const [runId, entry] of activeRuns) {
+        try {
+          const loopState = await loadLoopState(entry.workspace);
+          const { isStale } = detectStaleness(loopState);
+          if (isStale) {
+            // Force-cancel the stale in-memory entry so reapStaleRun proceeds.
+            entry.cancelToken.cancelled = true;
+            if (entry.agentPool) {
+              await entry.agentPool.killAll().catch(() => {});
+            }
+            // Evict from activeRuns first so the workspace is unblocked,
+            // then give the promise a bounded window to settle. If the
+            // runner is stuck in JS after agent kill, we don't block forever.
+            activeRuns.delete(runId);
+            if (entry.promise) {
+              const SETTLE_TIMEOUT_MS = 10_000;
+              await Promise.race([
+                entry.promise.catch(() => {}),
+                new Promise((r) => setTimeout(r, SETTLE_TIMEOUT_MS)),
+              ]);
+            }
+            await reapStaleRun(entry.workspace, loopState, isStale);
+          }
+        } catch {
+          /* best effort */
+        }
+      }
+    }, 60_000);
+    _reaperInterval.unref();
+  }
+
+  // Reap any orphaned runs left by a previous server process.
+  reapOrphanedRunsOnStartup(resolveWorkspace);
+
   server.registerTool(
     "coder_workflow",
     {
