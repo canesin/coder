@@ -728,7 +728,10 @@ export async function runDevelopLoop(opts, ctx) {
   } else {
     rawIssues = listResult.data.issues.slice(0, maxIssues);
   }
-  if (issueIds.length > 0) {
+  // Only validate issueIds for sources that support forced-ID lookup (local,
+  // github, gitlab). Remote/Linear goes through generic listing where the
+  // selector may not include all requested IDs.
+  if (issueIds.length > 0 && issueListSource === "forced") {
     const foundIds = new Set(rawIssues.map((i) => String(i.id).toLowerCase()));
     const missing = issueIds.filter(
       (id) => !foundIds.has(String(id).toLowerCase()),

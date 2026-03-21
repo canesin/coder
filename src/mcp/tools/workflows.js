@@ -488,6 +488,11 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             if (entry.agentPool) {
               await entry.agentPool.killAll().catch(() => {});
             }
+            // Wait for the old run's promise to settle before evicting,
+            // so the old workflow fully unwinds before a replacement can start.
+            if (entry.promise) {
+              await entry.promise.catch(() => {});
+            }
             activeRuns.delete(runId);
             await reapStaleRun(entry.workspace, loopState, isStale);
           }
