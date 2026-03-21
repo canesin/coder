@@ -382,3 +382,133 @@ test("forced local issues preserve order through develop loop queue", async () =
     rmSync(ws, { recursive: true, force: true });
   }
 });
+
+test("runDevelopLoop returns failed when explicit issueIds are not found", async () => {
+  const { execSync } = await import("node:child_process");
+  const { runDevelopLoop } = await import(
+    "../src/workflows/develop.workflow.js"
+  );
+
+  const ws = mkdtempSync(path.join(os.tmpdir(), "missing-ids-"));
+  mkdirSync(path.join(ws, ".coder", "artifacts"), { recursive: true });
+  mkdirSync(path.join(ws, ".coder", "logs"), { recursive: true });
+  execSync("git init", { cwd: ws, stdio: "ignore" });
+  execSync("git config user.email test@example.com", {
+    cwd: ws,
+    stdio: "ignore",
+  });
+  execSync("git config user.name 'Test User'", { cwd: ws, stdio: "ignore" });
+  execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
+
+  // Manifest with only issue "A"
+  const issuesDir = path.join(ws, ".coder", "local-issues");
+  const issuesSubdir = path.join(issuesDir, "issues");
+  mkdirSync(issuesSubdir, { recursive: true });
+  writeFileSync(
+    path.join(issuesDir, "manifest.json"),
+    JSON.stringify({
+      issues: [
+        { id: "A", file: "issues/A.md", title: "Only A", difficulty: 1 },
+      ],
+    }),
+  );
+  writeFileSync(path.join(issuesSubdir, "A.md"), "# A\n\nDetails.");
+
+  try {
+    const ctx = {
+      workspaceDir: ws,
+      repoPath: ".",
+      artifactsDir: path.join(ws, ".coder", "artifacts"),
+      scratchpadDir: path.join(ws, ".coder", "scratchpad"),
+      cancelToken: { cancelled: false, paused: false },
+      log: () => {},
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+        },
+      },
+      agentPool: null,
+      secrets: {},
+    };
+
+    // Request issue IDs that don't exist in the manifest
+    const result = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        issueIds: ["MISSING-01", "MISSING-02"],
+      },
+      ctx,
+    );
+
+    assert.equal(result.status, "failed");
+    assert.match(result.error, /MISSING-01/);
+    assert.match(result.error, /MISSING-02/);
+    assert.equal(result.results.length, 0);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("runDevelopLoop returns failed when local manifest has no valid issues and no explicit issueIds", async () => {
+  const { execSync } = await import("node:child_process");
+  const { runDevelopLoop } = await import(
+    "../src/workflows/develop.workflow.js"
+  );
+
+  const ws = mkdtempSync(path.join(os.tmpdir(), "empty-issues-"));
+  mkdirSync(path.join(ws, ".coder", "artifacts"), { recursive: true });
+  mkdirSync(path.join(ws, ".coder", "logs"), { recursive: true });
+  execSync("git init -b main", { cwd: ws, stdio: "ignore" });
+  execSync("git config user.email test@example.com", {
+    cwd: ws,
+    stdio: "ignore",
+  });
+  execSync("git config user.name 'Test User'", { cwd: ws, stdio: "ignore" });
+  execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
+
+  // Empty manifest — loadLocalIssues returns null for empty issues
+  const issuesDir = path.join(ws, ".coder", "local-issues");
+  mkdirSync(issuesDir, { recursive: true });
+  writeFileSync(
+    path.join(issuesDir, "manifest.json"),
+    JSON.stringify({ issues: [] }),
+  );
+
+  try {
+    const ctx = {
+      workspaceDir: ws,
+      repoPath: ".",
+      artifactsDir: path.join(ws, ".coder", "artifacts"),
+      scratchpadDir: path.join(ws, ".coder", "scratchpad"),
+      cancelToken: { cancelled: false, paused: false },
+      log: () => {},
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+        },
+      },
+      agentPool: null,
+      secrets: {},
+    };
+
+    // Empty manifest → issue-list machine throws → develop loop returns failed
+    const result = await runDevelopLoop(
+      { issueSource: "local", localIssuesDir: issuesDir },
+      ctx,
+    );
+
+    assert.equal(result.status, "failed");
+    assert.match(result.error, /no valid manifest/);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});

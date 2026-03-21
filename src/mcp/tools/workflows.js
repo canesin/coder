@@ -444,7 +444,47 @@ async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
   };
 }
 
+let _reaperInterval = null;
+
+/**
+ * Reap orphaned runs from a previous server process on startup.
+ */
+async function reapOrphanedRunsOnStartup(resolveWorkspace) {
+  try {
+    const ws = resolveWorkspace();
+    const loopState = await loadLoopState(ws);
+    if (!loopState.runId) return;
+    const { isStale } = detectStaleness(loopState);
+    if (isStale) {
+      await reapStaleRun(ws, loopState, isStale);
+    }
+  } catch {
+    /* best effort — workspace may not exist yet */
+  }
+}
+
 export function registerWorkflowTools(server, resolveWorkspace) {
+  // Background watchdog: periodically check active runs for staleness.
+  if (!_reaperInterval) {
+    _reaperInterval = setInterval(async () => {
+      for (const [_runId, entry] of activeRuns) {
+        try {
+          const loopState = await loadLoopState(entry.workspace);
+          const { isStale } = detectStaleness(loopState);
+          if (isStale) {
+            await reapStaleRun(entry.workspace, loopState, isStale);
+          }
+        } catch {
+          /* best effort */
+        }
+      }
+    }, 60_000);
+    _reaperInterval.unref();
+  }
+
+  // Reap any orphaned runs left by a previous server process.
+  reapOrphanedRunsOnStartup(resolveWorkspace);
+
   server.registerTool(
     "coder_workflow",
     {

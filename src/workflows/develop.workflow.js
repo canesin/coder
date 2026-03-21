@@ -286,9 +286,19 @@ export async function runDevelopPipeline(opts, ctx) {
   const start = Date.now();
   const allResults = [];
 
+  let lastHeartbeatWrite = 0;
+  const throttledHeartbeat = () => {
+    const now = Date.now();
+    if (now - lastHeartbeatWrite > 30_000) {
+      lastHeartbeatWrite = now;
+      updateHeartbeat(ctx);
+    }
+  };
+
   const runner = new WorkflowRunner({
     name: "develop",
     workflowContext: ctx,
+    onHeartbeat: throttledHeartbeat,
     onStageChange: (stage) => {
       ctx.log({ event: "develop_stage", stage });
     },
@@ -411,6 +421,7 @@ export async function runDevelopPipeline(opts, ctx) {
       const phase3Runner = new WorkflowRunner({
         name: "develop",
         workflowContext: ctx,
+        onHeartbeat: throttledHeartbeat,
         onStageChange: (stage) => {
           ctx.log({ event: "develop_stage", stage });
         },
@@ -714,6 +725,21 @@ export async function runDevelopLoop(opts, ctx) {
     rawIssues = listResult.data.issues.slice(0, maxIssues);
   }
   if (rawIssues.length === 0) {
+    if (issueIds.length > 0) {
+      ctx.log({
+        event: "requested_issues_not_found",
+        issueIds,
+        source: issueListSource,
+      });
+      return {
+        status: "failed",
+        error: `Requested issue IDs not found: ${issueIds.join(", ")}`,
+        results: [],
+        completed: 0,
+        failed: 0,
+        skipped: 0,
+      };
+    }
     return {
       status: "completed",
       results: [],

@@ -80,12 +80,29 @@ export function registerMachineTools(server, resolveWorkspace) {
         inputSchema: inputProps,
         annotations: machine.mcpAnnotations,
       },
-      async (params) => {
+      async (params, extra) => {
         let ctx;
         try {
           const ws = resolveWorkspace(params.workspace);
           const { workspace: _ws, ...machineInput } = params;
           ctx = buildStandaloneContext(ws, machineInput);
+
+          // Wire MCP abort signal to cancel token so client-side
+          // timeouts/cancellations propagate into running machines.
+          if (extra?.signal) {
+            if (extra.signal.aborted) {
+              ctx.cancelToken.cancelled = true;
+            } else {
+              extra.signal.addEventListener(
+                "abort",
+                () => {
+                  ctx.cancelToken.cancelled = true;
+                  if (ctx.agentPool) ctx.agentPool.killAll().catch(() => {});
+                },
+                { once: true },
+              );
+            }
+          }
 
           const result = await machine.run(machineInput, ctx);
 
