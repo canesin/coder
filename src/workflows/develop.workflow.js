@@ -179,12 +179,8 @@ export async function runPlanLoop(
           roundsUsed: round + 1,
           maxRounds,
         });
-        return {
-          status: "failed",
-          error: "plan_review_exhausted",
-          planReviewExhausted: true,
-          results: allResults,
-        };
+        // Proceed with the last plan — let the programmer decide
+        break;
       }
       break;
     }
@@ -1255,28 +1251,6 @@ export async function runDevelopLoop(opts, ctx) {
             "issue_deferred",
             "",
             { status: "deferred" },
-            issueEnv,
-          );
-          return "deferred";
-        }
-        if (pipelineResult.planReviewExhausted) {
-          ctx.log({
-            event: "issue_deferred_plan_blocked",
-            issueId: issue.id,
-            reason: "plan_review_exhausted",
-          });
-          loopState.issueQueue[i].status = "deferred";
-          loopState.issueQueue[i].error = errText;
-          loopState.issueQueue[i].deferredReason = "plan_blocked";
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-          runHooks(
-            ctx,
-            loopRunId,
-            "issue_deferred",
-            "",
-            { status: "deferred", reason: "plan_blocked" },
             issueEnv,
           );
           return "deferred";
