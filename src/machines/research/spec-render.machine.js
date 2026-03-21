@@ -168,8 +168,8 @@ function renderArchitecture(domains) {
 export default defineMachine({
   name: "research.spec_render",
   description:
-    "Renders spec documents (build mode) or skips to issue generation (ingest mode). " +
-    "Both modes write issue markdown files and a bridge manifest for the develop workflow.",
+    "Renders spec documents (build mode) or skips to issue generation (ingest/update mode). " +
+    "All modes write issue markdown files and a bridge manifest for the develop workflow.",
   inputSchema: z.object({
     runDir: z.string().min(1),
     stepsDir: z.string().min(1),
@@ -178,7 +178,7 @@ export default defineMachine({
     pipelinePath: z.string().min(1),
     repoRoot: z.string().min(1),
     repoPath: z.string().default("."),
-    mode: z.enum(["build", "ingest"]),
+    mode: z.enum(["build", "ingest", "update"]),
     domains: z.array(z.any()).default([]),
     decisions: z.array(z.any()).default([]),
     phases: z.array(z.any()).default([]),

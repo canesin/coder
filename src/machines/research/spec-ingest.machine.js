@@ -14,12 +14,13 @@ import {
 export default defineMachine({
   name: "research.spec_ingest",
   description:
-    "Spec-build pipeline entry point: determines mode (build vs ingest) and collects input data. " +
-    "Provide existingSpecDir for ingest mode or researchRunId for build mode.",
+    "Spec-build pipeline entry point: determines mode (build, ingest, or update) and collects input data. " +
+    "Provide existingSpecDir for ingest mode, researchRunId for build mode, or updateDoc + existingSpecDir for update mode.",
   inputSchema: z.object({
     repoPath: z.string().default("."),
     existingSpecDir: z.string().default(""),
     researchRunId: z.string().default(""),
+    updateDoc: z.string().default(""),
   }),
 
   async execute(input, ctx) {
@@ -38,6 +39,80 @@ export default defineMachine({
       "spec_ingest",
       {},
     );
+
+    // UPDATE mode: updateDoc + existingSpecDir together
+    if (input.updateDoc && input.existingSpecDir) {
+      const specDir = path.resolve(ctx.workspaceDir, input.existingSpecDir);
+      if (!existsSync(specDir)) {
+        throw new Error(`existingSpecDir does not exist: ${specDir}`);
+      }
+      const updateDocPath = path.resolve(ctx.workspaceDir, input.updateDoc);
+      if (!existsSync(updateDocPath)) {
+        throw new Error(`updateDoc does not exist: ${updateDocPath}`);
+      }
+
+      const updateDocContent = readFileSync(updateDocPath, "utf8");
+
+      // Read all spec markdown files as raw text (no rigid parsing)
+      const specFiles = readdirSync(specDir)
+        .filter((f) => f.endsWith(".md"))
+        .sort()
+        .map((f) => ({
+          name: f,
+          content: readFileSync(path.join(specDir, f), "utf8"),
+        }));
+
+      // Also read markdown from subdirectories (decisions/, phases/) if present
+      for (const subdir of ["decisions", "phases"]) {
+        const subdirPath = path.join(specDir, subdir);
+        if (existsSync(subdirPath)) {
+          for (const f of readdirSync(subdirPath)
+            .filter((f) => f.endsWith(".md"))
+            .sort()) {
+            specFiles.push({
+              name: `${subdir}/${f}`,
+              content: readFileSync(path.join(subdirPath, f), "utf8"),
+            });
+          }
+        }
+      }
+
+      endPipelineStep(
+        pipeline,
+        pipelinePath,
+        scratchpadPath,
+        "spec_ingest",
+        "completed",
+        {
+          mode: "update",
+          specFiles: specFiles.length,
+          updateDocChars: updateDocContent.length,
+        },
+      );
+      appendScratchpad(scratchpadPath, "Spec Ingest (update mode)", [
+        `- specDir: ${specDir}`,
+        `- updateDoc: ${updateDocPath}`,
+        `- specFiles: ${specFiles.length}`,
+        `- updateDocChars: ${updateDocContent.length}`,
+      ]);
+
+      return {
+        status: "ok",
+        data: {
+          runId,
+          runDir,
+          stepsDir,
+          issuesDir,
+          scratchpadPath,
+          pipelinePath,
+          repoRoot,
+          repoPath: input.repoPath || ".",
+          mode: "update",
+          updateDocContent,
+          specFiles,
+        },
+      };
+    }
 
     if (input.existingSpecDir) {
       const specDir = path.resolve(ctx.workspaceDir, input.existingSpecDir);
@@ -243,7 +318,7 @@ export default defineMachine({
     }
 
     throw new Error(
-      "spec_ingest requires either existingSpecDir or researchRunId",
+      "spec_ingest requires either existingSpecDir (with optional updateDoc) or researchRunId",
     );
   },
 });

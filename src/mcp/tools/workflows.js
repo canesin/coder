@@ -592,6 +592,12 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           .describe(
             "Spec-build start-only: research run ID whose output to synthesize",
           ),
+        updateDoc: z
+          .string()
+          .default("")
+          .describe(
+            "Spec-build start-only: path to update document (use with existingSpecDir for update mode)",
+          ),
         // Events pagination
         afterSeq: z
           .number()
@@ -948,6 +954,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                     repoPath: params.repoPath,
                     existingSpecDir: params.existingSpecDir,
                     researchRunId: params.researchRunId,
+                    updateDoc: params.updateDoc,
                   },
                   workflowCtx,
                 );

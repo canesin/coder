@@ -30,6 +30,7 @@ export async function runSpecBuildPipeline(opts, ctx) {
         repoPath: opts.repoPath || ".",
         existingSpecDir: opts.existingSpecDir || "",
         researchRunId: opts.researchRunId || "",
+        updateDoc: opts.updateDoc || "",
       }),
     },
     {
@@ -46,6 +47,8 @@ export async function runSpecBuildPipeline(opts, ctx) {
         parsedDecisions: prev.data.parsedDecisions || [],
         parsedGaps: prev.data.parsedGaps || [],
         parsedPhases: prev.data.parsedPhases || [],
+        updateDocContent: prev.data.updateDocContent || "",
+        specFiles: prev.data.specFiles || [],
       }),
     },
     {
