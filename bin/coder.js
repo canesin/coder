@@ -731,9 +731,22 @@ async function runDebugEnvCli() {
     timeout: 5000,
   });
 
+  // Redact values of known secret env vars to avoid leaking credentials
+  const secretKeyPatterns =
+    /^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|GEMINI_API_KEY|GOOGLE_API_KEY|OPENAI_API_KEY|LINEAR_API_KEY|GITHUB_TOKEN|GH_TOKEN|OPENROUTER_API_KEY)=/i;
+  const redactEnvOutput = (raw) =>
+    raw
+      .split("\n")
+      .map((line) =>
+        secretKeyPatterns.test(line)
+          ? line.replace(/=.*/, "=<redacted>")
+          : line,
+      )
+      .join("\n");
+
   process.stdout.write("=== Env that agent subprocesses receive ===\n\n");
   if (res.status === 0) {
-    process.stdout.write(res.stdout || "(empty)\n");
+    process.stdout.write(redactEnvOutput(res.stdout || "(empty)") + "\n");
   } else {
     process.stdout.write(`(bash failed: ${res.stderr || res.status})\n`);
   }

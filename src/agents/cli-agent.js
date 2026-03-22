@@ -26,7 +26,7 @@ export const CLAUDE_RESUME_FAILURE_PATTERNS = [
   { pattern: "Invalid session ID", category: "auth" },
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
-  { pattern: "already in use", category: "auth" }, // "Session ID X is already in use", --resume variants (claude-code #5524)
+  { pattern: "is already in use", category: "auth" }, // "Session ID X is already in use", --resume variants (claude-code #5524)
 ];
 const CODEX_RESUME_FAILURE_PATTERNS = [
   { pattern: "session not found", category: "auth" },

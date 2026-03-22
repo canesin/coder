@@ -111,7 +111,7 @@ test("claude: session auth patterns include 'already in use' for collision detec
       sessionCollisionError.toLowerCase().includes(p.pattern.toLowerCase()),
   );
   assert.ok(match, "should have pattern matching session ID collision error");
-  assert.equal(match.pattern, "already in use");
+  assert.equal(match.pattern, "is already in use");
 });
 
 test("codex: default command uses bypass flag and skips full-auto", () => {
