@@ -160,7 +160,7 @@ export function detectRemoteType(repoDir, remoteName = "origin") {
 
 export { DEFAULT_PASS_ENV };
 
-/** Default API key env names when a model entry omits apiKeyEnv (Zod leaves it ""). */
+/** Default API key env names when a model entry omits apiKeyEnv entirely. */
 const DEFAULT_MODEL_KEY_ENV = {
   gemini: "GEMINI_API_KEY",
   claude: "ANTHROPIC_API_KEY",
@@ -175,10 +175,12 @@ function modelApiKeyEnvNames(config) {
   for (const role of ["gemini", "claude", "codex"]) {
     const entry = models[role];
     if (!entry || typeof entry !== "object") continue;
-    let name = entry.apiKeyEnv;
-    if (typeof name !== "string" || !name.trim()) {
-      name = DEFAULT_MODEL_KEY_ENV[role];
-    }
+    // Only fall back to the built-in default when apiKeyEnv is undefined
+    // (omitted).  An explicit empty string means "don't forward any key".
+    const name =
+      entry.apiKeyEnv === undefined
+        ? DEFAULT_MODEL_KEY_ENV[role]
+        : entry.apiKeyEnv;
     if (typeof name === "string" && name.trim()) out.push(name.trim());
   }
   return out;
@@ -405,10 +407,12 @@ export function extractGeminiPayloadJson(stdout) {
     return parsed;
   }
 
+  // Direct issues payload (no envelope wrapper)
   if (isIssuesPayloadShape(parsed)) {
     return parsed;
   }
 
+  // Standard envelope: { response: "..." }
   if (typeof parsed.response === "string") {
     /** @type {unknown} */
     let lastInnerError;
@@ -416,6 +420,7 @@ export function extractGeminiPayloadJson(stdout) {
       return extractJson(parsed.response);
     } catch (e) {
       lastInnerError = e;
+      // Some envelopes encode escaped newlines (e.g. "\\n") literally.
       try {
         const normalized = parsed.response
           .replace(/\\r\\n/g, "\n")
@@ -433,11 +438,17 @@ export function extractGeminiPayloadJson(stdout) {
     throw err;
   }
 
+  // Session envelope: { session_id: "...", response: ... }
   if (
     typeof (/** @type {{ session_id?: unknown }} */ (parsed).session_id) ===
     "string"
   ) {
-    if (isIssuesPayloadShape(parsed.response)) {
+    // Return any non-null object payload (issues, web-research, poc-runner, etc.)
+    if (
+      parsed.response &&
+      typeof parsed.response === "object" &&
+      !Array.isArray(parsed.response)
+    ) {
       return /** @type {object} */ (parsed.response);
     }
     let preview;
@@ -681,9 +692,13 @@ Reference specific sections in the plan when identifying over-engineering.`;
   const result = spawnSync("bash", ["-lc", cmd], {
     cwd: repoDir,
     encoding: "utf8",
-    timeout: 300000, // 5 minute timeout
+    timeout: 900000, // 15 minute timeout
     maxBuffer: 10 * 1024 * 1024, // 10MB buffer
   });
+
+  // Detect timeout: spawnSync sets status=null, signal='SIGTERM' on timeout
+  const timedOut =
+    result.signal === "SIGTERM" || result.error?.code === "ETIMEDOUT";
 
   const output = (result.stdout || "") + (result.stderr || "");
   // Two-pass sanitization: strip leading noise first, then remove any remaining
@@ -699,7 +714,13 @@ Reference specific sections in the plan when identifying over-engineering.`;
     critique = critiqueLines.slice(firstHeader).join("\n").trim();
   }
 
-  writeFileSync(critiquePath, critique + "\n");
+  if (timedOut) {
+    const partial = critique || "(review timed out — no output captured)";
+    writeFileSync(critiquePath, `${partial}\n`);
+    return 1;
+  }
+
+  writeFileSync(critiquePath, `${critique}\n`);
   return result.status ?? 0;
 }
 
@@ -899,4 +920,64 @@ export async function runHostTests(
   throw new Error(
     `No tests detected for repo ${repoDir}. Pass --test-cmd "..." or --allow-no-tests.`,
   );
+}
+
+/**
+ * Parse `<!-- spec-meta ... -->` HTML comment blocks into key-value pairs.
+ * @param {string} text - Markdown document content
+ * @returns {Record<string, string>} Parsed metadata (empty object if no block found)
+ */
+export function parseSpecMeta(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  const match = normalized.match(/<!--\s*spec-meta\n([\s\S]*?)-->/);
+  if (!match) return {};
+  const result = {};
+  for (const line of match[1].split("\n")) {
+    const sep = line.indexOf(":");
+    if (sep === -1) continue;
+    const key = line.slice(0, sep).trim();
+    const value = line.slice(sep + 1).trim();
+    if (key && value) result[key] = value;
+  }
+  return result;
+}
+
+/**
+ * Extract the `status` field from an `<!-- adr-meta ... -->` HTML comment block.
+ * @param {string} text - ADR markdown document content
+ * @returns {string | null} The status value, or null if no block/status found
+ */
+export function parseAdrStatus(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  const match = normalized.match(/<!--\s*adr-meta\n([\s\S]*?)-->/);
+  if (!match) return null;
+  for (const line of match[1].split("\n")) {
+    const sep = line.indexOf(":");
+    if (sep === -1) continue;
+    const key = line.slice(0, sep).trim();
+    const value = line.slice(sep + 1).trim();
+    if (key === "status" && value) return value;
+  }
+  return null;
+}
+
+/**
+ * Parse gap checklist items from spec markdown (e.g. `- [ ] **1. Gap** — Desc. Domain: X. Severity: Y.`).
+ * @param {string} text - Spec document content
+ * @returns {Array<{description: string, domain: string, severity: string, status: "open"|"done"}>}
+ */
+export function parseSpecGaps(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n");
+  const gaps = [];
+  const re =
+    /^-\s+\[([ x])\]\s+\*\*\d+\.\s+[^*]+\*\*\s*—\s*(.+?)\s*Domain:\s*(.+?)\.?\s*Severity:\s*(\S+?)\.?\s*$/gm;
+  for (const m of normalized.matchAll(re)) {
+    gaps.push({
+      description: m[2].trim(),
+      domain: m[3].replace(/\.$/, ""),
+      severity: m[4].replace(/\.$/, ""),
+      status: m[1] === "x" ? "done" : "open",
+    });
+  }
+  return gaps;
 }

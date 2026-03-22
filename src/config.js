@@ -11,7 +11,7 @@ const modelNameRegex = /^[a-zA-Z0-9._/:-]+$/;
 export const ModelEntrySchema = z.object({
   model: z.string().regex(modelNameRegex, "Invalid model name"),
   apiEndpoint: z.string().default(""),
-  apiKeyEnv: z.string().default(""),
+  apiKeyEnv: z.string().optional(),
 });
 
 /** Preset defaults for ppcommit check strictness levels. */
@@ -257,6 +257,13 @@ export const CoderConfigSchema = z.object({
       maxMachineRetries: z.number().int().min(0).default(2),
       retryBackoffMs: z.number().int().min(0).default(5000),
       maxPlanRevisions: z.number().int().min(1).max(10).default(3),
+      /** Cap how many fetched issues are embedded in the issue-selector LLM prompt. */
+      issueListPromptMaxIssues: z
+        .number()
+        .int()
+        .positive()
+        .max(1000)
+        .default(50),
       issueSource: z
         .enum(["github", "linear", "gitlab", "local"])
         .default("github"),

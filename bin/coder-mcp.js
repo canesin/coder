@@ -50,6 +50,7 @@ import { createWorkspaceResolver } from "../src/mcp/workspace.js";
 import { registerDesignMachines } from "../src/workflows/design.workflow.js";
 import { registerDevelopMachines } from "../src/workflows/develop.workflow.js";
 import { registerResearchMachines } from "../src/workflows/research.workflow.js";
+import { registerSpecBuildMachines } from "../src/workflows/spec-build.workflow.js";
 
 function usage() {
   return `coder-mcp
@@ -120,6 +121,7 @@ function buildServer(defaultWorkspace, { httpMode = false } = {}) {
   registerDevelopMachines();
   registerResearchMachines();
   registerDesignMachines();
+  registerSpecBuildMachines();
   registerSharedMachines();
   registerMachineTools(server, resolveWorkspace);
   registerWorkflowTools(server, resolveWorkspace);

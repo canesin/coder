@@ -44,7 +44,7 @@ From ideas + UI specs, produces GitHub issues organized as Epics/User Stories.
 - \`coder_research_deep_research\` — Web search, article analysis, repo mining
 - \`coder_research_poc_validation\` — Build PoC, benchmark, validate
 - \`coder_research_issue_synthesis\` — Draft/critique issues with iterative refinement
-- \`coder_research_spec_publish\` — Render markdown issues + manifest
+- \`coder_research_issue_publish\` — Render markdown issues + manifest
 
 **Or use the workflow tool:**
 \`coder_workflow { action: "start", workflow: "research", pointers: "..." }\`

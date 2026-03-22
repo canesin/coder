@@ -189,17 +189,6 @@ test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
   assert.ok(r.includes("OPENROUTER_API_KEY"));
 });
 
-test("resolvePassEnv uses default key env when models.gemini omits apiKeyEnv", () => {
-  const config = {
-    models: {
-      gemini: { model: "gemini-2.5-flash", apiEndpoint: "", apiKeyEnv: "" },
-    },
-    sandbox: { passEnv: [], passEnvPatterns: [] },
-  };
-  const r = resolvePassEnv(config);
-  assert.ok(r.includes("GEMINI_API_KEY"));
-});
-
 test("resolvePassEnv merges passEnvPatterns matches from env", () => {
   const config = {
     sandbox: {
@@ -350,13 +339,21 @@ test("extractGeminiPayloadJson unwraps object response on envelope when it match
   assert.deepEqual(parsed, inner);
 });
 
-test("extractGeminiPayloadJson throws when envelope response object is not a usable issues payload", () => {
+test("extractGeminiPayloadJson returns non-issues object payloads from session envelopes", () => {
   const stdout = JSON.stringify({
     session_id: "abc",
-    response: { foo: 1 },
+    response: { references: ["a"], searchSummary: "ok" },
     stats: {},
   });
+  const result = extractGeminiPayloadJson(stdout);
+  assert.deepStrictEqual(result, { references: ["a"], searchSummary: "ok" });
+});
 
+test("extractGeminiPayloadJson throws when session envelope response is null", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: null,
+  });
   assert.throws(
     () => extractGeminiPayloadJson(stdout),
     (err) => {
@@ -365,10 +362,31 @@ test("extractGeminiPayloadJson throws when envelope response object is not a usa
         err.message,
         /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
       );
-      assert.match(err.message, /"foo":1/);
       return true;
     },
   );
+});
+
+test("resolvePassEnv uses default key env when models.gemini omits apiKeyEnv", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GEMINI_API_KEY"));
+});
+
+test("resolvePassEnv skips key env when apiKeyEnv is explicitly empty", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "", apiKeyEnv: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(!r.includes("GEMINI_API_KEY"));
 });
 
 test("gitCleanOrThrow automatically ignores .gemini/ directory", () => {

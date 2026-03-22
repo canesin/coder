@@ -820,6 +820,23 @@ export async function runDevelopLoop(opts, ctx) {
   } else {
     rawIssues = listResult.data.issues.slice(0, maxIssues);
   }
+
+  if (issueIds.length > 0) {
+    const foundSet = new Set(
+      rawIssues.map((i) => String(i.id).toLowerCase()),
+    );
+    const missing = issueIds.filter(
+      (id) => !foundSet.has(String(id).toLowerCase()),
+    );
+    if (missing.length > 0) {
+      return {
+        status: "failed",
+        error: `Requested issue ID(s) not found: ${missing.join(", ")}`,
+        results: [],
+      };
+    }
+  }
+
   if (rawIssues.length === 0) {
     return {
       status: "completed",

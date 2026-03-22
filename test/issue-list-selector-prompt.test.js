@@ -44,6 +44,20 @@ test("slimGithubIssuesForPrompt: caps count and drops comments", () => {
   assert.deepEqual(slim[0].labels, ["bug"]);
 });
 
+test("slimGithubIssuesForPrompt: label with empty-string name uses empty string not toString", () => {
+  const raw = [
+    {
+      number: 1,
+      title: "A",
+      body: "b",
+      labels: [{ name: "" }, { name: "bug" }, "plain"],
+      url: "https://g/1",
+    },
+  ];
+  const slim = slimGithubIssuesForPrompt(raw, 10);
+  assert.deepEqual(slim[0].labels, ["", "bug", "plain"]);
+});
+
 test("slimGitlabIssuesForPrompt: caps count and truncates description", () => {
   const raw = [
     {

@@ -38,6 +38,8 @@ const GEMINI_TRANSIENT_FAILURE_PATTERNS = [
   { pattern: "An unexpected critical error occurred", category: "transient" },
   { pattern: "fetch failed sending request", category: "transient" },
   { pattern: "Error when talking to Gemini API", category: "transient" },
+  { pattern: "exceeded your current quota", category: "rate_limit" },
+  { pattern: "RESOURCE_EXHAUSTED", category: "rate_limit" },
 ];
 const CODEX_FAILURE_PATTERNS = [
   { pattern: "org.freedesktop.secrets", category: "auth" },

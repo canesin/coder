@@ -18,8 +18,14 @@ import {
   runPpcommitNative,
 } from "../src/ppcommit.js";
 
-/** Config to bypass gitleaks so tests exercise TODO/markdown/parser behavior. */
+/** Config to bypass gitleaks so tests exercise comment-lint/markdown/parser behavior. */
 const NO_GITLEAKS = { blockSecrets: false };
+
+const EMOJI_SMILE = 0x1f642;
+const PROBE_TIMEOUT_MS = 5000;
+const SUBPROCESS_TIMEOUT_MS = 15000;
+const FILE_MODE_NON_EXECUTABLE = 0o644;
+const FILE_MODE_EXECUTABLE = 0o755;
 
 function run(cmd, args, cwd) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8" });
@@ -81,7 +87,7 @@ test("ppcommit: does not flag edits to existing markdown", async () => {
 test("ppcommit: treatWarningsAsErrors upgrades warnings", async () => {
   const repo = makeRepo();
   // Emoji in code should be a warning by default.
-  const smile = String.fromCodePoint(0x1f642);
+  const smile = String.fromCodePoint(EMOJI_SMILE);
   writeFileSync(path.join(repo, "a.js"), `// hello ${smile}\n`, "utf8");
   const r = await runPpcommitNative(repo, {
     ...NO_GITLEAKS,
@@ -286,7 +292,7 @@ function gitleaksSpawnSkipReason() {
     symlinkSync(gitPath, path.join(probeDir, path.basename(gitPath)));
     const probe = spawnSync(process.execPath, ["-e", "0"], {
       encoding: "utf8",
-      timeout: 5000,
+      timeout: PROBE_TIMEOUT_MS,
       env: { ...process.env, PATH: probeDir, NODE_ENV: "test" },
     });
     if (probe.error) return `spawn fails (${probe.error.code})`;
@@ -297,6 +303,26 @@ function gitleaksSpawnSkipReason() {
 }
 
 const gitleaksSpawnSkip = gitleaksSpawnSkipReason();
+
+/** Probe: can we execute a shell script from tmpdir? noexec mounts block this. */
+function tmpNoexecSkipReason() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-noexec-probe-"));
+  try {
+    const script = path.join(dir, "probe");
+    writeFileSync(script, "#!/bin/sh\nexit 0\n", "utf8");
+    chmodSync(script, FILE_MODE_EXECUTABLE);
+    const r = spawnSync(script, [], {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
+    });
+    if (r.error) return `tmpdir noexec (${r.error.code})`;
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const tmpNoexecSkip = tmpNoexecSkipReason();
 
 test("ppcommit: gitleaks missing from PATH produces actionable error", {
   skip: gitleaksSpawnSkip,
@@ -323,7 +349,7 @@ test("ppcommit: gitleaks missing from PATH produces actionable error", {
   `;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
-    timeout: 15000,
+    timeout: SUBPROCESS_TIMEOUT_MS,
     env: { ...process.env, PATH: restrictedPath, NODE_ENV: "test" },
   });
   if (r.error) {
@@ -338,8 +364,20 @@ test("ppcommit: gitleaks missing from PATH produces actionable error", {
     "should return exitCode 1 when gitleaks missing",
   );
   assert.match(out, /gitleaks binary not found in PATH/);
-  assert.match(out, /gitleaks\/gitleaks/);
-  assert.match(out, /blockSecrets/);
+  assert.match(
+    out,
+    new RegExp(
+      `PATH searched: ${restrictedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+    ),
+  );
+  assert.match(
+    out,
+    /Install: https:\/\/github\.com\/gitleaks\/gitleaks#installing/,
+  );
+  assert.match(
+    out,
+    /To disable: set "blockSecrets": false in ppcommit config \(coder\.json\)/,
+  );
 });
 
 test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
@@ -356,7 +394,7 @@ test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
 
   const gitleaksPath = path.join(binDir, "gitleaks");
   writeFileSync(gitleaksPath, "#!/bin/sh\nexit 0\n", "utf8");
-  chmodSync(gitleaksPath, 0o644);
+  chmodSync(gitleaksPath, FILE_MODE_NON_EXECUTABLE);
 
   const srcPath = path.resolve(import.meta.dirname, "..", "src", "ppcommit.js");
   const script = `
@@ -372,7 +410,7 @@ test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
   const restrictedPath = `${binDir}:/usr/bin:/bin`;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
-    timeout: 15000,
+    timeout: SUBPROCESS_TIMEOUT_MS,
     env: { ...process.env, PATH: restrictedPath, NODE_ENV: "test" },
   });
   if (r.error) {
@@ -387,6 +425,74 @@ test("ppcommit: gitleaks not executable (EACCES) produces actionable error", {
     "should return exitCode 1 when gitleaks not executable",
   );
   assert.match(out, /gitleaks binary not found in PATH/);
-  assert.match(out, /gitleaks\/gitleaks/);
-  assert.match(out, /blockSecrets/);
+  assert.match(
+    out,
+    new RegExp(
+      `PATH searched: ${restrictedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+    ),
+  );
+  assert.match(
+    out,
+    /Install: https:\/\/github\.com\/gitleaks\/gitleaks#installing/,
+  );
+  assert.match(
+    out,
+    /To disable: set "blockSecrets": false in ppcommit config \(coder\.json\)/,
+  );
+});
+
+test("ppcommit: gitleaks version check failure produces distinct error", {
+  skip: gitleaksSpawnSkip || tmpNoexecSkip,
+}, async () => {
+  const repo = makeRepo();
+  writeFileSync(path.join(repo, "a.js"), "const x = 1;\n", "utf8");
+
+  const binDir = mkdtempSync(path.join(os.tmpdir(), "coder-gitleaks-fail-"));
+  const gitPath = spawnSync("which", ["git"], { encoding: "utf8" })
+    .stdout?.trim()
+    ?.split(/\r?\n/)[0];
+  assert.ok(gitPath, "git must be resolvable for this test");
+  symlinkSync(gitPath, path.join(binDir, path.basename(gitPath)));
+
+  // Fake gitleaks that is executable but exits non-zero
+  const gitleaksPath = path.join(binDir, "gitleaks");
+  writeFileSync(
+    gitleaksPath,
+    "#!/bin/sh\necho 'bad version' >&2\nexit 1\n",
+    "utf8",
+  );
+  chmodSync(gitleaksPath, FILE_MODE_EXECUTABLE);
+
+  const srcPath = path.resolve(import.meta.dirname, "..", "src", "ppcommit.js");
+  const script = `
+    import { runPpcommitNative } from ${JSON.stringify("file://" + srcPath)};
+    const result = await runPpcommitNative(${JSON.stringify(repo)}, { blockSecrets: true });
+    if (result.exitCode !== 0) {
+      process.stdout.write(result.stderr);
+    } else {
+      process.stdout.write("NO_ERROR");
+    }
+  `;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    timeout: SUBPROCESS_TIMEOUT_MS,
+    env: { ...process.env, PATH: binDir, NODE_ENV: "test" },
+  });
+  if (r.error) {
+    throw new Error(
+      `Subprocess failed to spawn: ${r.error.code || r.error.message}. stdout: ${r.stdout || ""}. stderr: ${r.stderr || ""}`,
+    );
+  }
+  const out = r.stdout || "";
+  assert.doesNotMatch(
+    out,
+    /NO_ERROR/,
+    "should return exitCode 1 when gitleaks version check fails",
+  );
+  assert.match(out, /gitleaks version check failed/);
+  assert.doesNotMatch(
+    out,
+    /gitleaks binary not found in PATH/,
+    "should NOT use the missing-binary message for version check failures",
+  );
 });

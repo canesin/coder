@@ -18,11 +18,13 @@ import {
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
   TERMINAL_RUN_STATUSES,
+  writeControlSignal,
 } from "../../state/workflow-state.js";
 import { loadSteeringContext } from "../../steering.js";
 import { runDesignPipeline } from "../../workflows/design.workflow.js";
 import { runDevelopLoop } from "../../workflows/develop.workflow.js";
 import { runResearchPipeline } from "../../workflows/research.workflow.js";
+import { runSpecBuildPipeline } from "../../workflows/spec-build.workflow.js";
 
 const HEARTBEAT_STALE_MS = 900_000;
 
@@ -124,14 +126,14 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
  * Does not notify the lifecycle actor — use when the launcher already sent COMPLETE/FAIL/BLOCKED.
  * Swallows errors so a disk failure cannot reclassify an already-successful workflow as failed.
  * Uses saveLoopState guardRunId so a newer run cannot be overwritten if this run lost a load/save race.
- * @returns {Promise<boolean>} true only if loop-state was written; false if skipped (guard), no-op, or error
+ * @returns {Promise<object|null>} the persisted state object, or null if skipped (guard), no-op, or error
  */
 export async function persistTerminalLoopState(workspaceDir, runId, status) {
   try {
     const diskState = await loadLoopState(workspaceDir);
-    if (diskState.runId !== runId) return false;
+    if (diskState.runId !== runId) return null;
     if (!["running", "paused", "cancelling"].includes(diskState.status))
-      return false;
+      return null;
     diskState.status = status;
     diskState.currentStage = null;
     diskState.currentStageStartedAt = null;
@@ -142,12 +144,12 @@ export async function persistTerminalLoopState(workspaceDir, runId, status) {
     const written = await saveLoopState(workspaceDir, diskState, {
       guardRunId: runId,
     });
-    return written === true;
+    return written === true ? diskState : null;
   } catch (err) {
     process.stderr.write(
       `[coder] persistTerminalLoopState failed runId=${runId}: ${err?.message || err}\n`,
     );
-    return false;
+    return null;
   }
 }
 
@@ -256,11 +258,9 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   const persisted = await persistTerminalLoopState(workspaceDir, runId, status);
   if (!persisted) return false;
 
-  const diskState = await loadLoopState(workspaceDir);
-
   const actorEntry = workflowActors.get(runId);
   if (actorEntry?.workspace === workspaceDir) {
-    const at = diskState.completedAt;
+    const at = persisted.completedAt;
     if (status === "cancelled")
       actorEntry.actor.send({ type: "CANCELLED", at });
     else if (status === "failed")
@@ -288,7 +288,7 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
         workspace: workspaceDir,
         currentStage: null,
         activeAgent: null,
-        completedAt: diskState.completedAt,
+        completedAt: persisted.completedAt,
       },
       sqlitePath: workflowSqlitePath(workspaceDir),
       guardRunId: runId,
@@ -297,15 +297,44 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
   return true;
 }
 
+/**
+ * Transition orphaned stale runs to "failed" so they don't stay "running"
+ * forever after a service restart. Mutates loopState in place when a
+ * transition occurs.
+ */
+async function reapStaleRun(workspaceDir, loopState, isStale) {
+  if (
+    !isStale ||
+    !loopState.runId ||
+    loopState.status === "paused" ||
+    activeRuns.has(loopState.runId)
+  )
+    return;
+  const snapshot = await loadWorkflowSnapshot(workspaceDir);
+  const wfName = snapshot?.workflow || "develop";
+  await markRunTerminalOnDisk(workspaceDir, loopState.runId, wfName, "failed");
+  const updated = await loadLoopState(workspaceDir);
+  Object.assign(loopState, updated);
+}
+
 export async function readWorkflowStatus(workspaceDir) {
   const loopState = await loadLoopState(workspaceDir);
-  const { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+  let { heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
     detectStaleness(loopState);
+
+  // Capture pre-merge stage before auto-transition (which clears currentStage).
+  const originalStage = loopState.currentStage;
+
+  await reapStaleRun(workspaceDir, loopState, isStale);
+  // Re-read staleness after potential reap (loopState mutated in place)
+  ({ heartbeatAgeMs, runnerPid, runnerAlive, isStale, staleReason } =
+    detectStaleness(loopState));
 
   // Status contract: when currentStage is develop_starting, we are pre-merge.
   // Suppress stale failed/skipped entries so status shows a fresh retryable view.
   // Scoped to develop only; other workflows may have different semantics.
-  const isPreMerge = loopState.currentStage === "develop_starting";
+  // Use originalStage so auto-transition doesn't break the pre-merge filter.
+  const isPreMerge = originalStage === "develop_starting";
   const queueForStatus = isPreMerge
     ? loopState.issueQueue.filter(
         (e) => e.status !== "failed" && e.status !== "skipped",
@@ -493,13 +522,80 @@ async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
   };
 }
 
+let _reaperInterval = null;
+
+/**
+ * Reap orphaned runs from a previous server process on startup.
+ * In HTTP mode resolveWorkspace() requires an explicit workspace param,
+ * so this is a no-op there — orphaned HTTP runs are reaped lazily on
+ * the next status/start request for that workspace.
+ */
+async function reapOrphanedRunsOnStartup(resolveWorkspace) {
+  let ws;
+  try {
+    ws = resolveWorkspace();
+  } catch {
+    // HTTP mode (WORKSPACE_REQUIRED) or no default workspace — skip.
+    return;
+  }
+  try {
+    const loopState = await loadLoopState(ws);
+    if (!loopState.runId) return;
+    const { isStale } = detectStaleness(loopState);
+    if (isStale) {
+      await reapStaleRun(ws, loopState, isStale);
+    }
+  } catch {
+    /* best effort — workspace may not have loop-state yet */
+  }
+}
+
 export function registerWorkflowTools(server, resolveWorkspace) {
+  // Background watchdog: periodically check active runs for staleness.
+  // reapStaleRun() skips runs in the activeRuns map (they're "managed"),
+  // so the watchdog must evict stale entries first to allow reaping.
+  if (!_reaperInterval) {
+    _reaperInterval = setInterval(async () => {
+      for (const [runId, entry] of activeRuns) {
+        try {
+          const loopState = await loadLoopState(entry.workspace);
+          const { isStale } = detectStaleness(loopState);
+          if (isStale) {
+            // Force-cancel the stale in-memory entry so reapStaleRun proceeds.
+            entry.cancelToken.cancelled = true;
+            if (entry.agentPool) {
+              await entry.agentPool.killAll().catch(() => {});
+            }
+            // Evict from activeRuns first so the workspace is unblocked,
+            // then give the promise a bounded window to settle. If the
+            // runner is stuck in JS after agent kill, we don't block forever.
+            activeRuns.delete(runId);
+            if (entry.promise) {
+              const SETTLE_TIMEOUT_MS = 10_000;
+              await Promise.race([
+                entry.promise.catch(() => {}),
+                new Promise((r) => setTimeout(r, SETTLE_TIMEOUT_MS)),
+              ]);
+            }
+            await reapStaleRun(entry.workspace, loopState, isStale);
+          }
+        } catch {
+          /* best effort */
+        }
+      }
+    }, 60_000);
+    _reaperInterval.unref();
+  }
+
+  // Reap any orphaned runs left by a previous server process.
+  reapOrphanedRunsOnStartup(resolveWorkspace);
+
   server.registerTool(
     "coder_workflow",
     {
       description:
         "Unified workflow control plane. Use this to start, inspect, and control " +
-        "named workflows (workflow=develop|research|design). Includes reconcile for stale " +
+        "named workflows (workflow=develop|research|design|spec-build). Includes reconcile for stale " +
         "loop-state cleanup when status reports isStale.",
       inputSchema: {
         action: z
@@ -514,7 +610,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           ])
           .describe("Workflow control action"),
         workflow: z
-          .enum(["develop", "research", "design"])
+          .enum(["develop", "research", "design", "spec-build"])
           .default("develop")
           .describe("Workflow type"),
         workspace: z
@@ -637,6 +733,19 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           .string()
           .default("")
           .describe("Design start-only: design intent description"),
+        // Spec-build-specific
+        existingSpecDir: z
+          .string()
+          .default("")
+          .describe(
+            "Spec-build start-only: path to existing spec directory to ingest",
+          ),
+        researchRunId: z
+          .string()
+          .default("")
+          .describe(
+            "Spec-build start-only: research run ID whose output to synthesize",
+          ),
         // Events pagination
         afterSeq: z
           .number()
@@ -831,20 +940,69 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           let startContext;
           try {
             startContext = await withStartLock(ws, async () => {
-              // Cancel any active in-memory runs for this workspace
+              // Phase 1: Clean zombie in-memory entries (already terminal on disk)
               for (const [id, run] of activeRuns) {
                 if (run.workspace !== ws) continue;
-                const diskState = await loadLoopState(ws);
-                if (TERMINAL_RUN_STATUSES.includes(diskState.status)) {
+                const ds = await loadLoopState(ws);
+                if (TERMINAL_RUN_STATUSES.includes(ds.status)) {
                   activeRuns.delete(id);
                   workflowActors.delete(id);
-                  continue;
                 }
-                // Force-cancel the old run: set flag, kill agents, await exit
+              }
+
+              // Phase 2: Assess whether a run is genuinely active
+              const hasActiveInMemory = [...activeRuns.values()].some(
+                (r) => r.workspace === ws,
+              );
+              const diskLoopState = await loadLoopState(ws);
+              const diskActive =
+                diskLoopState.status === "running" ||
+                diskLoopState.status === "paused";
+
+              // For disk-only runs (no in-memory representation), use staleness
+              // detection to distinguish orphaned runs from genuinely active ones
+              // owned by another process.
+              let diskIsOrphan = false;
+              if (diskActive && !hasActiveInMemory) {
+                const staleness = detectStaleness(diskLoopState);
+                diskIsOrphan = staleness.isStale;
+              }
+
+              const genuinelyActive =
+                hasActiveInMemory || (diskActive && !diskIsOrphan);
+
+              // Phase 3: Guard — block if active and not force-restarting
+              if (genuinelyActive && params.forceRestart !== true) {
+                return {
+                  action,
+                  workflow,
+                  status: "blocked",
+                  reason: "run_already_in_progress",
+                  runId: diskLoopState.runId || null,
+                  hint: "Use action: 'status' to monitor. To replace the running workflow, pass forceRestart: true.",
+                };
+              }
+
+              // Phase 4: Clean up proven-orphan disk runs
+              if (diskActive && diskIsOrphan) {
+                await markRunTerminalOnDisk(
+                  ws,
+                  diskLoopState.runId,
+                  workflow,
+                  "failed",
+                );
+              }
+
+              // Phase 5: Force-cancel in-memory runs (only reached when
+              // forceRestart is true or no active runs remain)
+              for (const [id, run] of activeRuns) {
+                if (run.workspace !== ws) continue;
                 run.cancelToken.cancelled = true;
                 try {
                   await run.agentPool?.killAll();
-                } catch {}
+                } catch {
+                  /* ESRCH expected */
+                }
                 const actorEntry = workflowActors.get(id);
                 if (actorEntry?.workspace === ws) {
                   actorEntry.actor.send({
@@ -861,17 +1019,31 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                 workflowActors.delete(id);
               }
 
-              // Also check disk state — guards against restarts where activeRuns was cleared
+              // Phase 6: Handle forceRestart for disk-only active runs (genuine
+              // but force-replaced — signal cancel then mark failed)
               {
-                const diskLoopState = await loadLoopState(ws);
+                const postCleanup = await loadLoopState(ws);
                 if (
-                  diskLoopState.status === "running" ||
-                  diskLoopState.status === "paused"
+                  postCleanup.status === "running" ||
+                  postCleanup.status === "paused"
                 ) {
-                  // Mark stale or orphaned disk runs as failed so the new run can start
+                  // Write file-based cancel signal so the other process picks it
+                  // up via pollControlSignal() and stops modifying the workspace.
+                  await writeControlSignal(ws, {
+                    action: "cancel",
+                    runId: postCleanup.runId,
+                  });
+                  // Wait up to 10 s for the other process to actually exit.
+                  // pollControlSignal deletes control.json on read, but the
+                  // runner may still be mid-step, so also check the PID.
+                  const oldPid = postCleanup.runnerPid;
+                  for (let i = 0; i < 20; i++) {
+                    if (!isPidAlive(oldPid)) break;
+                    await new Promise((r) => setTimeout(r, 500));
+                  }
                   await markRunTerminalOnDisk(
                     ws,
-                    diskLoopState.runId,
+                    postCleanup.runId,
                     workflow,
                     "failed",
                   );
@@ -932,6 +1104,18 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             }
             throw err;
           }
+          // Guard returned a blocked response instead of start context
+          if (startContext?.status === "blocked") {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(startContext),
+                },
+              ],
+            };
+          }
+
           const { nextRunId, initialAgent } = startContext;
 
           startWorkflowActor({
@@ -1045,6 +1229,15 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                     screenshotPaths: [],
                     projectName: "",
                     style: params.clarifications || "",
+                  },
+                  workflowCtx,
+                );
+              } else if (workflow === "spec-build") {
+                result = await runSpecBuildPipeline(
+                  {
+                    repoPath: params.repoPath,
+                    existingSpecDir: params.existingSpecDir,
+                    researchRunId: params.researchRunId,
                   },
                   workflowCtx,
                 );

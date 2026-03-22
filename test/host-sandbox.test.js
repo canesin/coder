@@ -141,6 +141,7 @@ test("host sandbox fatal pattern + hang timeout: yields CommandFatalError not ha
     (err) => {
       assert.equal(err.name, "CommandFatalStdoutError");
       assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "already in use");
       return true;
     },
   );
@@ -165,6 +166,54 @@ test("host sandbox aborts with transient category on matching stderr pattern", a
       assert.equal(err.name, "CommandFatalStderrError");
       assert.equal(err.category, "transient");
       assert.equal(err.pattern, "fetch failed sending request");
+      return true;
+    },
+  );
+});
+
+test("host sandbox fatal pattern: child ignoring SIGTERM still yields CommandFatalError not timeout", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `trap '' TERM; echo "Session ID abc is already in use"; sleep 5`,
+        {
+          timeoutMs: 10000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "already in use");
+      return true;
+    },
+  );
+});
+
+test("host sandbox fatal pattern + hang timeout: yields CommandFatalError not hang timeout", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `trap '' TERM; echo "Session ID x is already in use"; sleep 5`,
+        {
+          timeoutMs: 10000,
+          hangTimeoutMs: 1000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
       return true;
     },
   );

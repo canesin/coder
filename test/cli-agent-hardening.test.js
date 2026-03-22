@@ -107,6 +107,24 @@ test("gemini gets auth + transient patterns", async () => {
   );
 });
 
+test("gemini transient patterns include quota-exceeded and RESOURCE_EXHAUSTED", async () => {
+  const { agent, calls } = makeTestAgent("gemini");
+  await agent.execute("test prompt");
+  const patterns = calls[0].killOnStderrPatterns;
+  assert.ok(
+    patterns.some((p) => p.pattern.includes("exceeded your current quota")),
+    "should match quota-exceeded",
+  );
+  assert.ok(
+    patterns.some((p) => p.pattern === "RESOURCE_EXHAUSTED"),
+    "should match RESOURCE_EXHAUSTED",
+  );
+  assert.ok(
+    patterns.filter((p) => p.category === "rate_limit").length >= 2,
+    "should have rate_limit category entries",
+  );
+});
+
 test("unknown agent gets empty patterns and config hang timeout", async () => {
   const { agent, calls } = makeTestAgent("custom-agent");
   await agent.execute("test prompt");

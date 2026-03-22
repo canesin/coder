@@ -32,29 +32,31 @@ function baseLoop(runId, status = "running") {
   };
 }
 
-test("persistTerminalLoopState: marks matching run terminal", async () => {
+test("persistTerminalLoopState: marks matching run terminal and returns state", async () => {
   const ws = makeWs();
   try {
     await saveLoopState(ws, baseLoop("run-a"));
-    const ok = await persistTerminalLoopState(ws, "run-a", "completed");
-    assert.equal(ok, true);
+    const result = await persistTerminalLoopState(ws, "run-a", "completed");
+    assert.ok(result, "should return the persisted state object");
+    assert.equal(result.status, "completed");
+    assert.equal(result.runId, "run-a");
+    assert.equal(result.currentStage, null);
+    assert.equal(result.runnerPid, null);
+    assert.ok(result.completedAt);
+    // Verify disk matches
     const disk = await loadLoopState(ws);
     assert.equal(disk.status, "completed");
-    assert.equal(disk.runId, "run-a");
-    assert.equal(disk.currentStage, null);
-    assert.equal(disk.runnerPid, null);
-    assert.ok(disk.completedAt);
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }
 });
 
-test("persistTerminalLoopState: no-op when runId differs (newer run on disk)", async () => {
+test("persistTerminalLoopState: returns null when runId differs (newer run on disk)", async () => {
   const ws = makeWs();
   try {
     await saveLoopState(ws, baseLoop("run-b"));
-    const ok = await persistTerminalLoopState(ws, "run-a", "completed");
-    assert.equal(ok, false);
+    const result = await persistTerminalLoopState(ws, "run-a", "completed");
+    assert.equal(result, null);
     const disk = await loadLoopState(ws);
     assert.equal(disk.runId, "run-b");
     assert.equal(disk.status, "running");

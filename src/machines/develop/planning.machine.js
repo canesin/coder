@@ -1,6 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { stripAgentNoise } from "../../helpers.js";
@@ -93,8 +99,18 @@ export default defineMachine({
       if (existsSync(paths.plan)) {
         return { status: "ok", data: { planMd: "(cached)" } };
       }
-      // wrotePlan is true but PLAN.md missing — clear flag and run planner
+      // wrotePlan is true but PLAN.md missing — clear plan + critique state
+      // so the planner starts fresh (not resuming a stale session) and the
+      // plan-reviewer doesn't short-circuit on an outdated PLANREVIEW.md
       state.steps.wrotePlan = false;
+      state.steps.wroteCritique = false;
+      state.planningSessionId = null;
+      state.plannerAgentName = null;
+      state.planReviewSessionId = null;
+      state.planReviewAgentName = null;
+      try {
+        if (existsSync(paths.critique)) unlinkSync(paths.critique);
+      } catch {}
       await saveState(ctx.workspaceDir, state);
     }
 
@@ -337,6 +353,7 @@ ${branchSections}`;
               err.name === "CommandFatalStdoutError") &&
             err.category === "auth";
           const hadSessionOpts = sessionOpts.resumeId || sessionOpts.sessionId;
+          const canRetryWithFreshSession = isAuthError && hadSessionOpts;
           ctx.log({
             event: "planning_auth_catch",
             isAuthError,
@@ -344,7 +361,7 @@ ${branchSections}`;
             errName: err.name,
             errCategory: err?.category,
           });
-          if (isAuthError && hadSessionOpts) {
+          if (canRetryWithFreshSession) {
             ctx.log({
               event: "session_auth_failed",
               sessionId: state.planningSessionId,
