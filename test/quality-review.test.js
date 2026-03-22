@@ -172,6 +172,29 @@ test("buildReviewerPrompt with specDeltaSummary references paths.plan in Scope C
   assert.ok(result.includes("/a/PLAN.md"));
 });
 
+test("buildReviewerPrompt with planExhausted adds unapproved-plan caveat", () => {
+  const paths = {
+    issue: "/a/ISSUE.md",
+    plan: "/a/PLAN.md",
+    reviewFindings: "/a/REVIEW_FINDINGS.md",
+  };
+  const result = buildReviewerPrompt(paths, "ppcommit passed.", 1, null, "", {
+    planExhausted: true,
+  });
+  assert.ok(result.includes("NOT approved"));
+  assert.ok(result.includes("tentative guide"));
+});
+
+test("buildReviewerPrompt without planExhausted omits caveat", () => {
+  const paths = {
+    issue: "/a/ISSUE.md",
+    plan: "/a/PLAN.md",
+    reviewFindings: "/a/REVIEW_FINDINGS.md",
+  };
+  const result = buildReviewerPrompt(paths, "ppcommit passed.", 1, null, "");
+  assert.ok(!result.includes("NOT approved"));
+});
+
 // ---------------------------------------------------------------------------
 // quality_review machine: spec delta integration
 // ---------------------------------------------------------------------------

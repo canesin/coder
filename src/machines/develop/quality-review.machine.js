@@ -65,6 +65,7 @@ export function buildReviewerPrompt(
   round,
   priorFindings,
   specDeltaSummary = "",
+  { planExhausted = false } = {},
 ) {
   const roundContext =
     round === 1
@@ -92,10 +93,14 @@ Verify whether each critical/major finding has been addressed. If the programmer
 `
     : "";
 
+  const planCaveat = planExhausted
+    ? `\n**WARNING: The plan in ${paths.plan} was NOT approved by the plan reviewer** (review rounds exhausted with unresolved concerns). Treat the plan as a tentative guide, not an agreed-upon spec. Scrutinize the implementation more carefully against the original issue requirements rather than trusting the plan as authoritative.\n`
+    : "";
+
   return `You are a code reviewer. Your role is to CRITIQUE only — do NOT modify any source code files.
 
 Read ${paths.issue} to understand what was originally requested.
-Read ${paths.plan} for the technical approach and constraints agreed upon.
+Read ${paths.plan} for the technical approach and constraints.${planCaveat}
 
 ${roundContext}
 
@@ -207,6 +212,7 @@ export default defineMachine({
     testConfigPath: z.string().default(""),
     allowNoTests: z.boolean().optional(),
     ppcommitPreset: z.enum(["strict", "relaxed", "minimal"]).default("strict"),
+    planExhausted: z.boolean().default(false),
   }),
 
   async execute(input, ctx) {
@@ -338,6 +344,7 @@ export default defineMachine({
             round,
             priorFindings,
             state.specDeltaSummary || "",
+            { planExhausted: input.planExhausted },
           );
 
           // Round 1: new session; Round 2+: resume to retain review context

@@ -179,8 +179,12 @@ export async function runPlanLoop(
           roundsUsed: round + 1,
           maxRounds,
         });
-        // Proceed with the last plan — let the programmer decide
-        break;
+        // Proceed with the last plan — flag as unapproved so downstream is aware
+        return {
+          status: "completed",
+          planExhausted: true,
+          results: allResults,
+        };
       }
       break;
     }
@@ -339,6 +343,14 @@ export async function runDevelopPipeline(opts, ctx) {
       durationMs: Date.now() - start,
     };
   }
+  const planExhausted = loopResult.planExhausted === true;
+  if (planExhausted) {
+    ctx.log({
+      event: "plan_review_gate_bypassed",
+      message:
+        "Plan was never approved by reviewer — proceeding with unapproved plan",
+    });
+  }
 
   // Heartbeat after phase 2 (planning + review)
   await updateHeartbeat(ctx);
@@ -389,6 +401,7 @@ export async function runDevelopPipeline(opts, ctx) {
         testConfigPath: opts.testConfigPath || "",
         allowNoTests: opts.allowNoTests ?? false,
         ppcommitPreset: opts.ppcommitPreset || "strict",
+        planExhausted,
       }),
     },
     {

@@ -113,6 +113,7 @@ test("runPlanLoop: APPROVED on round 1 runs each machine once", async () => {
     });
 
     assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, undefined);
     assert.equal(planCount, 1);
     assert.equal(reviewCount, 1);
     assert.equal(capturedCritique, "");
@@ -243,6 +244,7 @@ test("runPlanLoop: stops at maxRounds even with repeated REVISE", async () => {
     });
 
     assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
     assert.equal(planCount, 3);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
