@@ -731,17 +731,22 @@ async function runDebugEnvCli() {
     timeout: 5000,
   });
 
-  // Redact values of known secret env vars to avoid leaking credentials
-  const secretKeyPatterns =
-    /^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|GEMINI_API_KEY|GOOGLE_API_KEY|OPENAI_API_KEY|LINEAR_API_KEY|GITHUB_TOKEN|GH_TOKEN|OPENROUTER_API_KEY)=/i;
+  // Redact values of env vars that look like secrets to avoid leaking credentials.
+  // Matches any key ending in _KEY, _TOKEN, _SECRET, or _PASSWORD (case-insensitive),
+  // plus passEnv entries (user-configured forwarded secrets).
+  const passEnvSet = new Set(passEnv.map((k) => k.toUpperCase()));
+  const isSecret = (key) =>
+    /_(KEY|TOKEN|SECRET|PASSWORD)$/i.test(key) ||
+    passEnvSet.has(key.toUpperCase());
   const redactEnvOutput = (raw) =>
     raw
       .split("\n")
-      .map((line) =>
-        secretKeyPatterns.test(line)
-          ? line.replace(/=.*/, "=<redacted>")
-          : line,
-      )
+      .map((line) => {
+        const eq = line.indexOf("=");
+        if (eq <= 0) return line;
+        const key = line.slice(0, eq);
+        return isSecret(key) ? `${key}=<redacted>` : line;
+      })
       .join("\n");
 
   process.stdout.write("=== Env that agent subprocesses receive ===\n\n");
