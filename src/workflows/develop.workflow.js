@@ -1210,6 +1210,7 @@ export async function runDevelopLoop(opts, ctx) {
         deferState.steps ||= {};
         deferState.steps.wrotePlan = false;
         deferState.steps.wroteCritique = false;
+        deferState.planExhausted = false;
         await saveState(ctx.workspaceDir, deferState);
 
         const deferPaths = artifactPaths(ctx.artifactsDir);
