@@ -251,7 +251,7 @@ test("runPlanLoop: stops at maxRounds even with repeated REVISE", async () => {
   }
 });
 
-test("runPlanLoop: repeated UNKNOWN defers on final round (unparseable gate)", async () => {
+test("runPlanLoop: repeated UNKNOWN proceeds with planExhausted on final round", async () => {
   const tmp = makeTmp();
   try {
     const ctx = makeCtx(tmp);
@@ -280,10 +280,8 @@ test("runPlanLoop: repeated UNKNOWN defers on final round (unparseable gate)", a
       maxRounds: 2,
     });
 
-    assert.equal(result.status, "deferred");
-    assert.equal(result.deferredReason, "plan_blocked");
-    assert.ok(result.error.includes("blocked on final round"));
-    assert.equal(result.planExhausted, undefined);
+    assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -326,7 +324,7 @@ test("runPlanLoop: repeated REJECT defers as plan_blocked on final round", async
   }
 });
 
-test("runPlanLoop: single-round REVISE defers as plan_blocked", async () => {
+test("runPlanLoop: single-round REVISE proceeds with planExhausted", async () => {
   const tmp = makeTmp();
   try {
     const ctx = makeCtx(tmp);
@@ -355,9 +353,8 @@ test("runPlanLoop: single-round REVISE defers as plan_blocked", async () => {
       maxRounds: 1,
     });
 
-    assert.equal(result.status, "deferred");
-    assert.equal(result.deferredReason, "plan_blocked");
-    assert.equal(result.planExhausted, undefined);
+    assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

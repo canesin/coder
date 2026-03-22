@@ -166,48 +166,30 @@ export async function runPlanLoop(
     const verdict = reviewRound.results[0]?.data?.verdict;
     ctx.log({ event: "plan_review_verdict", verdict, round, maxRounds });
 
-    if (verdict === "UNKNOWN" || verdict === "REJECT") {
-      if (verdict === "UNKNOWN") {
-        ctx.log({ event: "plan_review_unparseable", round });
-      }
-      if (round === maxRounds - 1) {
-        // UNKNOWN = unparseable review, REJECT = fundamentally unsound plan.
-        // Both are hard blocks — surface as deferred/plan_blocked for operator
-        // intervention rather than silently proceeding.
-        ctx.log({
-          event: "plan_review_blocked",
-          lastVerdict: verdict,
-          roundsUsed: round + 1,
-          maxRounds,
-        });
-        return {
-          status: "deferred",
-          deferredReason: "plan_blocked",
-          error: `Plan review blocked on final round (verdict: ${verdict})`,
-          results: allResults,
-        };
-      }
+    if (verdict === "UNKNOWN") {
+      ctx.log({ event: "plan_review_unparseable", round });
+    }
+    // REJECT is the strongest reviewer signal — block immediately on final round.
+    if (verdict === "REJECT" && round === maxRounds - 1) {
+      ctx.log({
+        event: "plan_review_blocked",
+        lastVerdict: verdict,
+        roundsUsed: round + 1,
+        maxRounds,
+      });
+      return {
+        status: "deferred",
+        deferredReason: "plan_blocked",
+        error: `Plan rejected on final round — fundamentally unsound`,
+        results: allResults,
+      };
     }
     const needsRevision =
       verdict === "REVISE" || verdict === "REJECT" || verdict === "UNKNOWN";
     if (!needsRevision || round === maxRounds - 1) {
       if (needsRevision && round === maxRounds - 1) {
-        // Single-round config: no revision was ever attempted, so block.
-        if (round === 0) {
-          ctx.log({
-            event: "plan_review_blocked",
-            lastVerdict: verdict,
-            maxRounds,
-          });
-          return {
-            status: "deferred",
-            deferredReason: "plan_blocked",
-            error: `Plan review blocked on single round (verdict: ${verdict})`,
-            results: allResults,
-          };
-        }
-        // REVISE on final round after at least one revision attempt — proceed
-        // with the unapproved plan but flag it for downstream awareness.
+        // REVISE or UNKNOWN on final round (including single-round configs) —
+        // proceed with the unapproved plan but flag it for downstream awareness.
         ctx.log({
           event: "plan_review_exhausted",
           lastVerdict: verdict,
