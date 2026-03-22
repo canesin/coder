@@ -90,6 +90,20 @@ function filterEnv(env) {
   return out;
 }
 
+/**
+ * Compute the effective env that agent subprocesses receive.
+ * Used for debugging (coder debug env).
+ * @param {NodeJS.ProcessEnv} processEnv
+ * @param {Record<string, string>} [baseEnv]
+ * @param {Record<string, string>} [extraEnv]
+ * @returns {Record<string, string>}
+ */
+export function computeSandboxEnv(processEnv, baseEnv = {}, extraEnv = {}) {
+  return stripNestedClaudeEnv(
+    mergeEnv(mergeEnv(filterEnv(processEnv), baseEnv), extraEnv),
+  );
+}
+
 export class HostSandboxProvider {
   /**
    * @param {{ defaultCwd?: string, baseEnv?: Record<string,string>, useSystemdRun?: boolean }} [config]
@@ -309,7 +323,7 @@ class HostSandboxInstance extends EventEmitter {
           }
         }
       };
-      /** If SIGKILL does not yield `close`, avoid hanging forever. */
+      /** If SIGKILL/stopSystemdUnit does not yield `close`, avoid hanging forever. */
       const scheduleForceSettle = (err) => {
         if (forceSettleTimer) clearTimeout(forceSettleTimer);
         forceSettleTimer = setTimeout(() => {
@@ -369,9 +383,14 @@ class HostSandboxInstance extends EventEmitter {
       };
       resetHangTimer();
 
-      const handleFatalMatch = (stream, patterns, chunk, ErrorClass) => {
+      const handleFatalMatch = (
+        stream,
+        patterns,
+        accumulatedOutput,
+        ErrorClass,
+      ) => {
         if (patterns.length === 0) return;
-        const lower = chunk.toLowerCase();
+        const lower = accumulatedOutput.toLowerCase();
         const hit = patterns.find((p) =>
           lower.includes(p.pattern.toLowerCase()),
         );
@@ -415,10 +434,11 @@ class HostSandboxInstance extends EventEmitter {
         resetHangTimer();
         options.onStdout?.(chunk);
         this.emit("stdout", chunk);
+        // Check accumulated stdout so split messages (e.g. across stream chunks) are caught
         handleFatalMatch(
           "stdout",
           killOnStdoutPatterns,
-          chunk,
+          stdout,
           CommandFatalStdoutError,
         );
       });
@@ -432,7 +452,7 @@ class HostSandboxInstance extends EventEmitter {
         handleFatalMatch(
           "stderr",
           killOnStderrPatterns,
-          chunk,
+          stderr,
           CommandFatalStderrError,
         );
       });

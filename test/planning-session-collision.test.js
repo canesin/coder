@@ -20,7 +20,7 @@ function makeCommandFatalStderrError(message) {
   return err;
 }
 
-test("planning: retries with fresh session when session ID is already in use (create path)", async () => {
+test("planning: retries without session when session ID is already in use (create path)", async () => {
   const tmp = mkdtempSync(
     path.join(os.tmpdir(), "planning-session-collision-"),
   );
@@ -52,8 +52,10 @@ test("planning: retries with fresh session when session ID is already in use (cr
 
     let callCount = 0;
     const logEvents = [];
+    const executeOptsLog = [];
     const mockAgent = {
-      async execute(_prompt, _opts) {
+      async execute(_prompt, opts) {
+        executeOptsLog.push(opts);
         callCount++;
         if (callCount === 1) {
           throw makeCommandFatalStderrError(
@@ -79,6 +81,11 @@ test("planning: retries with fresh session when session ID is already in use (cr
 
     assert.equal(result.status, "ok");
     assert.equal(callCount, 2, "should retry once after session collision");
+    assert.equal(executeOptsLog.length, 2);
+    assert.equal(executeOptsLog[0].hangTimeoutMs, 0);
+    assert.equal(executeOptsLog[1].hangTimeoutMs, 0);
+    assert.equal(executeOptsLog[0].timeoutMs, 60000);
+    assert.equal(executeOptsLog[1].timeoutMs, 60000);
     assert.ok(
       logEvents.some(
         (e) => e.event === "session_auth_failed" && e.wasCreating === true,
@@ -88,7 +95,12 @@ test("planning: retries with fresh session when session ID is already in use (cr
     assert.ok(existsSync(path.join(artifactsDir, "PLAN.md")));
 
     const state = await loadState(tmp);
-    assert.ok(state.planningSessionId, "should have new planning session ID");
+    assert.equal(
+      state.sessionsDisabled,
+      true,
+      "sessions disabled after collision",
+    );
+    assert.equal(state.planningSessionId, null, "planning session cleared");
     assert.equal(state.steps.wrotePlan, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });

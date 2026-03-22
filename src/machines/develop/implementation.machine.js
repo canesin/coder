@@ -2,7 +2,11 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { discoverCodexSessionId } from "../../agents/codex-session-discovery.js";
-import { loadState, saveState } from "../../state/workflow-state.js";
+import {
+  clearAllSessionIdsAndDisable,
+  loadState,
+  saveState,
+} from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
 import {
   artifactPaths,
@@ -11,6 +15,12 @@ import {
   requireExitZero,
   resolveRepoRoot,
 } from "./_shared.js";
+
+/** Wall-clock and hang budgets for the programmer CLI during implementation (must stay aligned). @internal */
+export function implementationAgentExecTimeouts(config) {
+  const timeoutMs = config.workflow.timeouts.implementation;
+  return { timeoutMs, hangTimeoutMs: timeoutMs };
+}
 
 export default defineMachine({
   name: "develop.implementation",
@@ -59,7 +69,7 @@ export default defineMachine({
     }
 
     const hadSessionBefore = !!state[sessionKey];
-    if (!state[sessionKey]) {
+    if (!state.sessionsDisabled && !state[sessionKey]) {
       if (programmerName === "codex") {
         if (codexUsesSession) {
           state[sessionKey] = randomUUID();
@@ -74,11 +84,11 @@ export default defineMachine({
       // gemini: no session create path in this iteration
     }
     const sessionOrResumeId = state[sessionKey];
-    const execOpts = {
-      timeoutMs: ctx.config.workflow.timeouts.implementation,
-    };
+    const execOpts = implementationAgentExecTimeouts(ctx.config);
     const codexWithoutSession = programmerName === "codex" && !codexUsesSession;
-    if (programmerName === "codex") {
+    if (state.sessionsDisabled) {
+      if (codexWithoutSession) execOpts.execWithJsonCapture = true;
+    } else if (programmerName === "codex") {
       if (codexUsesSession) {
         if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
         else execOpts.sessionId = sessionOrResumeId;
@@ -224,19 +234,19 @@ FORBIDDEN patterns:
         (err.name === "CommandFatalStderrError" ||
           err.name === "CommandFatalStdoutError") &&
         err.category === "auth" &&
-        state[sessionKey]
+        (state[sessionKey] || execOpts.sessionId || execOpts.resumeId)
       ) {
         ctx.log({
           event: "session_auth_failed",
           sessionId: state[sessionKey],
         });
-        state[sessionKey] = null;
+        clearAllSessionIdsAndDisable(state);
         await saveState(ctx.workspaceDir, state);
         // Fresh session loses prior planning context — acceptable per GH-89
         const retryRunStart = codexWithoutSession ? Date.now() : 0;
         try {
           res = await programmerAgent.execute(implPrompt, {
-            timeoutMs: ctx.config.workflow.timeouts.implementation,
+            ...implementationAgentExecTimeouts(ctx.config),
             ...(codexWithoutSession && { execWithJsonCapture: true }),
           });
           if (codexWithoutSession) {

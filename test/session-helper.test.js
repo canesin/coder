@@ -155,7 +155,7 @@ describe("withSessionResume", () => {
     assert.equal(state.testAgentName, "claude");
   });
 
-  it("retries with fresh session on auth error during resume", async () => {
+  it("retries without session on auth error during resume", async () => {
     await saveState(tmp, {
       testSessionId: "existing-id",
       testAgentName: "claude",
@@ -188,15 +188,19 @@ describe("withSessionResume", () => {
 
     assert.equal(callCount, 2);
     assert.ok(capturedOpts[0].resumeId, "first call should resume");
-    assert.ok(capturedOpts[1].sessionId, "retry should create fresh session");
-    assert.notEqual(capturedOpts[1].sessionId, "existing-id");
+    assert.deepEqual(
+      capturedOpts[1],
+      {},
+      "retry should use no session (sessionsDisabled)",
+    );
+    assert.equal(state.sessionsDisabled, true);
     assert.ok(
       logs.some((l) => l.event === "session_auth_failed"),
       "should log session_auth_failed",
     );
   });
 
-  it("retries auth error on fresh session (sessionId) with rotated session", async () => {
+  it("retries auth error on fresh session (sessionId) without session", async () => {
     await saveState(tmp, {});
     const state = await loadState(tmp);
 
@@ -205,6 +209,7 @@ describe("withSessionResume", () => {
     authErr.category = "auth";
 
     let callCount = 0;
+    const capturedOpts = [];
     const result = await withSessionResume({
       agentName: "claude",
       agent: {},
@@ -213,7 +218,8 @@ describe("withSessionResume", () => {
       agentNameKey: "testAgentName",
       workspaceDir: tmp,
       log: () => {},
-      executeFn: (_opts) => {
+      executeFn: (opts) => {
+        capturedOpts.push(opts);
         callCount++;
         if (callCount === 1) throw authErr;
         return Promise.resolve({ stdout: "ok" });
@@ -222,7 +228,12 @@ describe("withSessionResume", () => {
 
     assert.equal(callCount, 2);
     assert.equal(result.stdout, "ok");
-    assert.notEqual(state.testSessionId, undefined);
+    assert.equal(state.sessionsDisabled, true);
+    assert.deepEqual(
+      capturedOpts[1],
+      {},
+      "retry should use no session (sessionsDisabled)",
+    );
   });
 
   it("propagates non-auth errors without retry", async () => {

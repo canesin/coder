@@ -26,7 +26,7 @@ export const CLAUDE_RESUME_FAILURE_PATTERNS = [
   { pattern: "Invalid session ID", category: "auth" },
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
-  { pattern: "is already in use", category: "auth" }, // "Session ID <uuid> is already in use" (claude-code #5524)
+  { pattern: "already in use", category: "auth" }, // "Session ID X is already in use", --resume variants (claude-code #5524)
 ];
 const CODEX_RESUME_FAILURE_PATTERNS = [
   { pattern: "session not found", category: "auth" },
@@ -107,9 +107,29 @@ export class CliAgent extends AgentAdapter {
     this.workspaceDir = opts.workspaceDir;
 
     this._events = new EventEmitter();
+    let baseEnv = opts.secrets;
+    if (this.name === "claude") {
+      const claudeCfg = this.config.models?.claude;
+      baseEnv = { ...baseEnv };
+      const maxTokens = this.config.claude?.maxOutputTokens;
+      if (maxTokens !== undefined && maxTokens !== null) {
+        baseEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
+      }
+      // Non-Anthropic API (e.g. OpenRouter): set env Claude Code expects — from models.claude only
+      const ep = (claudeCfg?.apiEndpoint || "").trim();
+      const customAnthropic = ep && !/anthropic\.com/i.test(ep);
+      if (customAnthropic) {
+        baseEnv.ANTHROPIC_BASE_URL = ep;
+        baseEnv.ANTHROPIC_API_KEY = "";
+        if (claudeCfg.apiKeyEnv && opts.secrets[claudeCfg.apiKeyEnv]) {
+          baseEnv.ANTHROPIC_AUTH_TOKEN = opts.secrets[claudeCfg.apiKeyEnv];
+        }
+      }
+      // Model is passed via --model only (see _buildCommand); not duplicated in env
+    }
     this._provider = new HostSandboxProvider({
       defaultCwd: opts.cwd,
-      baseEnv: opts.secrets,
+      baseEnv,
     });
     this._sandbox = null;
     this._sandboxPromise = null;
@@ -303,18 +323,18 @@ export class CliAgent extends AgentAdapter {
     const hangTimeoutMs = opts.hangTimeoutMs ?? configHangTimeout;
     const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
 
+    const hasSessionOpts = !!(opts.resumeId || opts.sessionId);
     const defaultPatterns = isGemini
       ? [...GEMINI_AUTH_FAILURE_PATTERNS, ...GEMINI_TRANSIENT_FAILURE_PATTERNS]
-      : isClaude && (opts.resumeId || opts.sessionId)
+      : isClaude && hasSessionOpts
         ? CLAUDE_RESUME_FAILURE_PATTERNS
-        : isCodex && (opts.resumeId || opts.sessionId)
+        : isCodex && hasSessionOpts
           ? CODEX_RESUME_FAILURE_PATTERNS
           : isCodex
             ? CODEX_FAILURE_PATTERNS
             : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
     // Claude emits "Session ID X is already in use" to stdout, not stderr — kill on both
-    const hasSessionOpts = !!(opts.resumeId || opts.sessionId);
     const killOnStdoutPatterns =
       opts.killOnStdoutPatterns ??
       (isClaude && hasSessionOpts ? CLAUDE_RESUME_FAILURE_PATTERNS : []);

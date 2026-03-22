@@ -22,6 +22,18 @@ export function artifactPaths(artifactsDir) {
   };
 }
 
+/**
+ * Per-step CLI agent options: wall-clock timeout only, hang detection off.
+ * Prevents agents.retry.hangTimeoutMs (default 5m) from killing long silent
+ * planning/plan-review while workflow.timeouts.* allows much longer.
+ *
+ * @param {number} timeoutMs
+ * @returns {{ timeoutMs: number, hangTimeoutMs: number }}
+ */
+export function buildStepCliOpts(timeoutMs) {
+  return { timeoutMs, hangTimeoutMs: 0 };
+}
+
 export function ensureBranch(
   repoRoot,
   branch,

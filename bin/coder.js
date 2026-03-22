@@ -62,6 +62,10 @@ Subcommands:
   coder config [--workspace <path>]
         Show resolved configuration.
 
+  coder debug env [--workspace <path>]
+        Show env vars that agent subprocesses (claude, gemini, etc.) receive.
+        Use to verify API keys and OpenRouter vars are passed correctly.
+
   coder ppcommit [--base <branch>]
         Run ppcommit checks on the repository.
 
@@ -707,6 +711,58 @@ function runConfigCli() {
   process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
 }
 
+// --- coder debug env ---
+
+async function runDebugEnvCli() {
+  const workspaceDir = resolveWorkspace(process.argv.slice(4));
+  const config = resolveConfig(workspaceDir);
+  const passEnv = resolvePassEnv(config);
+  const secrets = buildSecrets(passEnv);
+
+  const { computeSandboxEnv } = await import("../src/host-sandbox.js");
+  const sandboxEnv = computeSandboxEnv(process.env, secrets);
+
+  // Run a real subprocess with that env to show exactly what the session gets
+  const { spawnSync } = await import("node:child_process");
+  const res = spawnSync("bash", ["-lc", "env | sort"], {
+    cwd: workspaceDir,
+    env: sandboxEnv,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+
+  process.stdout.write("=== Env that agent subprocesses receive ===\n\n");
+  if (res.status === 0) {
+    process.stdout.write(res.stdout || "(empty)\n");
+  } else {
+    process.stdout.write(`(bash failed: ${res.stderr || res.status})\n`);
+  }
+
+  process.stdout.write("\n=== Secrets (passEnv) resolved ===\n");
+  const apiKeys = [
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENAI_API_KEY",
+  ];
+  for (const k of apiKeys) {
+    const v = secrets[k];
+    const inPassEnv = passEnv.includes(k);
+    const status = v
+      ? `set (${v.length} chars)`
+      : inPassEnv
+        ? "empty or not in shell"
+        : "not in passEnv";
+    process.stdout.write(`  ${k}: ${status}\n`);
+  }
+  process.stdout.write(
+    "\n  passEnv: " +
+      JSON.stringify(passEnv) +
+      "\n" +
+      "  OpenRouter: set models.claude.apiEndpoint + apiKeyEnv; routing vars are injected for the CLI.\n",
+  );
+}
+
 // --- coder ppcommit ---
 
 async function runPpcommitCli() {
@@ -841,6 +897,17 @@ switch (subcommand) {
     break;
   case "config":
     runConfigCli();
+    break;
+  case "debug":
+    if (process.argv[3] === "env") {
+      runDebugEnvCli().catch((err) => {
+        process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+        process.exitCode = 1;
+      });
+    } else {
+      process.stderr.write("Usage: coder debug env [--workspace <path>]\n");
+      process.exit(1);
+    }
     break;
   case "ppcommit":
     runPpcommitCli().catch((err) => {

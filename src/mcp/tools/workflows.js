@@ -123,8 +123,10 @@ function detectStaleness({ status, lastHeartbeatAt, runnerPid }) {
 
 /**
  * Persist terminal workflow status to loop-state.json (runner finished).
- * Uses saveLoopState guardRunId so a newer run cannot be overwritten.
- * @returns {Promise<object|null>} the persisted state object, or null if skipped
+ * Does not notify the lifecycle actor — use when the launcher already sent COMPLETE/FAIL/BLOCKED.
+ * Swallows errors so a disk failure cannot reclassify an already-successful workflow as failed.
+ * Uses saveLoopState guardRunId so a newer run cannot be overwritten if this run lost a load/save race.
+ * @returns {Promise<object|null>} the persisted state object, or null if skipped (guard), no-op, or error
  */
 export async function persistTerminalLoopState(workspaceDir, runId, status) {
   try {
@@ -152,29 +154,45 @@ export async function persistTerminalLoopState(workspaceDir, runId, status) {
 }
 
 /**
- * Normal MCP launcher path after develop/research/design resolves without throw.
- * Persists loop-state, sends lifecycle actor terminal event, cleans up.
+ * Normal MCP launcher path after develop / research / design resolves without throw.
+ * Persists loop-state (before activeRuns release), lifecycle actor terminal event, cleanup.
+ * When no in-memory workflow actor exists, persists workflow-state.json via
+ * `saveWorkflowTerminalState` (same idea as `markRunTerminalOnDisk` fallback).
+ * Exported for integration tests; invoked from the background `runPromise` handler.
+ *
+ * @param {object} opts
+ * @param {string} opts.workspaceDir
+ * @param {string} opts.runId
+ * @param {{ status: string, error?: string }} opts.result
+ * @param {{ killAll: () => Promise<unknown> }} opts.agentPool
+ * @param {string} [opts.workflow] - lifecycle / sqlite key (default `"develop"`)
  */
 export async function applyLauncherNormalCompletion({
   workspaceDir,
   runId,
   result,
   agentPool,
+  workflow = "develop",
 }) {
   const finalStatus =
     result.status === "completed"
       ? "completed"
       : result.status === "blocked"
         ? "blocked"
-        : "failed";
+        : result.status === "cancelled"
+          ? "cancelled"
+          : "failed";
   const at = new Date().toISOString();
   await persistTerminalLoopState(workspaceDir, runId, finalStatus);
+  const diskState = await loadLoopState(workspaceDir);
   const actorEntry = workflowActors.get(runId);
   if (actorEntry) {
     if (finalStatus === "completed")
       actorEntry.actor.send({ type: "COMPLETE", at });
     else if (finalStatus === "blocked")
       actorEntry.actor.send({ type: "BLOCKED", at });
+    else if (finalStatus === "cancelled")
+      actorEntry.actor.send({ type: "CANCELLED", at });
     else
       actorEntry.actor.send({
         type: "FAIL",
@@ -183,9 +201,57 @@ export async function applyLauncherNormalCompletion({
       });
     actorEntry.actor.stop();
     workflowActors.delete(runId);
+  } else {
+    let workflowState = finalStatus;
+    if (workflowState === "running" || workflowState === "paused")
+      workflowState = "failed";
+    const context = {
+      workflow,
+      runId,
+      workspace: workspaceDir,
+      currentStage: null,
+      activeAgent: null,
+      completedAt: diskState.completedAt ?? at,
+    };
+    if (finalStatus === "failed") context.error = result.error || "unknown";
+    await saveWorkflowTerminalState(workspaceDir, {
+      runId,
+      workflow,
+      state: workflowState,
+      context,
+      sqlitePath: workflowSqlitePath(workspaceDir),
+      guardRunId: runId,
+    });
   }
   activeRuns.delete(runId);
   await agentPool.killAll();
+}
+
+/**
+ * Cancel in-memory runs for a workspace so a new start is not blocked after disk reconcile.
+ */
+async function releaseActiveRunsForWorkspace(workspaceDir, errorDetail) {
+  const at = new Date().toISOString();
+  for (const [id, run] of [...activeRuns.entries()]) {
+    if (run.workspace !== workspaceDir) continue;
+    run.cancelToken.cancelled = true;
+    try {
+      await run.agentPool?.killAll();
+    } catch {
+      /* best-effort */
+    }
+    activeRuns.delete(id);
+    const ae = workflowActors.get(id);
+    if (ae?.workspace === workspaceDir) {
+      ae.actor.send({
+        type: "FAIL",
+        at,
+        error: errorDetail,
+      });
+      ae.actor.stop();
+      workflowActors.delete(id);
+    }
+  }
 }
 
 async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
@@ -346,7 +412,7 @@ function readWorkflowEvents(
   workflowName,
   afterSeq = 0,
   limit = 50,
-  { filterRunId = "" } = {},
+  { filterRunId = "", allRuns = false } = {},
 ) {
   const logPath = path.join(
     workspaceDir,
@@ -358,23 +424,35 @@ function readWorkflowEvents(
   try {
     content = readFileSync(logPath, "utf8");
   } catch {
-    return { events: [], nextSeq: 0, totalLines: 0 };
+    return {
+      events: [],
+      nextSeq: 0,
+      totalLines: 0,
+      filteredByRunId: null,
+    };
   }
   const allLines = content.split("\n").filter((l) => l.trim());
   const totalLines = allLines.length;
   const events = [];
+  const effectiveFilter = allRuns ? "" : filterRunId;
   const start = afterSeq;
   const end = Math.min(start + limit, totalLines);
   for (let i = start; i < end; i++) {
     try {
       const parsed = JSON.parse(allLines[i]);
-      if (filterRunId && parsed.runId && parsed.runId !== filterRunId) continue;
+      if (effectiveFilter && parsed.runId && parsed.runId !== effectiveFilter)
+        continue;
       events.push({ seq: i + 1, ...parsed });
     } catch {
       events.push({ seq: i + 1, raw: allLines[i] });
     }
   }
-  return { events, nextSeq: end, totalLines };
+  return {
+    events,
+    nextSeq: end,
+    totalLines,
+    filteredByRunId: effectiveFilter || null,
+  };
 }
 
 async function readWorkflowMachineStatus(workspaceDir, runId, workflow) {
@@ -517,10 +595,19 @@ export function registerWorkflowTools(server, resolveWorkspace) {
     {
       description:
         "Unified workflow control plane. Use this to start, inspect, and control " +
-        "named workflows (workflow=develop|research|design|spec-build).",
+        "named workflows (workflow=develop|research|design|spec-build). Includes reconcile for stale " +
+        "loop-state cleanup when status reports isStale.",
       inputSchema: {
         action: z
-          .enum(["start", "status", "events", "cancel", "pause", "resume"])
+          .enum([
+            "start",
+            "status",
+            "events",
+            "cancel",
+            "pause",
+            "resume",
+            "reconcile",
+          ])
           .describe("Workflow control action"),
         workflow: z
           .enum(["develop", "research", "design", "spec-build"])
@@ -672,7 +759,13 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           .min(1)
           .max(500)
           .default(50)
-          .describe("Events-only: max events to return"),
+          .describe("Events-only: max log lines to scan (seq is line-based)"),
+        allRuns: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Events-only: include lines from all runIds. When false, lines from other runs are skipped but still count toward the line window — use true for full history or debugging.",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -723,14 +816,24 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             workflow,
             params.afterSeq,
             params.limit,
-            { filterRunId: currentStatus.runId || "" },
+            {
+              filterRunId: currentStatus.runId || "",
+              allRuns: params.allRuns === true,
+            },
           );
           return {
             content: [
               {
                 type: "text",
                 text: JSON.stringify(
-                  { action, workflow, log: `${workflow}.jsonl`, ...result },
+                  {
+                    action,
+                    workflow,
+                    log: `${workflow}.jsonl`,
+                    eventsNote:
+                      "seq is the 1-based line index in the jsonl file; with run filtering, some pages may contain fewer events than limit.",
+                    ...result,
+                  },
                   null,
                   2,
                 ),
@@ -739,7 +842,101 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           };
         }
 
+        if (action === "reconcile") {
+          const st = await readWorkflowStatus(ws);
+          if (!st.isStale) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    action,
+                    workflow,
+                    reconciled: false,
+                    reason: "not_stale",
+                    runId: st.runId ?? null,
+                    staleReason: st.staleReason ?? null,
+                    hint: "Status tooling only marks stale runs (dead runner PID or heartbeat truly stuck).",
+                  }),
+                },
+              ],
+            };
+          }
+          const loop = await loadLoopState(ws);
+          if (!loop.runId) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    action,
+                    workflow,
+                    reconciled: false,
+                    reason: "no_loop_run_id",
+                  }),
+                },
+              ],
+            };
+          }
+          await releaseActiveRunsForWorkspace(ws, "reconciled_stale_run");
+          const written = await markRunTerminalOnDisk(
+            ws,
+            loop.runId,
+            workflow,
+            "failed",
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  action,
+                  workflow,
+                  reconciled: written,
+                  activeRunsReleased: true,
+                  reason: written
+                    ? "marked_failed_on_disk"
+                    : "persist_rejected_or_already_terminal",
+                  runId: loop.runId,
+                  hint: written
+                    ? "In-memory runs for this workspace were cancelled; you can start again without forceRestart."
+                    : "Loop state was not updated (guard or already terminal); in-memory runs were still released.",
+                }),
+              },
+            ],
+          };
+        }
+
         if (action === "start") {
+          // Guard: reject start if a run is already in progress, unless forceRestart
+          const hasActiveRun = [...activeRuns.values()].some(
+            (r) => r.workspace === ws,
+          );
+          const diskLoopState = await loadLoopState(ws);
+          const diskRunInProgress =
+            diskLoopState.status === "running" ||
+            diskLoopState.status === "paused";
+          if (
+            (hasActiveRun || diskRunInProgress) &&
+            params.forceRestart !== true
+          ) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    action,
+                    workflow,
+                    status: "blocked",
+                    reason: "run_already_in_progress",
+                    runId: diskLoopState.runId || null,
+                    hint: "Use action: 'status' to monitor. To replace the running workflow, pass forceRestart: true.",
+                  }),
+                },
+              ],
+            };
+          }
+
           let startContext;
           try {
             startContext = await withStartLock(ws, async () => {
@@ -854,7 +1051,16 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               }
 
               const nextRunId = randomUUID().slice(0, 8);
-              const initialAgent = params.agentRoles?.issueSelector || "gemini";
+              const configForAgent = resolveConfig(
+                ws,
+                params.agentRoles
+                  ? { workflow: { agentRoles: params.agentRoles } }
+                  : {},
+              );
+              const initialAgent =
+                params.agentRoles?.issueSelector ||
+                configForAgent.workflow?.agentRoles?.issueSelector ||
+                "gemini";
 
               // Preserve prior issueQueue so runDevelopLoop can merge terminal statuses
               const priorLoopState = await loadLoopState(ws);
@@ -962,6 +1168,23 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             steeringContext,
           };
 
+          if (workflow === "develop") {
+            workflowCtx.syncLifecycleActorFromDisk = async () => {
+              const ls = await loadLoopState(ws);
+              const entry = workflowActors.get(nextRunId);
+              if (!entry || entry.workspace !== ws || ls.runId !== nextRunId)
+                return;
+              entry.actor.send({
+                type: "SYNC",
+                state: {
+                  currentStage: ls.currentStage ?? null,
+                  activeAgent: ls.activeAgent ?? null,
+                  lastHeartbeatAt: ls.lastHeartbeatAt ?? null,
+                },
+              });
+            };
+          }
+
           // Fire and forget — run in background
           const runPromise = Promise.resolve().then(async () => {
             try {
@@ -1030,6 +1253,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                 runId: nextRunId,
                 result,
                 agentPool,
+                workflow,
               });
             } catch (err) {
               const at = new Date().toISOString();

@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { saveState } from "../state/workflow-state.js";
+import {
+  clearAllSessionIdsAndDisable,
+  saveState,
+} from "../state/workflow-state.js";
 
 /**
  * Check whether an agent supports session create/resume.
@@ -48,6 +51,11 @@ export async function withSessionResume({
 }) {
   const isSupported = supportsSession(agentName, agent);
 
+  // Sessions disabled for this issue (e.g. after prior auth/collision)
+  if (state.sessionsDisabled) {
+    return await executeFn({});
+  }
+
   // Agent-change invalidation
   if (state[agentNameKey] && state[agentNameKey] !== agentName) {
     delete state[sessionKey];
@@ -66,6 +74,13 @@ export async function withSessionResume({
     sessionOpts = hadSession
       ? { resumeId: state[sessionKey] }
       : { sessionId: state[sessionKey] };
+    log({
+      event: "session_opts",
+      sessionKey,
+      hadSessionBefore: hadSession,
+      usingCreate: !!sessionOpts.sessionId,
+      usingResume: !!sessionOpts.resumeId,
+    });
   }
 
   try {
@@ -76,17 +91,17 @@ export async function withSessionResume({
       (err.name === "CommandFatalStderrError" ||
         err.name === "CommandFatalStdoutError") &&
       err.category === "auth";
-    const canRetryWithFreshSession =
-      isAuthError && (sessionOpts.resumeId || sessionOpts.sessionId);
-    if (canRetryWithFreshSession) {
+    const hadSessionOpts = sessionOpts.resumeId || sessionOpts.sessionId;
+    if (isAuthError && hadSessionOpts) {
       log({
         event: "session_auth_failed",
         sessionId: state[sessionKey],
         wasCreating: !!sessionOpts.sessionId,
       });
-      state[sessionKey] = randomUUID();
+      clearAllSessionIdsAndDisable(state);
       await saveState(workspaceDir, state);
-      return await executeFn({ sessionId: state[sessionKey] });
+      log({ event: "session_retry_no_session", sessionKey });
+      return await executeFn({});
     }
     throw err;
   }

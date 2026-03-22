@@ -161,6 +161,8 @@ Three backends, assigned to roles via config:
 
 Agents include automatic retry with configurable backoff and hang detection. If a primary agent fails, an optional fallback agent can take over (configured via `agents.fallback`).
 
+During **develop implementation**, the programmer CLI uses `workflow.timeouts.implementation` for both wall-clock and hang detection so a long quiet session is not cut off by the default `agents.retry.hangTimeoutMs` (5 minutes).
+
 ### Workflow control
 
 `coder_workflow` is the unified control plane:
@@ -169,7 +171,8 @@ Agents include automatic retry with configurable backoff and hang detection. If 
 |--------|-------------|
 | `start` | Launch a pipeline run |
 | `status` | Current stage, heartbeat, loop state, progress |
-| `events` | Structured event log with cursor pagination |
+| `events` | Structured event log (`afterSeq` / `limit`). `seq` is the 1-based line index; run filtering can yield sparse pages — use `allRuns: true` for cross-run history. |
+| `reconcile` | If `status` shows a stale run (dead runner PID or heartbeat), mark the loop failed on disk so a new `start` is allowed. |
 | `pause` | Pause at next checkpoint |
 | `resume` | Resume paused run |
 | `cancel` | Cooperative cancellation |
@@ -195,6 +198,14 @@ All state lives under `.coder/` (gitignored):
 ## Configuration
 
 Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP tool inputs.
+
+### Claude, OpenRouter, and `passEnv`
+
+- **`models.claude`** is the single source for `model`, `apiEndpoint`, and which env var holds the API key (`apiKeyEnv`, e.g. `OPENROUTER_API_KEY`).
+- **`resolvePassEnv`** automatically adds every `models.*.apiKeyEnv` to the sandbox secret list, so you do not need to repeat `OPENROUTER_API_KEY` in `sandbox.passEnv` unless you use a fully custom `passEnv` array and want it explicit.
+- For OpenRouter-style endpoints (URL does not contain `anthropic.com`), the CLI sandbox gets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (from the key named in `apiKeyEnv`), and `ANTHROPIC_API_KEY=""` — derived from config, not from duplicating those names in `passEnv`.
+- The model is still passed as `claude --model …` from `models.claude.model`; it is not set again via `ANTHROPIC_MODEL` in the environment.
+
 
 ```jsonc
 {
@@ -326,6 +337,18 @@ Events: `workflow_start`, `workflow_complete`, `workflow_failed`, `machine_start
 
 Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATUS`, `CODER_HOOK_DATA`, and `CODER_HOOK_RUN_ID` environment variables. Failures are logged but never break the workflow.
 
+## Monitoring develop workflow (`coder_status`)
+
+The MCP tool **`coder_status`** (and the same payload shape when embedded elsewhere) includes:
+
+- **`currentStage` / `activeAgent`** — coarse runner position from loop or lifecycle state. It can lag briefly right after a stage change.
+- **`steps` and `artifacts`** (`issueExists`, `planExists`, `critiqueExists`) — what exists on disk for the develop pipeline. **Prefer these** when you need to know whether ISSUE/PLAN/PLANREVIEW are present.
+- **`derivedArtifactPhase`** (when `runStatus` is `running` or `paused` **and** the active workflow is develop) — `issue_draft` → `planning` → `plan_review` → `past_plan_review`, derived from `steps` plus artifact files. Omitted for research/design so stale develop artifacts do not mislabel the run. Use it when `currentStage` disagrees with `artifacts` (e.g. stage still `develop_starting` while `planExists` is true).
+
+MCP tools are not shell commands — call **`coder_status`** through the MCP integration, not as a bash command name.
+
+**Plan review (Claude/Codex with sessions):** If the agent exits **0** but **`PLANREVIEW.md`** is still missing and stripped stdout is empty, the runner logs **`critique_retry_empty_output`**, clears **`planReviewSessionId`**, and performs **one** more attempt in a **fresh** session (`critique_retry_fresh_session`) using a **full** retry prompt (read **`PLAN.md`**, same sections/constraints and revision-round note as the primary review). Nonzero exits and thrown errors log **`plan_review_execute_failed`** once per failed invocation (includes **`stdoutLen`/`stderrLen`** from the result or from the error when the sandbox attached streams). If the critique is still missing after that, see **`critique_missing_after_review`** in `develop` logs.
+
 ## Safety
 
 - Workspace boundaries enforced — symlink escape detection on workspace and scratchpad paths
@@ -334,10 +357,14 @@ Hook scripts receive `CODER_HOOK_EVENT`, `CODER_HOOK_MACHINE`, `CODER_HOOK_STATU
 - Health-check URLs restricted to localhost
 - One active run per workspace (concurrent starts force-cancel previous)
 - Session TTL with automatic cleanup (HTTP mode)
-- Agent hang detection with configurable timeout (default 5 min)
+- Agent hang detection with configurable timeout (default 5 min); **planning** and **plan review** disable per-call hang so `workflow.timeouts.planning` / `planReview` bound silence instead
 - Codex runs inside the host sandbox with `--dangerously-bypass-approvals-and-sandbox` for Linux compatibility
 - `CODER_ALLOW_ANY_WORKSPACE=1` to allow arbitrary paths
 - `CODER_ALLOW_EXTERNAL_HEALTHCHECK=1` for external health-check URLs
+
+### Troubleshooting
+
+- **Claude responses truncated / “max output tokens”** — Increase `claude.maxOutputTokens` in `coder.json` (or your agent profile) so long plans and reviews are not cut off.
 
 ## Environment variables
 

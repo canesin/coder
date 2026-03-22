@@ -5,8 +5,10 @@ import path from "node:path";
 import test from "node:test";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
+  extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   runDevelopPipeline,
   runPlanLoop,
 } from "../src/workflows/develop.workflow.js";
@@ -711,6 +713,49 @@ test("runDevelopPipeline: detects CONFLICT_DETECTED with blank line between bull
 });
 
 // ---------------------------------------------------------------------------
+// extractGitLabProjectPath: self-hosted GitLab URL parsing
+// ---------------------------------------------------------------------------
+
+test("extractGitLabProjectPath: parses gitlab.com and self-hosted URLs", () => {
+  assert.equal(
+    extractGitLabProjectPath("https://gitlab.com/group/proj"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("https://gitlab.com/group/proj.git"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("https://gitlab.company.com/group/proj.git"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("https://gitlab.company.com/group/proj"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("git@gitlab.com:group/proj.git"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("git@gitlab.company.com:group/proj"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("ssh://git@gitlab.company.com/group/proj.git"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath(
+      "ssh://git@gitlab.company.com/group/subgroup/proj",
+    ),
+    "group/subgroup/proj",
+  );
+  assert.equal(extractGitLabProjectPath("https://github.com/owner/repo"), null);
+  assert.equal(extractGitLabProjectPath("invalid"), null);
+});
+
+// ---------------------------------------------------------------------------
 // fetchOpenPrBranches: glab args (docs.gitlab.com/cli/mr/list)
 // ---------------------------------------------------------------------------
 
@@ -1067,6 +1112,14 @@ test("runDevelopPipeline: defers on CONFLICT_DETECTED when conflictDetection is 
     WorkflowRunner.prototype.run = originalRun;
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("gitlab: glab stderr with unknown shorthand flag is a format mismatch (not fatal)", () => {
+  assert.ok(
+    isGlabMrListFormatMismatchStderr(
+      "unknown shorthand flag: 'F' in -F\n\nUsage: glab mr list [flags]",
+    ),
+  );
 });
 
 test("config schema: workflow.conflictDetection defaults to true", async () => {

@@ -38,10 +38,86 @@ function discardWorktreeChanges(repoRoot) {
 /**
  * Build args for glab mr list. Exported for testing.
  * Per docs.gitlab.com/cli/mr/list: default is open MRs; --state is not a valid flag.
+ * Uses --output json (or -F json fallback for older glab that lacks --output).
  * @returns {string[]}
  */
 export function glabMrListArgs() {
   return ["mr", "list", "--output", "json"];
+}
+
+/** Fallback args for older glab that lacks --output (uses -F json). */
+export function glabMrListArgsLegacy() {
+  return ["mr", "list", "-F", "json"];
+}
+
+/**
+ * Extract GitLab project path from remote URL for API calls.
+ * Supports gitlab.com and self-hosted (https, ssh SCP, ssh:// URL).
+ * Returns null for non-GitLab hosts (e.g. github.com).
+ * @param {string} url - Remote URL (e.g. https://gitlab.company.com/group/proj.git)
+ * @returns {string|null} - Project path (e.g. "group/proj") or null
+ */
+export function extractGitLabProjectPath(url) {
+  const u = url.trim();
+  const hostFromHttps = u.match(/^https?:\/\/([^/]+)/i)?.[1] ?? "";
+  const hostFromScp = u.match(/^[^@]+@([^:]+):/)?.[1] ?? "";
+  const hostFromSsh = u.match(/^ssh:\/\/([^/]+)/i)?.[1] ?? "";
+  const host = (hostFromHttps || hostFromScp || hostFromSsh).toLowerCase();
+  if (!host.includes("gitlab")) return null;
+  // HTTPS: https://host/group/proj or https://host/group/proj.git
+  const httpsMatch = u.match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?$/i);
+  if (httpsMatch) return httpsMatch[1];
+  // SSH SCP: git@host:group/proj or git@host:group/proj.git
+  const scpMatch = u.match(/^[^@]+@[^:]+:(.+?)(?:\.git)?$/);
+  if (scpMatch) return scpMatch[1];
+  // SSH URL: ssh://git@host/group/proj.git
+  const sshUrlMatch = u.match(/^ssh:\/\/[^/]+\/(.+?)(?:\.git)?$/i);
+  if (sshUrlMatch) return sshUrlMatch[1];
+  return null;
+}
+
+/**
+ * Fallback: fetch open MRs via glab api when mr list lacks --output/-F json.
+ * Uses GitLab API projects/:id/merge_requests. Returns [] on failure.
+ * Supports gitlab.com and self-hosted instances.
+ * @param {string} repoRoot
+ * @param {(e: object) => void} [log]
+ * @returns {Array<{ source_branch: string, iid: number, title: string }>}
+ */
+function fetchMergeRequestsViaApi(repoRoot, _log) {
+  try {
+    const urlRes = spawnSync("git", ["remote", "get-url", "origin"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    if (urlRes.status !== 0) return [];
+    const url = (urlRes.stdout || "").trim();
+    const projectPathRaw = extractGitLabProjectPath(url);
+    if (!projectPathRaw || !projectPathRaw.includes("/")) return [];
+    const projectPath = encodeURIComponent(
+      projectPathRaw.replace(/\.git$/, ""),
+    );
+    const res = spawnSync(
+      "glab",
+      [
+        "api",
+        `projects/${projectPath}/merge_requests?state=opened&per_page=50`,
+      ],
+      { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
+    );
+    if (res.status !== 0 || !res.stdout) return [];
+    const parsed = JSON.parse(res.stdout);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** True when glab stderr indicates bad CLI flags — try alternate args or API instead of failing closed. */
+export function isGlabMrListFormatMismatchStderr(stderr) {
+  return /unknown flag|unrecognized|invalid.*flag|shorthand flag/i.test(
+    String(stderr || ""),
+  );
 }
 
 /**
@@ -60,21 +136,37 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
     let prs;
 
     if (platform === "gitlab") {
-      const res = spawnSync("glab", glabMrListArgs(), {
-        cwd: repoRoot,
-        encoding: "utf8",
-        timeout: 15000,
-      });
-      if (res.status !== 0 || !res.stdout) {
-        if (log)
+      let mrs = [];
+      const argsList = [glabMrListArgs(), glabMrListArgsLegacy()];
+      for (const args of argsList) {
+        const res = spawnSync("glab", args, {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 15000,
+        });
+        if (res.status === 0 && res.stdout) {
+          try {
+            const parsed = JSON.parse(res.stdout);
+            mrs = Array.isArray(parsed) ? parsed : [];
+            break;
+          } catch {
+            continue;
+          }
+        }
+        const stderr = (res.stderr || "").trim();
+        const isUnknownFlag = isGlabMrListFormatMismatchStderr(stderr);
+        if (!isUnknownFlag && log) {
           log({
             event: "open_prs_fetch_failed",
-            error: (res.stderr || "glab failed").trim(),
+            error: stderr || "glab failed",
           });
-        return [];
+          return [];
+        }
       }
-      const mrs = JSON.parse(res.stdout);
-      prs = (Array.isArray(mrs) ? mrs : []).map((mr) => ({
+      if (mrs.length === 0) {
+        mrs = fetchMergeRequestsViaApi(repoRoot, log);
+      }
+      prs = mrs.map((mr) => ({
         branch: mr.source_branch,
         id: `!${mr.iid}`,
         title: mr.title || "",

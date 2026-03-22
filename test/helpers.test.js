@@ -173,6 +173,22 @@ test("resolvePassEnv returns config sandbox.passEnv when set", () => {
   assert.deepEqual(resolvePassEnv(config), ["MY_KEY", "OTHER_KEY"]);
 });
 
+test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
+  const config = {
+    models: {
+      claude: {
+        model: "m",
+        apiEndpoint: "https://openrouter.ai/api",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+      },
+    },
+    sandbox: { passEnv: ["GITLAB_TOKEN"], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GITLAB_TOKEN"));
+  assert.ok(r.includes("OPENROUTER_API_KEY"));
+});
+
 test("resolvePassEnv merges passEnvPatterns matches from env", () => {
   const config = {
     sandbox: {
@@ -349,22 +365,6 @@ test("extractGeminiPayloadJson throws when session envelope response is null", (
       return true;
     },
   );
-});
-
-test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
-  const config = {
-    models: {
-      claude: {
-        model: "m",
-        apiEndpoint: "https://openrouter.ai/api",
-        apiKeyEnv: "OPENROUTER_API_KEY",
-      },
-    },
-    sandbox: { passEnv: ["GITLAB_TOKEN"], passEnvPatterns: [] },
-  };
-  const r = resolvePassEnv(config);
-  assert.ok(r.includes("GITLAB_TOKEN"));
-  assert.ok(r.includes("OPENROUTER_API_KEY"));
 });
 
 test("resolvePassEnv uses default key env when models.gemini omits apiKeyEnv", () => {

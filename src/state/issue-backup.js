@@ -46,6 +46,39 @@ export function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
   return true;
 }
 
+/**
+ * Archive plan artifacts (PLAN.md, PLANREVIEW.md) to .coder/plan-failures/
+ * for debugging when an issue fails or is deferred. Only archives if
+ * PLANREVIEW.md exists (plan was reviewed). Call before cleanup.
+ *
+ * @param {string} workspaceDir
+ * @param {{ source?: string, id: string, title?: string }} issue
+ * @param {string} [reason] - e.g. "plan_review_exhausted", "failed", "deferred"
+ */
+export function archivePlanFailureArtifacts(workspaceDir, issue, reason = "") {
+  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+  const critiquePath = path.join(artifactsDir, "PLANREVIEW.md");
+  if (!existsSync(critiquePath)) return;
+
+  const safeId = String(issue?.id ?? "unknown").replace(/[/\\:*?"<>|]/g, "-");
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const archiveDir = path.join(
+    workspaceDir,
+    ".coder",
+    "plan-failures",
+    `${safeId}-${ts}`,
+  );
+  mkdirSync(archiveDir, { recursive: true });
+
+  for (const name of ["ISSUE.md", "PLAN.md", "PLANREVIEW.md"]) {
+    const src = path.join(artifactsDir, name);
+    if (existsSync(src))
+      cpSync(src, path.join(archiveDir, name), { force: true });
+  }
+  if (reason)
+    writeFileSync(path.join(archiveDir, "reason.txt"), `${reason}\n`, "utf8");
+}
+
 export function clearStateAndArtifacts(workspaceDir) {
   const sp = statePathFor(workspaceDir);
   if (existsSync(sp)) rmSync(sp, { force: true });
@@ -196,6 +229,10 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
   }
   if (state?.selected && state?.steps?.wrotePlan) {
     saveBackup(workspaceDir, state);
+  }
+  // Archive plan artifacts before switching issues (e.g. crash recovery, edge cases)
+  if (state?.selected) {
+    archivePlanFailureArtifacts(workspaceDir, state.selected, "issue_switch");
   }
   clearStateAndArtifacts(workspaceDir);
 }

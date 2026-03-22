@@ -4,6 +4,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -11,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveRepoRoot } from "../src/machines/develop/_shared.js";
+import { archivePlanFailureArtifacts } from "../src/state/issue-backup.js";
 import {
   backupKeyFor,
   ensureCleanLoopStart,
@@ -598,6 +601,61 @@ test("prepareForIssue: restores from backup when backup exists and is consistent
       "should emit loop_resume_detected from backup",
     );
     assert.ok(!existsSync(backupDir), "backup should be consumed");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("archivePlanFailureArtifacts: copies PLAN and PLANREVIEW to plan-failures", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue #34\n");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+    writeFileSync(
+      path.join(artifactsDir, "PLANREVIEW.md"),
+      "## Verdict\nREJECT\n\n## Critique\nToo vague.",
+    );
+
+    archivePlanFailureArtifacts(
+      tmp,
+      { source: "gitlab", id: "#34" },
+      "plan_review_exhausted",
+    );
+
+    const failuresDir = path.join(tmp, ".coder", "plan-failures");
+    assert.ok(existsSync(failuresDir));
+    const entries = readdirSync(failuresDir);
+    assert.ok(entries.length >= 1, "should have at least one archive dir");
+    const archiveDir = path.join(failuresDir, entries[0]);
+    assert.ok(entries[0].includes("34"), "archive dir should include issue id");
+    assert.ok(existsSync(path.join(archiveDir, "PLAN.md")));
+    assert.ok(existsSync(path.join(archiveDir, "PLANREVIEW.md")));
+    assert.ok(existsSync(path.join(archiveDir, "ISSUE.md")));
+    assert.ok(existsSync(path.join(archiveDir, "reason.txt")));
+    assert.ok(
+      readFileSync(path.join(archiveDir, "reason.txt"), "utf8").includes(
+        "plan_review_exhausted",
+      ),
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("archivePlanFailureArtifacts: no-op when PLANREVIEW.md missing", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+
+    archivePlanFailureArtifacts(tmp, { id: "#34" }, "failed");
+
+    const failuresDir = path.join(tmp, ".coder", "plan-failures");
+    assert.ok(
+      !existsSync(failuresDir),
+      "should not create archive without critique",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
