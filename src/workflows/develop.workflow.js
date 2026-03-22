@@ -544,6 +544,8 @@ export async function runDevelopPipeline(opts, ctx) {
             if (planExhausted) {
               state.steps.wrotePlan = false;
               state.steps.wroteCritique = false;
+              state.steps.reviewerCompleted = false;
+              state.specDeltaSummary = "";
             }
             await saveState(ctx.workspaceDir, state);
           }
