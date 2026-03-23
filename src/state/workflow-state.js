@@ -368,6 +368,7 @@ const LoopIssueResultSchema = z
     dependsOn: z.array(z.string()).default([]),
     lastFailedRunId: z.string().nullable().default(null),
     deferredReason: z.string().nullable().optional(),
+    rcaIssueUrl: z.string().nullable().optional(),
   })
   .passthrough();
 

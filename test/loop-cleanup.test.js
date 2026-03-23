@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveRepoRoot } from "../src/machines/develop/_shared.js";
-import { archivePlanFailureArtifacts } from "../src/state/issue-backup.js";
+import { archiveFailureArtifacts } from "../src/state/issue-backup.js";
 import {
   backupKeyFor,
   ensureCleanLoopStart,
@@ -606,7 +606,7 @@ test("prepareForIssue: restores from backup when backup exists and is consistent
   }
 });
 
-test("archivePlanFailureArtifacts: copies PLAN and PLANREVIEW to plan-failures", () => {
+test("archiveFailureArtifacts: copies all artifacts to .coder/failures/", () => {
   const tmp = makeTmpRepo();
   try {
     const artifactsDir = path.join(tmp, ".coder", "artifacts");
@@ -616,14 +616,19 @@ test("archivePlanFailureArtifacts: copies PLAN and PLANREVIEW to plan-failures",
       path.join(artifactsDir, "PLANREVIEW.md"),
       "## Verdict\nREJECT\n\n## Critique\nToo vague.",
     );
+    writeFileSync(
+      path.join(artifactsDir, "REVIEW_FINDINGS.md"),
+      "# Findings\nBug found.",
+    );
 
-    archivePlanFailureArtifacts(
+    archiveFailureArtifacts(
       tmp,
       { source: "gitlab", id: "#34" },
       "plan_review_exhausted",
+      { stage: "plan_review" },
     );
 
-    const failuresDir = path.join(tmp, ".coder", "plan-failures");
+    const failuresDir = path.join(tmp, ".coder", "failures");
     assert.ok(existsSync(failuresDir));
     const entries = readdirSync(failuresDir);
     assert.ok(entries.length >= 1, "should have at least one archive dir");
@@ -632,29 +637,48 @@ test("archivePlanFailureArtifacts: copies PLAN and PLANREVIEW to plan-failures",
     assert.ok(existsSync(path.join(archiveDir, "PLAN.md")));
     assert.ok(existsSync(path.join(archiveDir, "PLANREVIEW.md")));
     assert.ok(existsSync(path.join(archiveDir, "ISSUE.md")));
+    assert.ok(existsSync(path.join(archiveDir, "REVIEW_FINDINGS.md")));
     assert.ok(existsSync(path.join(archiveDir, "reason.txt")));
-    assert.ok(
-      readFileSync(path.join(archiveDir, "reason.txt"), "utf8").includes(
-        "plan_review_exhausted",
-      ),
-    );
+    const reasonTxt = readFileSync(path.join(archiveDir, "reason.txt"), "utf8");
+    assert.ok(reasonTxt.includes("plan_review_exhausted"));
+    assert.ok(reasonTxt.includes("stage: plan_review"));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test("archivePlanFailureArtifacts: no-op when PLANREVIEW.md missing", () => {
+test("archiveFailureArtifacts: archives even when only ISSUE.md exists (early-stage failure)", () => {
   const tmp = makeTmpRepo();
   try {
     const artifactsDir = path.join(tmp, ".coder", "artifacts");
-    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue #99\n");
 
-    archivePlanFailureArtifacts(tmp, { id: "#34" }, "failed");
+    archiveFailureArtifacts(tmp, { id: "#99" }, "failed");
 
-    const failuresDir = path.join(tmp, ".coder", "plan-failures");
+    const failuresDir = path.join(tmp, ".coder", "failures");
+    assert.ok(
+      existsSync(failuresDir),
+      "should archive even without PLANREVIEW.md",
+    );
+    const entries = readdirSync(failuresDir);
+    assert.ok(entries.length >= 1);
+    const archiveDir = path.join(failuresDir, entries[0]);
+    assert.ok(existsSync(path.join(archiveDir, "ISSUE.md")));
+    assert.ok(!existsSync(path.join(archiveDir, "PLAN.md")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("archiveFailureArtifacts: no-op when no artifacts exist at all", () => {
+  const tmp = makeTmpRepo();
+  try {
+    archiveFailureArtifacts(tmp, { id: "#34" }, "failed");
+
+    const failuresDir = path.join(tmp, ".coder", "failures");
     assert.ok(
       !existsSync(failuresDir),
-      "should not create archive without critique",
+      "should not create archive when no artifacts exist",
     );
   } finally {
     rmSync(tmp, { recursive: true, force: true });

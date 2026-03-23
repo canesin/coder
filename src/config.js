@@ -95,6 +95,7 @@ export const WorkflowAgentRolesSchema = z.object({
   reviewer: AgentNameSchema.default("codex"),
   committer: AgentNameSchema.default("gemini"),
   coalesce: AgentNameSchema.default("codex"),
+  failureMonitor: AgentNameSchema.default("codex"),
 });
 
 export const WorkflowWipSchema = z.object({
@@ -137,6 +138,7 @@ export const AgentRolesInputSchema = z.object({
   reviewer: AgentNameSchema.optional(),
   committer: AgentNameSchema.optional(),
   coalesce: AgentNameSchema.optional(),
+  failureMonitor: AgentNameSchema.optional(),
 });
 
 export const DesignConfigSchema = z.object({
@@ -168,6 +170,7 @@ export const HookSchema = z.object({
     "issue_failed",
     "issue_skipped",
     "issue_deferred",
+    "rca_filed",
   ]),
   machine: z
     .string()
@@ -198,6 +201,13 @@ export const AgentRetrySchema = z.object({
   backoffMs: z.number().int().min(0).default(5000),
   retryOnRateLimit: z.boolean().default(true),
   hangTimeoutMs: z.number().int().min(0).default(300_000),
+});
+
+export const FailureMonitorSchema = z.object({
+  enabled: z.boolean().default(false),
+  labels: z.array(z.string()).default(["coder-rca", "automated"]),
+  timeoutMs: z.number().int().positive().default(300_000),
+  monitorBlockingDefers: z.boolean().default(false),
 });
 
 export const AgentFallbackSchema = z
@@ -269,6 +279,7 @@ export const CoderConfigSchema = z.object({
         .default("github"),
       localIssuesDir: z.string().default(""),
       hooks: z.array(HookSchema).default([]),
+      failureMonitor: FailureMonitorSchema.prefault({}),
       preflight: z
         .object({
           checks: z

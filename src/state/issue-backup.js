@@ -46,38 +46,65 @@ export function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
   return true;
 }
 
+/** Artifact names archived on failure — all optional, whatever exists gets copied. */
+const FAILURE_ARTIFACT_NAMES = [
+  "ISSUE.md",
+  "PLAN.md",
+  "PLANREVIEW.md",
+  "REVIEW_FINDINGS.md",
+];
+
 /**
- * Archive plan artifacts (PLAN.md, PLANREVIEW.md) to .coder/plan-failures/
- * for debugging when an issue fails or is deferred. Only archives if
- * PLANREVIEW.md exists (plan was reviewed). Call before cleanup.
+ * Archive all available workflow artifacts to .coder/failures/ for debugging
+ * when an issue fails, is deferred, or is skipped. Archives whatever exists
+ * at the time of failure — works at any stage.
  *
  * @param {string} workspaceDir
  * @param {{ source?: string, id: string, title?: string }} issue
- * @param {string} [reason] - e.g. "plan_review_exhausted", "failed", "deferred"
+ * @param {string} [reason] - e.g. "plan_review_exhausted", "failed", "deferred", "issue_switch"
+ * @param {{ stage?: string }} [extra] - optional metadata (which stage failed)
  */
-export function archivePlanFailureArtifacts(workspaceDir, issue, reason = "") {
+export function archiveFailureArtifacts(
+  workspaceDir,
+  issue,
+  reason = "",
+  extra = {},
+) {
   const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  const critiquePath = path.join(artifactsDir, "PLANREVIEW.md");
-  if (!existsSync(critiquePath)) return;
+  // Only archive if at least one artifact file exists
+  const hasAny = FAILURE_ARTIFACT_NAMES.some((name) =>
+    existsSync(path.join(artifactsDir, name)),
+  );
+  if (!hasAny) return;
 
   const safeId = String(issue?.id ?? "unknown").replace(/[/\\:*?"<>|]/g, "-");
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const archiveDir = path.join(
     workspaceDir,
     ".coder",
-    "plan-failures",
+    "failures",
     `${safeId}-${ts}`,
   );
   mkdirSync(archiveDir, { recursive: true });
 
-  for (const name of ["ISSUE.md", "PLAN.md", "PLANREVIEW.md"]) {
+  for (const name of FAILURE_ARTIFACT_NAMES) {
     const src = path.join(artifactsDir, name);
     if (existsSync(src))
       cpSync(src, path.join(archiveDir, name), { force: true });
   }
-  if (reason)
-    writeFileSync(path.join(archiveDir, "reason.txt"), `${reason}\n`, "utf8");
+  const reasonLines = [reason, extra.stage ? `stage: ${extra.stage}` : ""]
+    .filter(Boolean)
+    .join("\n");
+  if (reasonLines)
+    writeFileSync(
+      path.join(archiveDir, "reason.txt"),
+      `${reasonLines}\n`,
+      "utf8",
+    );
 }
+
+/** @deprecated Use archiveFailureArtifacts — kept for backwards compat. */
+export const archivePlanFailureArtifacts = archiveFailureArtifacts;
 
 export function clearStateAndArtifacts(workspaceDir) {
   const sp = statePathFor(workspaceDir);
@@ -239,11 +266,11 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
   if (state?.selected && state?.steps?.wrotePlan) {
     saveBackup(workspaceDir, state);
   }
-  // Archive plan artifacts before switching issues (e.g. crash recovery, edge cases).
+  // Archive artifacts before switching issues (e.g. crash recovery, edge cases).
   // Best-effort — don't let archival failure block the issue switch.
   if (state?.selected) {
     try {
-      archivePlanFailureArtifacts(workspaceDir, state.selected, "issue_switch");
+      archiveFailureArtifacts(workspaceDir, state.selected, "issue_switch");
     } catch {
       /* best-effort */
     }

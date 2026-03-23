@@ -36,7 +36,8 @@
       "programmer": "claude",
       "reviewer": "codex",
       "committer": "gemini",
-      "coalesce": "codex"
+      "coalesce": "codex",
+      "failureMonitor": "codex"
     },
     "wip": {
       "push": true,
@@ -59,6 +60,12 @@
     "retryBackoffMs": 5000,
     "preflight": {
       "checks": []
+    },
+    "failureMonitor": {
+      "enabled": false,
+      "labels": ["coder-rca", "automated"],
+      "timeoutMs": 300000,
+      "monitorBlockingDefers": false
     },
     "hooks": [],
     "timeouts": {
