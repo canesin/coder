@@ -37,21 +37,15 @@ class RetryFallbackWrapper extends AgentAdapter {
         this._primary[method](prompt, opts),
       );
     } catch (err) {
-      // On auth error with an active session, retry primary once without
-      // session state before falling through to the fallback agent.
-      if (
-        err.name === "CommandFatalStderrError" &&
-        err.category === "auth" &&
-        opts?.resumeId
-      ) {
-        const { resumeId: _, sessionId: _s, ...cleanOpts } = opts;
-        try {
-          return await this._callWithRetry(() =>
-            this._primary[method](prompt, cleanOpts),
-          );
-        } catch {
-          // fall through to fallback
-        }
+      // Auth errors with session: propagate so the machine can run the full fix
+      // (clearAllSessionIdsAndDisable, retry without session). The pool cannot
+      // update workflow state, so it must not retry or try fallback here.
+      const isAuthError =
+        (err.name === "CommandFatalStderrError" ||
+          err.name === "CommandFatalStdoutError") &&
+        err.category === "auth";
+      if (isAuthError && (opts?.resumeId || opts?.sessionId)) {
+        throw err;
       }
 
       if (this._fallback) {
@@ -93,7 +87,8 @@ class RetryFallbackWrapper extends AgentAdapter {
           const name = ctx.error.name;
           if (name === "CommandTimeoutError") return false;
           if (
-            name === "CommandFatalStderrError" &&
+            (name === "CommandFatalStderrError" ||
+              name === "CommandFatalStdoutError") &&
             ctx.error.category === "auth"
           )
             return false;

@@ -170,6 +170,7 @@ test("independent issues continue after failure (no blanket abort)", async () =>
     assert.equal(issueA.status, "failed");
     assert.equal(issueB.status, "completed");
     assert.equal(issueC.status, "completed");
+    assert.equal(finalState.status, "failed");
   } finally {
     WorkflowRunner.prototype.run = originalRun;
     rmSync(ws, { recursive: true, force: true });
@@ -263,6 +264,7 @@ test("dependency chain: dependents skipped, independent issues continue", async 
     assert.equal(issueA.status, "failed");
     assert.equal(issueB.status, "skipped");
     assert.equal(issueC.status, "completed");
+    assert.equal(finalState.status, "failed");
 
     // B was skipped as dependent of failed A
     const skippedViaHook = ctx.logEvents.some(

@@ -3,7 +3,11 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import test from "node:test";
 
-import { CliAgent, resolveAgentName } from "../src/agents/cli-agent.js";
+import {
+  CLAUDE_RESUME_FAILURE_PATTERNS,
+  CliAgent,
+  resolveAgentName,
+} from "../src/agents/cli-agent.js";
 
 const tmpDir = os.tmpdir();
 
@@ -96,6 +100,18 @@ test("claude: malicious model name is shell-escaped", () => {
   const cmd = agent._buildCommand("prompt", {});
   assert.ok(cmd.includes(`--model ${ESCAPED_MALICIOUS}`));
   assert.ok(!cmd.includes(`--model '; touch`));
+});
+
+test("claude: session auth patterns include 'already in use' for collision detection", () => {
+  const sessionCollisionError =
+    "Error: Session ID 9b211b3e-9d0b-4f76-b5dd-2262c20b95e6 is already in use.";
+  const match = CLAUDE_RESUME_FAILURE_PATTERNS.find(
+    (p) =>
+      p.category === "auth" &&
+      sessionCollisionError.toLowerCase().includes(p.pattern.toLowerCase()),
+  );
+  assert.ok(match, "should have pattern matching session ID collision error");
+  assert.equal(match.pattern, "is already in use");
 });
 
 test("codex: default command uses bypass flag and skips full-auto", () => {

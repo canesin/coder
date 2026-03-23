@@ -1,0 +1,666 @@
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { logsDir } from "../logging.js";
+import { issueRcaPath } from "../state/issue-backup.js";
+import { saveLoopState } from "../state/workflow-state.js";
+import { runHooks } from "./_base.js";
+
+/** Max chars per artifact included in RCA context. */
+const ARTIFACT_TRUNCATE = 4000;
+/** Max lines from agent log tail. */
+const LOG_TAIL_LINES = 50;
+
+const VALID_CLASSIFICATIONS = [
+  "CODER_BUG",
+  "PROJECT_ISSUE",
+  "INFRA",
+  "UNCLEAR",
+];
+
+/**
+ * Parse the classification from the RCA agent output.
+ * Looks for ### Classification followed by a **KEYWORD** marker.
+ * @param {string} rcaText
+ * @returns {string} one of VALID_CLASSIFICATIONS or "UNCLEAR"
+ */
+export function parseRcaClassification(rcaText) {
+  const classBlock =
+    rcaText
+      .match(/###\s*Classification[\s\S]*?\*\*(\w+)\*\*/i)?.[1]
+      ?.toUpperCase() ?? "";
+  return VALID_CLASSIFICATIONS.includes(classBlock) ? classBlock : "UNCLEAR";
+}
+
+/**
+ * Scan text for secrets using gitleaks and redact any matches.
+ * Writes text to a temp file, runs `gitleaks detect --no-git`, reads
+ * findings, and replaces each matched secret with [REDACTED].
+ *
+ * Best-effort: returns original text if gitleaks is unavailable or fails.
+ *
+ * @param {string} text - the text to scan (e.g. issue body)
+ * @param {string} [configPath] - optional gitleaks.toml path
+ * @returns {{ text: string, redactedCount: number }}
+ */
+export function scanAndRedactSecrets(text, configPath) {
+  let tmpDir;
+  try {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-rca-scan-"));
+    const scanFile = path.join(tmpDir, "body.txt");
+    const reportFile = path.join(tmpDir, "report.json");
+    writeFileSync(scanFile, text, "utf8");
+
+    const args = [
+      "detect",
+      "--no-git",
+      "-s",
+      tmpDir,
+      "-r",
+      reportFile,
+      "-f",
+      "json",
+    ];
+    if (configPath && existsSync(configPath)) {
+      args.push("-c", configPath);
+    }
+
+    const res = spawnSync("gitleaks", args, {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+
+    // Exit 0 = clean, 1 = leaks found, other = error
+    if (res.status !== 0 && res.status !== 1) {
+      return { text, redactedCount: 0 };
+    }
+
+    let findings;
+    try {
+      findings = JSON.parse(readFileSync(reportFile, "utf8"));
+    } catch {
+      return { text, redactedCount: 0 };
+    }
+
+    if (!Array.isArray(findings) || findings.length === 0) {
+      return { text, redactedCount: 0 };
+    }
+
+    // Redact each secret match from the text
+    let redacted = text;
+    let count = 0;
+    for (const f of findings) {
+      const secret = f.Secret || f.Match || "";
+      if (!secret) continue;
+      // Escape regex special chars in the secret literal
+      const escaped = secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const before = redacted;
+      redacted = redacted.replace(new RegExp(escaped, "g"), "[REDACTED]");
+      if (redacted !== before) count++;
+    }
+
+    return { text: redacted, redactedCount: count };
+  } catch {
+    // gitleaks not installed or other failure — return original
+    return { text, redactedCount: 0 };
+  } finally {
+    if (tmpDir) {
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  }
+}
+
+const ARTIFACT_NAMES = [
+  { file: "ISSUE.md", key: "issue" },
+  { file: "PLAN.md", key: "plan" },
+  { file: "PLANREVIEW.md", key: "planReview" },
+  { file: "REVIEW_FINDINGS.md", key: "reviewFindings" },
+];
+
+/**
+ * Collect all available context for RCA regardless of which stage failed.
+ * Reads artifacts, agent logs, git state — all best-effort (missing files skipped).
+ *
+ * @param {string} workspaceDir
+ * @param {{ id: string, title?: string }} issue
+ * @param {object} loopState
+ * @param {number} issueIndex
+ * @returns {object}
+ */
+export function gatherFailureContext(
+  workspaceDir,
+  _issue,
+  loopState,
+  issueIndex,
+) {
+  const entry = loopState.issueQueue?.[issueIndex] ?? {};
+  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+
+  // Read whatever artifacts exist
+  const artifacts = {};
+  for (const { file, key } of ARTIFACT_NAMES) {
+    const p = path.join(artifactsDir, file);
+    try {
+      if (existsSync(p)) {
+        const content = readFileSync(p, "utf8");
+        artifacts[key] = content.slice(0, ARTIFACT_TRUNCATE);
+      } else {
+        artifacts[key] = null;
+      }
+    } catch {
+      artifacts[key] = null;
+    }
+  }
+
+  // Agent log tail (best-effort)
+  let agentLogTail = "";
+  const activeAgent = loopState.activeAgent || entry.activeAgent;
+  if (activeAgent) {
+    try {
+      const logPath = path.join(logsDir(workspaceDir), `${activeAgent}.jsonl`);
+      if (existsSync(logPath)) {
+        const lines = readFileSync(logPath, "utf8").split("\n");
+        agentLogTail = lines.slice(-LOG_TAIL_LINES).join("\n");
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  // Git state (best-effort)
+  let gitLog = "";
+  let gitDiffStat = "";
+  try {
+    const logRes = spawnSync("git", ["log", "--oneline", "-20"], {
+      cwd: workspaceDir,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    if (logRes.status === 0) gitLog = (logRes.stdout || "").trim();
+  } catch {
+    /* best-effort */
+  }
+  try {
+    const diffRes = spawnSync("git", ["diff", "--stat"], {
+      cwd: workspaceDir,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    if (diffRes.status === 0) gitDiffStat = (diffRes.stdout || "").trim();
+  } catch {
+    /* best-effort */
+  }
+
+  return {
+    error: entry.error || "",
+    stage: loopState.currentStage || null,
+    deferredReason: entry.deferredReason || null,
+    artifacts,
+    agentLogTail,
+    gitLog,
+    gitDiffStat,
+    branch: entry.branch || null,
+  };
+}
+
+/**
+ * Build the RCA agent prompt from gathered context.
+ * @param {{ id: string, title?: string }} issue
+ * @param {object} failureContext
+ * @returns {string}
+ */
+function buildRcaPrompt(issue, failureContext) {
+  const sections = [];
+  sections.push(
+    `You are analyzing a workflow failure for issue "${issue.title || issue.id}" (${issue.id}).`,
+  );
+
+  sections.push(`\n## Error\n${failureContext.error || "(no error captured)"}`);
+
+  if (failureContext.stage) {
+    sections.push(`\n## Failed Stage\n${failureContext.stage}`);
+  }
+  if (failureContext.deferredReason) {
+    sections.push(`\n## Deferred Reason\n${failureContext.deferredReason}`);
+  }
+
+  for (const { file, key } of ARTIFACT_NAMES) {
+    if (failureContext.artifacts[key]) {
+      sections.push(`\n## ${file}\n${failureContext.artifacts[key]}`);
+    }
+  }
+
+  if (failureContext.agentLogTail) {
+    sections.push(
+      `\n## Agent Log Tail (last ${LOG_TAIL_LINES} lines)\n\`\`\`\n${failureContext.agentLogTail}\n\`\`\``,
+    );
+  }
+
+  if (failureContext.gitLog) {
+    sections.push(
+      `\n## Recent Git Log\n\`\`\`\n${failureContext.gitLog}\n\`\`\``,
+    );
+  }
+
+  sections.push(`
+Perform a root cause analysis. Structure your response EXACTLY as shown:
+
+### Classification
+Classify by whether the coder project can act on this. Pick one:
+- **CODER_BUG** — a bug or limitation in the coder workflow engine (e.g. incorrect prompt construction, state management error, missing error handling in a machine, wrong git operations, sandbox misconfiguration, agent orchestration bug).
+- **INFRA** — external infrastructure issue (API rate limits, network timeouts, disk full, auth expired, unsupported environment setup). The coder project may be able to handle these more gracefully — better retries, clearer errors, broader environment support.
+- **PROJECT_ISSUE** — the failure is specific to the user's project (e.g. build errors in their code, missing dependencies, test failures in their tests, merge conflicts in their repo). The coder workflow operated correctly but the project has issues the agent couldn't resolve. This is the ONLY classification where no upstream action is needed.
+- **UNCLEAR** — not enough information to determine the root cause.
+
+### Root Cause
+What went wrong and why.
+
+### Contributing Factors
+Secondary issues that made the failure more likely.
+
+### Suggested Fix
+Concrete steps to resolve this, including code changes if applicable.
+
+### Prevention
+How to prevent similar failures in the future.`);
+
+  return sections.join("\n");
+}
+
+/**
+ * Build the GitHub issue body from context and RCA analysis.
+ */
+function buildIssueBody(issue, failureContext, rcaAnalysis, loopRunId) {
+  const lines = [];
+  lines.push("## Failure Summary\n");
+  lines.push(`- **Issue:** ${issue.title || issue.id} (${issue.id})`);
+  lines.push(`- **Stage:** ${failureContext.stage || "unknown"}`);
+  lines.push(`- **Branch:** ${failureContext.branch || "n/a"}`);
+  lines.push(`- **Error:** ${(failureContext.error || "").slice(0, 500)}`);
+  if (failureContext.deferredReason) {
+    lines.push(`- **Deferred Reason:** ${failureContext.deferredReason}`);
+  }
+
+  lines.push("\n## Root Cause Analysis\n");
+  lines.push(rcaAnalysis);
+
+  lines.push("\n## Context\n");
+
+  // Artifacts
+  lines.push("<details><summary>Artifacts at time of failure</summary>\n");
+  for (const { file, key } of ARTIFACT_NAMES) {
+    const content = failureContext.artifacts[key];
+    lines.push(`### ${file}`);
+    lines.push(content ? content.slice(0, 2000) : "_not yet created_");
+    lines.push("");
+  }
+  lines.push("</details>\n");
+
+  // Agent log
+  if (failureContext.agentLogTail) {
+    lines.push("<details><summary>Agent log tail</summary>\n");
+    lines.push("```");
+    lines.push(failureContext.agentLogTail.slice(0, 3000));
+    lines.push("```\n");
+    lines.push("</details>\n");
+  }
+
+  // Git state
+  if (failureContext.gitLog || failureContext.gitDiffStat) {
+    lines.push("<details><summary>Git state</summary>\n");
+    lines.push("```");
+    if (failureContext.gitLog) lines.push(failureContext.gitLog);
+    if (failureContext.gitDiffStat) {
+      lines.push("\n--- diff stat ---");
+      lines.push(failureContext.gitDiffStat);
+    }
+    lines.push("```\n");
+    lines.push("</details>\n");
+  }
+
+  lines.push("---");
+  lines.push(
+    `*Filed automatically by coder failure monitor (run ${loopRunId})*`,
+  );
+
+  return lines.join("\n");
+}
+
+/**
+ * File an RCA issue via gh CLI.
+ *
+ * @param {{ repoRoot: string, title: string, body: string, labels: string[] }} opts
+ * @returns {{ issueUrl: string }}
+ */
+export function fileRcaIssue({ repoRoot, title, body, labels, repo }) {
+  const args = ["issue", "create", "--title", title, "--body", body];
+  if (labels.length > 0) {
+    args.push("--label", labels.join(","));
+  }
+  // When upstreamRepo is configured, file against that repo explicitly.
+  if (repo) {
+    args.push("--repo", repo);
+  }
+  const res = spawnSync("gh", args, {
+    cwd: repoRoot || undefined,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  if (res.status !== 0) {
+    throw new Error(`gh issue create failed: ${res.stderr || res.stdout}`);
+  }
+  const raw = (res.stdout || "").trim();
+  const lines = raw.split("\n").filter((l) => l.trim());
+  const issueUrl = lines.find((l) => l.startsWith("http")) || lines.pop() || "";
+  if (!issueUrl || !issueUrl.startsWith("http")) {
+    throw new Error(
+      `gh issue create did not return an issue URL. Output:\n${raw || "(empty)"}`,
+    );
+  }
+  return { issueUrl };
+}
+
+/**
+ * Derive "owner/repo" from git remote origin. Returns null on failure.
+ * @param {string} repoRoot
+ * @returns {string|null}
+ */
+function getRepoSlug(repoRoot) {
+  try {
+    const res = spawnSync("git", ["remote", "get-url", "origin"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    if (res.status !== 0) return null;
+    const url = (res.stdout || "").trim();
+    // Match ssh (git@github.com:owner/repo.git) or https (https://github.com/owner/repo.git)
+    const m = url.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a dedup-safe RCA key that includes the source repo when filing
+ * to a shared upstream, preventing cross-repo id collisions.
+ * @param {string} issueId
+ * @param {string|null} repoSlug
+ * @returns {string}
+ */
+function rcaDedupKey(issueId, repoSlug) {
+  return repoSlug ? `${repoSlug}${issueId}` : issueId;
+}
+
+/**
+ * Check for existing open RCA issue for this issue ID.
+ * @param {string} repoRoot - workspace dir for cwd fallback
+ * @param {string} issueId
+ * @param {string} [upstreamRepo] - e.g. "owner/repo" to check against
+ * @param {string|null} [repoSlug] - source repo identifier for cross-repo dedup
+ * @returns {boolean} true if a duplicate exists
+ */
+function hasDuplicateRcaIssue(repoRoot, issueId, upstreamRepo, repoSlug) {
+  try {
+    const key = rcaDedupKey(issueId, repoSlug);
+    const args = [
+      "issue",
+      "list",
+      "--state",
+      "open",
+      "--search",
+      `[coder-rca] ${key}`,
+      "--json",
+      "url",
+      "--limit",
+      "1",
+    ];
+    if (upstreamRepo) args.push("--repo", upstreamRepo);
+    const res = spawnSync("gh", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    if (res.status !== 0) return false;
+    const parsed = JSON.parse(res.stdout || "[]");
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Launch non-blocking RCA for a failed issue. Best-effort — never throws.
+ *
+ * @param {{
+ *   issue: { source?: string, id: string, title?: string },
+ *   error: string,
+ *   loopRunId: string,
+ *   loopState: object,
+ *   issueIndex: number,
+ *   deferredReason?: string,
+ * }} failureCtx
+ * @param {import("../machines/_base.js").WorkflowContext} ctx
+ * @returns {Promise<{ issueUrl: string|null, skipped: boolean, error?: string }>}
+ */
+export async function runFailureRca(failureCtx, ctx) {
+  try {
+    const monitorConfig = ctx.config?.workflow?.failureMonitor;
+    if (!monitorConfig?.enabled) {
+      return { issueUrl: null, skipped: true };
+    }
+    if (ctx.cancelToken?.cancelled) {
+      return { issueUrl: null, skipped: true };
+    }
+
+    const { issue, loopRunId, loopState, issueIndex } = failureCtx;
+    const repoRoot = ctx.workspaceDir;
+
+    // Gate: only file RCA issues for GitHub-sourced repos (gh CLI required).
+    const issueSource = issue.source || ctx.config?.workflow?.issueSource;
+    if (issueSource && issueSource !== "github") {
+      ctx.log({
+        event: "failure_monitor_skipped_source",
+        issueId: issue.id,
+        source: issueSource,
+      });
+      return { issueUrl: null, skipped: true };
+    }
+
+    // Snapshot failure context synchronously BEFORE yielding so that
+    // artifact files and loop-state entries are captured before the
+    // main loop resets them for the next issue.
+    const failureContext = gatherFailureContext(
+      ctx.workspaceDir,
+      issue,
+      loopState,
+      issueIndex,
+    );
+
+    // Prefer caller-supplied error/deferredReason over loop-state values
+    // so runFailureRca is self-contained and not dependent on mutation ordering.
+    if (failureCtx.error) {
+      failureContext.error = failureCtx.error;
+    }
+    if (failureCtx.deferredReason) {
+      failureContext.deferredReason = failureCtx.deferredReason;
+    }
+
+    // Yield to the event loop before the expensive dedup check and agent call
+    // so callers that fire-and-forget this promise are not blocked.
+    await new Promise((r) => setImmediate(r));
+
+    // Dedup check — look in the upstream repo (if configured) for existing RCA issues.
+    // Include source repo slug in the key to prevent cross-repo collisions when
+    // multiple repos file to a shared upstream.
+    const upstreamRepo = monitorConfig.upstreamRepo || null;
+    const repoSlug = upstreamRepo ? getRepoSlug(repoRoot) : null;
+    if (hasDuplicateRcaIssue(repoRoot, issue.id, upstreamRepo, repoSlug)) {
+      ctx.log({
+        event: "failure_monitor_dedup",
+        issueId: issue.id,
+      });
+      return { issueUrl: null, skipped: true };
+    }
+
+    // Get agent and run RCA
+    const { agent, agentName } = ctx.agentPool.getAgent("failureMonitor", {
+      scope: "repo",
+    });
+    ctx.log({
+      event: "failure_monitor_rca_start",
+      issueId: issue.id,
+      agent: agentName,
+      stage: failureContext.stage,
+    });
+
+    const prompt = buildRcaPrompt(issue, failureContext);
+    const rcaResult = await agent.executeWithRetry(prompt, {
+      retries: 1,
+      timeoutMs: monitorConfig.timeoutMs || 300_000,
+    });
+
+    const rcaAnalysis =
+      rcaResult.exitCode === 0
+        ? (rcaResult.stdout || "").trim() || "(empty agent response)"
+        : `(agent failed with exit code ${rcaResult.exitCode})\n${(rcaResult.stderr || "").slice(0, 1000)}`;
+
+    const classification = parseRcaClassification(rcaAnalysis);
+
+    // Persist RCA to a stable per-issue location so it survives archive/clear
+    // races (the main loop resets artifacts before pending RCA promises settle).
+    // Agents read this file on retry to understand the prior failure.
+    try {
+      const rcaDest = issueRcaPath(ctx.workspaceDir, issue);
+      mkdirSync(path.dirname(rcaDest), { recursive: true });
+      writeFileSync(
+        rcaDest,
+        `# Root Cause Analysis: ${issue.title || issue.id}\n\n` +
+          `**Classification:** ${classification}\n\n${rcaAnalysis}\n`,
+        "utf8",
+      );
+    } catch {
+      /* best-effort */
+    }
+
+    ctx.log({
+      event: "failure_monitor_rca_complete",
+      issueId: issue.id,
+      classification,
+    });
+
+    // Cancel check before filing
+    if (ctx.cancelToken?.cancelled) {
+      return { issueUrl: null, skipped: true, classification };
+    }
+
+    // File upstream bug reports for anything the coder project can act on.
+    // Only PROJECT_ISSUE is excluded — those are the user's own code/build/test
+    // failures that coder handled correctly. CODER_BUG, INFRA, and UNCLEAR all
+    // get filed: bugs are obvious, infra issues often reveal missing resilience
+    // or environment support gaps, and unclear failures need investigation.
+    let issueUrl = null;
+    if (classification !== "PROJECT_ISSUE") {
+      const upstreamRepo = monitorConfig.upstreamRepo;
+      try {
+        const dedupId = rcaDedupKey(issue.id, repoSlug);
+        const title = `[coder-rca] ${issue.title || issue.id} (${dedupId})`;
+        const rawBody = buildIssueBody(
+          issue,
+          failureContext,
+          rcaAnalysis,
+          loopRunId,
+        );
+
+        // Scan for secrets before publishing to upstream GitHub
+        const gitleaksConfig = path.join(repoRoot, "gitleaks.toml");
+        const { text: body, redactedCount } = scanAndRedactSecrets(
+          rawBody,
+          existsSync(gitleaksConfig) ? gitleaksConfig : undefined,
+        );
+        if (redactedCount > 0) {
+          ctx.log({
+            event: "failure_monitor_secrets_redacted",
+            issueId: issue.id,
+            redactedCount,
+          });
+        }
+
+        const labels = monitorConfig.labels || ["coder-rca", "automated"];
+        const filed = fileRcaIssue({
+          repoRoot: upstreamRepo ? null : repoRoot,
+          title,
+          body,
+          labels,
+          repo: upstreamRepo || null,
+        });
+        issueUrl = filed.issueUrl;
+
+        ctx.log({
+          event: "failure_monitor_rca_filed",
+          issueId: issue.id,
+          rcaIssueUrl: issueUrl,
+          classification,
+        });
+
+        runHooks(ctx, loopRunId, "rca_filed", "", {
+          issueUrl,
+          originalIssueId: issue.id,
+          originalIssueTitle: issue.title || "",
+          classification,
+        });
+      } catch (fileErr) {
+        ctx.log({
+          event: "failure_monitor_filing_failed",
+          issueId: issue.id,
+          error: fileErr.message || String(fileErr),
+        });
+      }
+    } else {
+      ctx.log({
+        event: "failure_monitor_filing_skipped",
+        issueId: issue.id,
+        classification,
+        reason: "project-specific issue, not actionable upstream",
+      });
+    }
+
+    // Update loop state with RCA issue URL (if filed)
+    if (loopState.issueQueue?.[issueIndex] && issueUrl) {
+      loopState.issueQueue[issueIndex].rcaIssueUrl = issueUrl;
+      try {
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    return { issueUrl, skipped: false };
+  } catch (err) {
+    ctx.log({
+      event: "failure_monitor_error",
+      issueId: failureCtx.issue?.id,
+      error: err.message || String(err),
+    });
+    return {
+      issueUrl: null,
+      skipped: false,
+      error: err.message || String(err),
+    };
+  }
+}

@@ -34,7 +34,9 @@ import prCreationMachine from "../machines/develop/pr-creation.machine.js";
 import qualityReviewMachine from "../machines/develop/quality-review.machine.js";
 import { runPreflight } from "../preflight.js";
 import {
+  archiveFailureArtifacts,
   backupKeyFor,
+  issueRcaPath,
   prepareForIssue,
   saveBackup,
 } from "../state/issue-backup.js";
@@ -50,19 +52,26 @@ import { buildIssueBranchName } from "../worktrees.js";
 import { runHooks, WorkflowRunner } from "./_base.js";
 import {
   ensureCleanLoopStart,
+  extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   resetForNextIssue,
 } from "./develop-git.js";
+import { runFailureRca } from "./failure-monitor.js";
+import { syncDevelopLoopStage } from "./loop-sync.js";
 
 /**
  * Update the loop state heartbeat timestamp.
+ * When expectedLoopRunId is set, only writes if on-disk loop runId matches (phase-3 ticks, overlap-safe).
  */
-async function updateHeartbeat(ctx) {
+async function updateHeartbeat(ctx, expectedLoopRunId) {
   try {
     const ls = await loadLoopState(ctx.workspaceDir);
+    if (expectedLoopRunId != null && ls.runId !== expectedLoopRunId) return;
     ls.lastHeartbeatAt = new Date().toISOString();
     await saveLoopState(ctx.workspaceDir, ls, { guardRunId: ls.runId });
+    await ctx.syncLifecycleActorFromDisk?.();
   } catch {
     // Best-effort — don't fail the pipeline over a heartbeat update
   }
@@ -172,10 +181,27 @@ export async function runPlanLoop(
     if (verdict === "UNKNOWN") {
       ctx.log({ event: "plan_review_unparseable", round });
     }
+    // REJECT is the strongest reviewer signal — block immediately on final round.
+    if (verdict === "REJECT" && round === maxRounds - 1) {
+      ctx.log({
+        event: "plan_review_blocked",
+        lastVerdict: verdict,
+        roundsUsed: round + 1,
+        maxRounds,
+      });
+      return {
+        status: "failed",
+        error: "plan_review_exhausted",
+        planReviewExhausted: true,
+        results: allResults,
+      };
+    }
     const needsRevision =
       verdict === "REVISE" || verdict === "REJECT" || verdict === "UNKNOWN";
     if (!needsRevision || round === maxRounds - 1) {
       if (needsRevision && round === maxRounds - 1) {
+        // REVISE or UNKNOWN on final round (including single-round configs) —
+        // proceed with the unapproved plan but flag it for downstream awareness.
         ctx.log({
           event: "plan_review_exhausted",
           lastVerdict: verdict,
@@ -183,9 +209,8 @@ export async function runPlanLoop(
           maxRounds,
         });
         return {
-          status: "failed",
-          error: "plan_review_exhausted",
-          planReviewExhausted: true,
+          status: "completed",
+          planExhausted: true,
           results: allResults,
         };
       }
@@ -208,14 +233,19 @@ export async function runPlanLoop(
  */
 export async function runWithMachineRetry(
   fn,
-  { maxRetries, backoffMs = 5000, ctx, onFailedAttempt },
+  { maxRetries, backoffMs = 5000, ctx, onFailedAttempt, retryScope },
 ) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
       if (ctx.cancelToken?.cancelled) {
         return { status: "cancelled", results: [] };
       }
-      ctx.log({ event: "machine_retry_attempt", attempt, maxRetries });
+      ctx.log({
+        event: "machine_retry_attempt",
+        attempt,
+        maxRetries,
+        ...(retryScope ? { scope: retryScope } : {}),
+      });
       if (backoffMs > 0) await new Promise((r) => setTimeout(r, backoffMs));
     }
     const result = await fn();
@@ -288,259 +318,409 @@ async function injectRetryFeedback(ctx, failedMachine, error) {
 export async function runDevelopPipeline(opts, ctx) {
   const start = Date.now();
   const allResults = [];
+  const loopRunId = opts.loopState?.runId ?? null;
 
-  const runner = new WorkflowRunner({
-    name: "develop",
-    workflowContext: ctx,
-    onStageChange: (stage) => {
-      ctx.log({ event: "develop_stage", stage });
-    },
-  });
+  const afterLoopPersist =
+    typeof ctx.syncLifecycleActorFromDisk === "function"
+      ? () => ctx.syncLifecycleActorFromDisk()
+      : undefined;
 
-  // Phase 1: issue draft
-  const phase1 = await runner.run(
-    [
-      {
-        machine: issueDraftMachine,
-        inputMapper: () => ({
-          issue: opts.issue,
-          repoPath: opts.repoPath,
-          clarifications: opts.clarifications || "",
-          baseBranch: opts.baseBranch,
-          force: opts.force ?? false,
-        }),
-      },
-    ],
-    {},
-  );
-  allResults.push(...phase1.results);
-  if (phase1.status !== "completed") {
-    return { ...phase1, results: allResults, durationMs: Date.now() - start };
-  }
-
-  // Heartbeat after phase 1 (issue draft)
-  await updateHeartbeat(ctx);
-
-  if (ctx.cancelToken.cancelled) {
-    return {
-      status: "cancelled",
-      results: allResults,
-      runId: runner.runId,
-      durationMs: Date.now() - start,
-    };
-  }
-
-  // Phase 2: planning + review loop
-  const loopResult = await runPlanLoop(runner, ctx, {
-    planningMachine,
-    planReviewMachine,
-    activeBranches: opts.activeBranches,
-  });
-  allResults.push(...loopResult.results);
-  if (loopResult.status !== "completed") {
-    return {
-      status: loopResult.status,
-      error: loopResult.error,
-      results: allResults,
-      runId: runner.runId,
-      durationMs: Date.now() - start,
-    };
-  }
-
-  // Heartbeat after phase 2 (planning + review)
-  await updateHeartbeat(ctx);
-
-  if (ctx.cancelToken.cancelled) {
-    return {
-      status: "cancelled",
-      results: allResults,
-      runId: runner.runId,
-      durationMs: Date.now() - start,
-    };
-  }
-
-  // Check for conflicts with active branches detected during planning.
-  // Skipped when conflict detection is disabled via config.
-  if (ctx.config?.workflow?.conflictDetection !== false) {
-    const planPath = artifactPaths(ctx.artifactsDir).plan;
-    if (existsSync(planPath)) {
-      const planMd = readFileSync(planPath, "utf8").replace(/\r\n/g, "\n");
-      const conflictMatch = planMd.match(
-        /## CONFLICT_DETECTED\n+[-*]\s*branch:\s*(.+)\n+[-*]\s*reason:\s*(.+)/,
+  if (loopRunId) {
+    ctx.syncDevelopLoop = async (partial) => {
+      await syncDevelopLoopStage(
+        ctx.workspaceDir,
+        {
+          guardRunId: loopRunId,
+          ...partial,
+        },
+        afterLoopPersist,
       );
-      if (conflictMatch) {
-        return {
-          status: "deferred",
-          reason: "conflict",
-          conflictBranch: conflictMatch[1].trim(),
-          error: `Conflicts with active branch ${conflictMatch[1].trim()}: ${conflictMatch[2].trim()}`,
-          results: allResults,
-          runId: runner.runId,
-          durationMs: Date.now() - start,
-        };
+    };
+  } else {
+    ctx.syncDevelopLoop = null;
+  }
+
+  const reportDevelopStage = (stage) => {
+    ctx.log({ event: "develop_stage", stage });
+    if (!loopRunId) return;
+    const roles = ctx.config.workflow.agentRoles;
+    if (stage === "develop.quality_review" || stage === "develop.pr_creation") {
+      void syncDevelopLoopStage(
+        ctx.workspaceDir,
+        {
+          guardRunId: loopRunId,
+          currentStage: stage,
+        },
+        afterLoopPersist,
+      );
+      return;
+    }
+    const roleKeyByStage = {
+      "develop.issue_draft": "issueSelector",
+      "develop.planning": "planner",
+      "develop.plan_review": "planReviewer",
+      "develop.implementation": "programmer",
+    };
+    const roleKey = roleKeyByStage[stage];
+    const activeAgent = roleKey ? roles[roleKey] : undefined;
+    if (activeAgent === undefined) return;
+    void syncDevelopLoopStage(
+      ctx.workspaceDir,
+      {
+        guardRunId: loopRunId,
+        currentStage: stage,
+        activeAgent,
+      },
+      afterLoopPersist,
+    );
+  };
+
+  try {
+    const runner = new WorkflowRunner({
+      name: "develop",
+      workflowContext: ctx,
+      onStageChange: reportDevelopStage,
+    });
+
+    // Phase 1: issue draft
+    const phase1 = await runner.run(
+      [
+        {
+          machine: issueDraftMachine,
+          inputMapper: () => ({
+            issue: opts.issue,
+            repoPath: opts.repoPath,
+            clarifications: opts.clarifications || "",
+            baseBranch: opts.baseBranch,
+            force: opts.force ?? false,
+          }),
+        },
+      ],
+      {},
+    );
+    allResults.push(...phase1.results);
+    if (phase1.status !== "completed") {
+      return { ...phase1, results: allResults, durationMs: Date.now() - start };
+    }
+
+    // Heartbeat after phase 1 (issue draft)
+    await updateHeartbeat(ctx, loopRunId);
+
+    if (ctx.cancelToken.cancelled) {
+      return {
+        status: "cancelled",
+        results: allResults,
+        runId: runner.runId,
+        durationMs: Date.now() - start,
+      };
+    }
+
+    // Phase 2: planning + review loop
+    const loopResult = await runPlanLoop(runner, ctx, {
+      planningMachine,
+      planReviewMachine,
+      activeBranches: opts.activeBranches,
+    });
+    allResults.push(...loopResult.results);
+    if (loopResult.status !== "completed") {
+      return {
+        status: loopResult.status,
+        error: loopResult.error,
+        ...(loopResult.deferredReason && {
+          deferredReason: loopResult.deferredReason,
+        }),
+        planReviewExhausted: loopResult.planReviewExhausted,
+        results: allResults,
+        runId: runner.runId,
+        durationMs: Date.now() - start,
+      };
+    }
+    const planExhausted = loopResult.planExhausted === true;
+    if (planExhausted) {
+      ctx.log({
+        event: "plan_review_gate_bypassed",
+        message:
+          "Plan was never approved by reviewer — proceeding with unapproved plan",
+      });
+      // Persist to state so terminal retry handler knows to reset plan cache
+      const pState = await loadState(ctx.workspaceDir);
+      pState.planExhausted = true;
+      await saveState(ctx.workspaceDir, pState);
+    }
+
+    // Heartbeat after phase 2 (planning + review)
+    await updateHeartbeat(ctx, loopRunId);
+
+    if (ctx.cancelToken.cancelled) {
+      return {
+        status: "cancelled",
+        results: allResults,
+        runId: runner.runId,
+        durationMs: Date.now() - start,
+      };
+    }
+
+    // Check for conflicts with active branches detected during planning.
+    // Skipped when conflict detection is disabled via config.
+    if (ctx.config?.workflow?.conflictDetection !== false) {
+      const planPath = artifactPaths(ctx.artifactsDir).plan;
+      if (existsSync(planPath)) {
+        const planMd = readFileSync(planPath, "utf8").replace(/\r\n/g, "\n");
+        const conflictMatch = planMd.match(
+          /## CONFLICT_DETECTED\n+[-*]\s*branch:\s*(.+)\n+[-*]\s*reason:\s*(.+)/,
+        );
+        if (conflictMatch) {
+          return {
+            status: "deferred",
+            reason: "conflict",
+            conflictBranch: conflictMatch[1].trim(),
+            error: `Conflicts with active branch ${conflictMatch[1].trim()}: ${conflictMatch[2].trim()}`,
+            results: allResults,
+            runId: runner.runId,
+            durationMs: Date.now() - start,
+          };
+        }
       }
     }
-  }
 
-  // Phase 3: implementation → quality-review → PR creation
-  const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 2;
-  const retryBackoffMs = ctx.config?.workflow?.retryBackoffMs ?? 5000;
-  let lastPhase3RunId = null;
-  let isFirstAttempt = true;
-  const phase3Steps = [
-    { machine: implementationMachine, inputMapper: () => ({}) },
-    {
-      machine: qualityReviewMachine,
-      inputMapper: () => ({
-        testCmd: opts.testCmd || "",
-        testConfigPath: opts.testConfigPath || "",
-        allowNoTests: opts.allowNoTests ?? false,
-        ppcommitPreset: opts.ppcommitPreset || "strict",
-      }),
-    },
-    {
-      machine: prCreationMachine,
-      inputMapper: () => ({
-        type: opts.prType || "feat",
-        semanticName: opts.prSemanticName || "",
-        title: opts.prTitle || "",
-        description: opts.prDescription || "",
-        base: opts.prBase || "",
-      }),
-    },
-  ];
-  const phase3 = await runWithMachineRetry(
-    async () => {
-      const phase3Runner = new WorkflowRunner({
-        name: "develop",
-        workflowContext: ctx,
-        onStageChange: (stage) => {
-          ctx.log({ event: "develop_stage", stage });
-        },
-        onResumeSkipped:
-          opts.loopState && opts.issueIndex != null
-            ? async (runId) => {
-                opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
-                  runId;
-                await saveLoopState(ctx.workspaceDir, opts.loopState, {
-                  guardRunId: opts.loopState.runId,
+    // Phase 3: implementation → quality-review → PR creation
+    const maxMachineRetries = ctx.config?.workflow?.maxMachineRetries ?? 2;
+    const retryBackoffMs = ctx.config?.workflow?.retryBackoffMs ?? 5000;
+    let lastPhase3RunId = null;
+    let isFirstAttempt = true;
+    let lastPhase3HeartbeatMs = 0;
+    const phase3HeartbeatMinMs = 15_000;
+    const phase3Steps = [
+      { machine: implementationMachine, inputMapper: () => ({}) },
+      {
+        machine: qualityReviewMachine,
+        inputMapper: () => ({
+          testCmd: opts.testCmd || "",
+          testConfigPath: opts.testConfigPath || "",
+          allowNoTests: opts.allowNoTests ?? false,
+          ppcommitPreset: opts.ppcommitPreset || "strict",
+          planExhausted,
+        }),
+      },
+      {
+        machine: prCreationMachine,
+        inputMapper: () => ({
+          type: opts.prType || "feat",
+          semanticName: opts.prSemanticName || "",
+          title: opts.prTitle || "",
+          description: opts.prDescription || "",
+          base: opts.prBase || "",
+        }),
+      },
+    ];
+    const phase3 = await runWithMachineRetry(
+      async () => {
+        const phase3Runner = new WorkflowRunner({
+          name: "develop",
+          workflowContext: ctx,
+          onStageChange: reportDevelopStage,
+          onHeartbeat: () => {
+            const now = Date.now();
+            if (now - lastPhase3HeartbeatMs < phase3HeartbeatMinMs) return;
+            lastPhase3HeartbeatMs = now;
+            void updateHeartbeat(ctx, loopRunId);
+          },
+          onResumeSkipped:
+            opts.loopState && opts.issueIndex != null
+              ? async (runId) => {
+                  // Roll-forward when resume is skipped: persist lastFailedRunId so the next attempt does not reuse a bad checkpoint.
+                  opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+                    runId;
+                  await saveLoopState(ctx.workspaceDir, opts.loopState, {
+                    guardRunId: opts.loopState.runId,
+                  });
+                }
+              : null,
+          onCheckpoint: (_i, result, machineName) => {
+            if (
+              machineName === "develop.implementation" &&
+              result?.status === "ok"
+            ) {
+              try {
+                const statePath = statePathFor(ctx.workspaceDir);
+                if (existsSync(statePath)) {
+                  const state = JSON.parse(readFileSync(statePath, "utf8"));
+                  saveBackup(ctx.workspaceDir, state);
+                }
+              } catch (err) {
+                ctx.log({
+                  event: "post_impl_backup_failed",
+                  error: err.message,
                 });
               }
-            : null,
-        onCheckpoint: (_i, result, machineName) => {
-          if (
-            machineName === "develop.implementation" &&
-            result?.status === "ok"
-          ) {
-            try {
-              const statePath = statePathFor(ctx.workspaceDir);
-              if (existsSync(statePath)) {
-                const state = JSON.parse(readFileSync(statePath, "utf8"));
-                saveBackup(ctx.workspaceDir, state);
-              }
-            } catch (err) {
-              ctx.log({ event: "post_impl_backup_failed", error: err.message });
             }
-          }
-        },
-      });
-      const resumeId =
-        opts.loopState?.issueQueue?.[opts.issueIndex]?.lastFailedRunId ??
-        opts.resumeFromRunId;
-      const runOpts =
-        isFirstAttempt && resumeId ? { resumeFromRunId: resumeId } : {};
-      // When resuming, persist the old runId so a process crash before onResumeSkipped
-      // fires (or after) still points to the correct checkpoint. onResumeSkipped will
-      // update to the new runId if the checkpoint turns out not to be usable.
-      const runIdToPersist = runOpts.resumeFromRunId ?? phase3Runner.runId;
-      if (opts.loopState && opts.issueIndex != null) {
-        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
-          runIdToPersist;
-        await saveLoopState(ctx.workspaceDir, opts.loopState, {
-          guardRunId: opts.loopState.runId,
+          },
         });
-      }
-      isFirstAttempt = false;
-      const result = await phase3Runner.run(phase3Steps, {}, runOpts);
-      lastPhase3RunId = phase3Runner.runId;
-      if (
-        result.status !== "completed" &&
-        opts.loopState &&
-        opts.issueIndex != null
-      ) {
-        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
-          phase3Runner.runId;
-        await saveLoopState(ctx.workspaceDir, opts.loopState, {
-          guardRunId: opts.loopState.runId,
-        });
-      }
-      return result;
-    },
-    {
-      maxRetries: maxMachineRetries,
-      backoffMs: retryBackoffMs,
-      ctx,
-      onFailedAttempt: async ({ attempt, maxRetries, result }) => {
-        const failed = findFailedMachineResult(result);
-        if (failed?.machine !== "develop.quality_review") return;
-        // Only inject retry feedback when another attempt will follow.
-        // Always reset implemented=false and clean up state regardless.
-        if (attempt < maxRetries) {
-          await injectRetryFeedback(
-            ctx,
-            failed.machine,
-            failed.error || result.error || "",
-          );
-        } else {
-          // Terminal attempt: still reset implementation cache for cross-process recovery
-          const state = await loadState(ctx.workspaceDir);
-          if (state?.steps?.implemented) {
-            state.steps.implemented = false;
-            await saveState(ctx.workspaceDir, state);
-          }
-        }
-        // Overwrite the onCheckpoint backup with implemented=false so a cross-process
-        // restart after quality_review failure re-runs implementation, matching
-        // same-process retry behavior.
-        const state = await loadState(ctx.workspaceDir);
-        if (state?.selected) saveBackup(ctx.workspaceDir, state);
-        try {
-          rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
-            force: true,
-          });
-        } catch {
-          // Best-effort cleanup
-        }
+        const resumeId =
+          opts.loopState?.issueQueue?.[opts.issueIndex]?.lastFailedRunId ??
+          opts.resumeFromRunId;
+        const runOpts =
+          isFirstAttempt && resumeId ? { resumeFromRunId: resumeId } : {};
+        // When resuming, persist the old runId so a process crash before onResumeSkipped
+        // fires (or after) still points to the correct checkpoint. onResumeSkipped will
+        // update to the new runId if the checkpoint turns out not to be usable.
+        const runIdToPersist = runOpts.resumeFromRunId ?? phase3Runner.runId;
         if (opts.loopState && opts.issueIndex != null) {
-          opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+          opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+            runIdToPersist;
           await saveLoopState(ctx.workspaceDir, opts.loopState, {
             guardRunId: opts.loopState.runId,
           });
         }
+        isFirstAttempt = false;
+        const result = await phase3Runner.run(phase3Steps, {}, runOpts);
+        lastPhase3RunId = phase3Runner.runId;
+        if (
+          result.status !== "completed" &&
+          opts.loopState &&
+          opts.issueIndex != null
+        ) {
+          opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId =
+            phase3Runner.runId;
+          await saveLoopState(ctx.workspaceDir, opts.loopState, {
+            guardRunId: opts.loopState.runId,
+          });
+        }
+        return result;
       },
-    },
-  );
-  if (phase3.status === "completed" && lastPhase3RunId) {
-    try {
-      rmSync(checkpointPathFor(ctx.workspaceDir, lastPhase3RunId), {
-        force: true,
-      });
-    } catch {
-      // Best-effort cleanup
+      {
+        maxRetries: maxMachineRetries,
+        backoffMs: retryBackoffMs,
+        ctx,
+        onFailedAttempt: async ({ attempt, maxRetries, result }) => {
+          const failed = findFailedMachineResult(result);
+          let wfState = {};
+          try {
+            wfState = await loadState(ctx.workspaceDir);
+          } catch {
+            /* ignore */
+          }
+          const failedIdx =
+            Array.isArray(result?.results) && failed
+              ? result.results.findIndex((r) => r.machine === failed.machine)
+              : -1;
+          ctx.log({
+            event: "phase3_retry_context",
+            attempt,
+            maxRetries,
+            failedMachine: failed?.machine ?? null,
+            failedStatus: failed?.status ?? null,
+            implementedFlag: wfState?.steps?.implemented ?? null,
+            phase3RunId: result?.runId ?? null,
+            failedStepIndex: failedIdx >= 0 ? failedIdx : null,
+            willInjectCritique:
+              failed?.machine === "develop.quality_review" &&
+              attempt < maxRetries,
+          });
+          // On terminal attempt with an exhausted plan, reset the full plan/review
+          // cycle — but skip if only PR creation failed, since that means the code
+          // was implemented and reviewed successfully.
+          if (
+            attempt >= maxRetries &&
+            planExhausted &&
+            failed?.machine !== "develop.pr_creation"
+          ) {
+            const epState = await loadState(ctx.workspaceDir);
+            if (epState?.steps) {
+              epState.steps.implemented = false;
+              epState.steps.wrotePlan = false;
+              epState.steps.wroteCritique = false;
+              epState.steps.reviewerCompleted = false;
+              epState.steps.reviewRound = undefined;
+              epState.steps.reviewVerdict = undefined;
+              epState.steps.programmerFixedRound = undefined;
+              epState.specDeltaSummary = "";
+              epState.planExhausted = false;
+              const planPaths = artifactPaths(ctx.artifactsDir);
+              if (existsSync(planPaths.plan))
+                rmSync(planPaths.plan, { force: true });
+              if (existsSync(planPaths.critique))
+                rmSync(planPaths.critique, { force: true });
+              await saveState(ctx.workspaceDir, epState);
+            }
+            if (epState?.selected) saveBackup(ctx.workspaceDir, epState);
+            try {
+              rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
+                force: true,
+              });
+            } catch {
+              // Best-effort cleanup
+            }
+            if (opts.loopState && opts.issueIndex != null) {
+              opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+              await saveLoopState(ctx.workspaceDir, opts.loopState, {
+                guardRunId: opts.loopState.runId,
+              });
+            }
+          }
+          if (failed?.machine !== "develop.quality_review") return;
+          // Only inject retry feedback when another attempt will follow.
+          // Always reset implemented=false and clean up state regardless.
+          if (attempt < maxRetries) {
+            await injectRetryFeedback(
+              ctx,
+              failed.machine,
+              failed.error || result.error || "",
+            );
+          } else {
+            // Terminal attempt: still reset implementation cache for cross-process recovery
+            const state = await loadState(ctx.workspaceDir);
+            if (state?.steps?.implemented) {
+              state.steps.implemented = false;
+              await saveState(ctx.workspaceDir, state);
+            }
+          }
+          // Overwrite the onCheckpoint backup with implemented=false so a cross-process
+          // restart after quality_review failure re-runs implementation, matching
+          // same-process retry behavior.
+          const state = await loadState(ctx.workspaceDir);
+          if (state?.selected) saveBackup(ctx.workspaceDir, state);
+          try {
+            rmSync(checkpointPathFor(ctx.workspaceDir, result.runId), {
+              force: true,
+            });
+          } catch {
+            // Best-effort cleanup
+          }
+          if (opts.loopState && opts.issueIndex != null) {
+            opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+            await saveLoopState(ctx.workspaceDir, opts.loopState, {
+              guardRunId: opts.loopState.runId,
+            });
+          }
+        },
+        retryScope: "develop_phase3",
+      },
+    );
+    if (phase3.status === "completed" && lastPhase3RunId) {
+      try {
+        rmSync(checkpointPathFor(ctx.workspaceDir, lastPhase3RunId), {
+          force: true,
+        });
+      } catch {
+        // Best-effort cleanup
+      }
+      if (opts.loopState && opts.issueIndex != null) {
+        opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
+        await saveLoopState(ctx.workspaceDir, opts.loopState, {
+          guardRunId: opts.loopState.runId,
+        });
+      }
     }
-    if (opts.loopState && opts.issueIndex != null) {
-      opts.loopState.issueQueue[opts.issueIndex].lastFailedRunId = null;
-      await saveLoopState(ctx.workspaceDir, opts.loopState, {
-        guardRunId: opts.loopState.runId,
-      });
-    }
+    allResults.push(...phase3.results);
+
+    // Heartbeat after phase 3 (implementation + review + PR)
+    await updateHeartbeat(ctx, loopRunId);
+
+    return { ...phase3, results: allResults, durationMs: Date.now() - start };
+  } finally {
+    delete ctx.syncDevelopLoop;
   }
-  allResults.push(...phase3.results);
-
-  // Heartbeat after phase 3 (implementation + review + PR)
-  await updateHeartbeat(ctx);
-
-  return { ...phase3, results: allResults, durationMs: Date.now() - start };
 }
 
 /**
@@ -655,8 +835,10 @@ const isInfraError = (text) =>
 export {
   backupKeyFor,
   ensureCleanLoopStart,
+  extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   prepareForIssue,
   resetForNextIssue,
 };
@@ -716,6 +898,28 @@ export async function runDevelopLoop(opts, ctx) {
   } else {
     rawIssues = listResult.data.issues.slice(0, maxIssues);
   }
+
+  if (issueIds.length > 0) {
+    // Validate against the full fetched list (not the maxIssues-truncated one)
+    // so that a requested issue beyond the truncation point isn't rejected.
+    const fullList = listResult.data.issues;
+    const fullSet = new Set(fullList.map((i) => String(i.id).toLowerCase()));
+    const missing = issueIds.filter(
+      (id) => !fullSet.has(String(id).toLowerCase()),
+    );
+    if (missing.length > 0) {
+      return {
+        status: "failed",
+        error: `Requested issue ID(s) not found: ${missing.join(", ")}`,
+        results: [],
+      };
+    }
+    // Filter rawIssues to requested IDs so maxIssues truncation doesn't
+    // silently drop explicitly requested issues.
+    const reqSet = new Set(issueIds.map((id) => String(id).toLowerCase()));
+    rawIssues = fullList.filter((i) => reqSet.has(String(i.id).toLowerCase()));
+  }
+
   if (rawIssues.length === 0) {
     return {
       status: "completed",
@@ -861,9 +1065,21 @@ export async function runDevelopLoop(opts, ctx) {
   /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */
   const outcomeMap = new Map();
   const results = [];
+  /** @type {Promise<{ issueUrl: string|null, skipped: boolean, error?: string }>[]} */
+  const pendingRcas = [];
   let completed = 0;
   let failed = 0;
   let skipped = 0;
+
+  function enqueueRca(issue, error, i, extra = {}) {
+    if (!ctx.config?.workflow?.failureMonitor?.enabled) return;
+    pendingRcas.push(
+      runFailureRca(
+        { issue, error, loopRunId, loopState, issueIndex: i, ...extra },
+        ctx,
+      ),
+    );
+  }
 
   // Seed outcomeMap from terminal issues in the prior run (includes
   // issues no longer in the active list, e.g. closed/merged).
@@ -1122,12 +1338,34 @@ export async function runDevelopLoop(opts, ctx) {
       await prepareForIssue(ctx.workspaceDir, issue, ctx);
     }
 
+    // Build clarifications — reference RCA file from prior failure if available.
+    // Read from the stable per-issue RCA path (immune to archive/clear races),
+    // falling back to the legacy artifacts location for backwards compat.
+    let clarifications = `Autonomous mode. Goal: ${goal}`;
+    const stableRcaPath = issueRcaPath(ctx.workspaceDir, issue);
+    const legacyRcaPath = artifactPaths(ctx.artifactsDir).rca;
+    const rcaPath = existsSync(stableRcaPath) ? stableRcaPath : legacyRcaPath;
+    if (isRetry && existsSync(rcaPath)) {
+      clarifications +=
+        "\n\n---\n## Prior Failure Analysis\n\n" +
+        "This issue failed on a previous attempt. A root cause analysis " +
+        `is available at \`${rcaPath}\`. Read it before starting — it ` +
+        "describes what went wrong and suggests fixes. Use this to avoid " +
+        "the same failure and fix any issues if they relate to the code " +
+        "you are developing.";
+      ctx.log({
+        event: "rca_reference_injected",
+        issueId: issue.id,
+        rcaPath,
+      });
+    }
+
     try {
       const pipelineResult = await runDevelopPipeline(
         {
           issue,
           repoPath,
-          clarifications: `Autonomous mode. Goal: ${goal}`,
+          clarifications,
           baseBranch: baseBranch || undefined,
           prBase: baseBranch || "",
           testCmd,
@@ -1144,12 +1382,15 @@ export async function runDevelopLoop(opts, ctx) {
         ctx,
       );
 
-      // Conflict-based deferral: planner detected overlap with an active branch
+      // Pipeline-level deferral: conflict detection or plan-review gate block
       if (pipelineResult.status === "deferred") {
+        const reason = pipelineResult.deferredReason || "conflict";
         ctx.log({
-          event: "issue_deferred_conflict",
+          event: `issue_deferred_${reason}`,
           issueId: issue.id,
-          conflictBranch: pipelineResult.conflictBranch,
+          ...(pipelineResult.conflictBranch && {
+            conflictBranch: pipelineResult.conflictBranch,
+          }),
           error: pipelineResult.error,
         });
 
@@ -1158,6 +1399,7 @@ export async function runDevelopLoop(opts, ctx) {
         deferState.steps ||= {};
         deferState.steps.wrotePlan = false;
         deferState.steps.wroteCritique = false;
+        deferState.planExhausted = false;
         await saveState(ctx.workspaceDir, deferState);
 
         const deferPaths = artifactPaths(ctx.artifactsDir);
@@ -1168,7 +1410,7 @@ export async function runDevelopLoop(opts, ctx) {
 
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error = pipelineResult.error;
-        loopState.issueQueue[i].deferredReason = "conflict";
+        loopState.issueQueue[i].deferredReason = reason;
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
@@ -1184,7 +1426,7 @@ export async function runDevelopLoop(opts, ctx) {
           loopRunId,
           "issue_deferred",
           "",
-          { status: "deferred", reason: "conflict" },
+          { status: "deferred", reason },
           issueEnv,
         );
         return "deferred";
@@ -1263,6 +1505,7 @@ export async function runDevelopLoop(opts, ctx) {
           return "deferred";
         }
         if (pipelineResult.planReviewExhausted) {
+          // Defer bucket: deferredReason plan_blocked vs pipeline error text — intentional (operator queue, not hard fail).
           ctx.log({
             event: "issue_deferred_plan_blocked",
             issueId: issue.id,
@@ -1282,6 +1525,23 @@ export async function runDevelopLoop(opts, ctx) {
             { status: "deferred", reason: "plan_blocked" },
             issueEnv,
           );
+          if (ctx.config?.workflow?.failureMonitor?.monitorBlockingDefers) {
+            enqueueRca(issue, errText, i, {
+              deferredReason: "plan_blocked",
+            });
+          }
+          // Archive artifacts for debugging (preserve state for resume like other defers)
+          archiveFailureArtifacts(
+            ctx.workspaceDir,
+            issue,
+            "plan_review_exhausted",
+            { stage: "plan_review" },
+          );
+          ctx.log({
+            event: "failure_archived",
+            issueId: issue.id,
+            path: ".coder/failures/",
+          });
           return "deferred";
         }
         if (
@@ -1326,6 +1586,7 @@ export async function runDevelopLoop(opts, ctx) {
           { status: "failed", error: errText },
           issueEnv,
         );
+        enqueueRca(issue, errText, i);
       }
     } catch (err) {
       if (ctx.cancelToken.cancelled) {
@@ -1392,6 +1653,7 @@ export async function runDevelopLoop(opts, ctx) {
         { status: "failed", error: err.message },
         issueEnv,
       );
+      enqueueRca(issue, err.message, i);
     }
 
     await saveLoopState(ctx.workspaceDir, loopState, {
@@ -1401,6 +1663,17 @@ export async function runDevelopLoop(opts, ctx) {
     // Reset between issues — if this fails, abort the loop because
     // subsequent issues would run from the wrong branch/worktree.
     const issueStatus = loopState.issueQueue[i].status;
+    if (issueStatus === "failed" || issueStatus === "skipped") {
+      archiveFailureArtifacts(ctx.workspaceDir, issue, issueStatus, {
+        stage: loopState.currentStage || undefined,
+      });
+      ctx.log({
+        event: "failure_archived",
+        issueId: issue.id,
+        reason: issueStatus,
+        path: ".coder/failures/",
+      });
+    }
     const doReset = resetForNextIssueOverride ?? resetForNextIssue;
     try {
       await doReset(ctx.workspaceDir, repoPath, {
@@ -1447,6 +1720,7 @@ export async function runDevelopLoop(opts, ctx) {
             CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
           },
         );
+        enqueueRca(issue, loopState.issueQueue[i].error, i);
       }
       await saveLoopState(ctx.workspaceDir, loopState, {
         guardRunId: loopState.runId,
@@ -1465,11 +1739,11 @@ export async function runDevelopLoop(opts, ctx) {
 
     // Skip only transitive dependents of the failed issue; independent issues continue.
     const failedIssueId = issues[i]?.id;
-    loopState.status = "failed";
     ctx.log({
       event: "loop_aborted_on_failure",
       issueId: failedIssueId,
       reason: "issue_failed",
+      continuingIndependentIssues: true,
     });
     const dependentIds = getTransitiveDependents(issues, failedIssueId);
     if (dependentIds.size > 0) {
@@ -1548,7 +1822,6 @@ export async function runDevelopLoop(opts, ctx) {
       const retryStatus = await processIssue(issues[i], i, { isRetry: true });
       if (retryStatus === "failed") {
         const failedIssueId = issues[i]?.id;
-        loopState.status = "failed";
         ctx.log({
           event: "loop_aborted_on_failure",
           issueId: failedIssueId,
@@ -1647,6 +1920,28 @@ export async function runDevelopLoop(opts, ctx) {
     ctx.log({ event: "smart_branch_cleanup", deleted, kept });
   }
 
+  // Settle all pending failure RCA filings
+  if (pendingRcas.length > 0 && !ctx.cancelToken.cancelled) {
+    ctx.log({ event: "failure_monitor_settling", count: pendingRcas.length });
+    const rcaResults = await Promise.allSettled(pendingRcas);
+    const rcaFiled = rcaResults.filter(
+      (r) => r.status === "fulfilled" && r.value.issueUrl,
+    ).length;
+    const rcaSkipped = rcaResults.filter(
+      (r) => r.status === "fulfilled" && r.value.skipped,
+    ).length;
+    const rcaErrored = rcaResults.filter(
+      (r) =>
+        r.status === "rejected" || (r.status === "fulfilled" && r.value.error),
+    ).length;
+    ctx.log({
+      event: "failure_monitor_complete",
+      filed: rcaFiled,
+      skipped: rcaSkipped,
+      errored: rcaErrored,
+    });
+  }
+
   // Agent-driven coalesce analysis for cross-branch integration review
   const completedBranches = loopState.issueQueue.filter(
     (q) => q.status === "completed" && q.branch,
@@ -1740,13 +2035,20 @@ Be concrete: reference file paths, line ranges, and function names. If no issues
             q.deferredReason || "",
           ),
       );
-      loopState.status = hasBlockedDeferrals ? "blocked" : "completed";
+      if (hasBlockedDeferrals) {
+        loopState.status = "blocked";
+      } else if (failed > 0) {
+        loopState.status = "failed";
+      } else {
+        loopState.status = "completed";
+      }
     }
   }
   loopState.completedAt = new Date().toISOString();
   await saveLoopState(ctx.workspaceDir, loopState, {
     guardRunId: loopState.runId,
   });
+  await ctx.syncLifecycleActorFromDisk?.();
 
   runHooks(ctx, loopRunId, "loop_complete", "", {
     status: loopState.status,

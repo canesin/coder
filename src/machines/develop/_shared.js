@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import {
   extractGeminiPayloadJson,
   extractJson,
@@ -11,6 +12,7 @@ export const ISSUE_FILE = "ISSUE.md";
 export const PLAN_FILE = "PLAN.md";
 export const CRITIQUE_FILE = "PLANREVIEW.md";
 export const REVIEW_FINDINGS_FILE = "REVIEW_FINDINGS.md";
+export const RCA_FILE = "RCA.md";
 
 export function artifactPaths(artifactsDir) {
   return {
@@ -18,7 +20,20 @@ export function artifactPaths(artifactsDir) {
     plan: path.join(artifactsDir, PLAN_FILE),
     critique: path.join(artifactsDir, CRITIQUE_FILE),
     reviewFindings: path.join(artifactsDir, REVIEW_FINDINGS_FILE),
+    rca: path.join(artifactsDir, RCA_FILE),
   };
+}
+
+/**
+ * Per-step CLI agent options: wall-clock timeout only, hang detection off.
+ * Prevents agents.retry.hangTimeoutMs (default 5m) from killing long silent
+ * planning/plan-review while workflow.timeouts.* allows much longer.
+ *
+ * @param {number} timeoutMs
+ * @returns {{ timeoutMs: number, hangTimeoutMs: number }}
+ */
+export function buildStepCliOpts(timeoutMs) {
+  return { timeoutMs, hangTimeoutMs: 0 };
 }
 
 export function ensureBranch(
@@ -133,7 +148,20 @@ export function ensureGitignore(workspaceDir) {
 }
 
 export function resolveRepoRoot(workspaceDir, repoPath) {
-  return path.resolve(workspaceDir, repoPath || ".");
+  const resolved = path.resolve(workspaceDir, repoPath || ".");
+  try {
+    const stat = statSync(resolved);
+    if (stat.isFile()) {
+      const dir = path.dirname(resolved);
+      process.stderr.write(
+        `[coder] resolveRepoRoot: corrected file path to directory: ${resolved} → ${dir}\n`,
+      );
+      return dir;
+    }
+  } catch {
+    // Path may not exist yet; use as-is
+  }
+  return resolved;
 }
 
 export function normalizeRepoPath(workspaceDir, repoPath) {

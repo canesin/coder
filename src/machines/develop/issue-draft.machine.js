@@ -106,12 +106,21 @@ async function fetchIssueBody(
       try {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
         const entry = manifest.issues?.find((e) => e.id === id);
-        const file = entry?.file || entry?.filePath;
-        if (file) {
-          const mdPath = path.isAbsolute(file)
-            ? file
-            : path.join(localIssuesDir, file);
-          if (existsSync(mdPath)) return readFileSync(mdPath, "utf8");
+        if (entry) {
+          let mdPath;
+          if (entry.file) {
+            // file is relative to localIssuesDir
+            mdPath = path.isAbsolute(entry.file)
+              ? entry.file
+              : path.join(localIssuesDir, entry.file);
+          } else if (entry.filePath) {
+            // filePath is workspace-relative (resolve from manifest root)
+            const wsRoot = manifest.repoRoot || manifest.repoPath || repoRoot;
+            mdPath = path.isAbsolute(entry.filePath)
+              ? entry.filePath
+              : path.resolve(wsRoot, entry.filePath);
+          }
+          if (mdPath && existsSync(mdPath)) return readFileSync(mdPath, "utf8");
         }
       } catch {
         // fall through to filename heuristic
@@ -348,7 +357,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 If you wrote ISSUE.md to disk via a tool, also output its full contents to stdout.
 
 ## Required Sections (in order)
-1. **Metadata**: Source, Issue ID, Repo Root (relative path)
+1. **Metadata**: Source, Issue ID, Repo Root (relative path), Difficulty (1-5)
 2. **Problem**: What's wrong or missing — reference specific files/functions
 3. **Requirements**: Behavioral requirements using EARS Syntax Patterns:
    - Ubiquitous: The <system> shall <behavior>.
@@ -357,8 +366,20 @@ If you wrote ISSUE.md to disk via a tool, also output its full contents to stdou
    - Unwanted Behavior: IF <trigger>, THEN the <system> shall <behavior>.
    - Optional Feature: WHERE <feature is present>, the <system> shall <behavior>.
 4. **Changes**: Exactly which files need to change and how
-5. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
-6. **Out of Scope**: What this does NOT include
+5. **Testing Strategy**: Search the codebase for existing test files/patterns, then specify:
+   - **Existing tests**: Which test files cover related behavior (paths + what they test)
+   - **Test patterns**: The repo's test framework, conventions, assertion style
+   - **New test cases**: Concrete test cases to write — inputs, expected outputs, edge cases
+   ${
+     (input.issue.difficulty ?? 3) >= 3
+       ? `- **Red/Green TDD**: This is a difficulty ${input.issue.difficulty ?? 3} issue — use Red/Green TDD.
+     List specific failing assertions the implementation agent should write BEFORE coding:
+     - Test name, assertion, and expected failure reason (missing function, wrong return value, etc.)
+     - These form the RED phase — they must fail for the right reasons before implementation begins`
+       : `- For this low-complexity issue, a lightweight test-after approach is acceptable if a failing-test-first approach isn't practical`
+   }
+6. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
+7. **Out of Scope**: What this does NOT include
 `;
 
     const res = await agent.execute(issuePrompt, {
