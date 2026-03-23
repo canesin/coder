@@ -1,5 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { logsDir } from "../logging.js";
 import { saveLoopState } from "../state/workflow-state.js";
@@ -29,6 +38,88 @@ export function parseRcaClassification(rcaText) {
       .match(/###\s*Classification[\s\S]*?\*\*(\w+)\*\*/i)?.[1]
       ?.toUpperCase() ?? "";
   return VALID_CLASSIFICATIONS.includes(classBlock) ? classBlock : "UNCLEAR";
+}
+
+/**
+ * Scan text for secrets using gitleaks and redact any matches.
+ * Writes text to a temp file, runs `gitleaks detect --no-git`, reads
+ * findings, and replaces each matched secret with [REDACTED].
+ *
+ * Best-effort: returns original text if gitleaks is unavailable or fails.
+ *
+ * @param {string} text - the text to scan (e.g. issue body)
+ * @param {string} [configPath] - optional gitleaks.toml path
+ * @returns {{ text: string, redactedCount: number }}
+ */
+export function scanAndRedactSecrets(text, configPath) {
+  let tmpDir;
+  try {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), "coder-rca-scan-"));
+    const scanFile = path.join(tmpDir, "body.txt");
+    const reportFile = path.join(tmpDir, "report.json");
+    writeFileSync(scanFile, text, "utf8");
+
+    const args = [
+      "detect",
+      "--no-git",
+      "-s",
+      tmpDir,
+      "-r",
+      reportFile,
+      "-f",
+      "json",
+    ];
+    if (configPath && existsSync(configPath)) {
+      args.push("-c", configPath);
+    }
+
+    const res = spawnSync("gitleaks", args, {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+
+    // Exit 0 = clean, 1 = leaks found, other = error
+    if (res.status !== 0 && res.status !== 1) {
+      return { text, redactedCount: 0 };
+    }
+
+    let findings;
+    try {
+      findings = JSON.parse(readFileSync(reportFile, "utf8"));
+    } catch {
+      return { text, redactedCount: 0 };
+    }
+
+    if (!Array.isArray(findings) || findings.length === 0) {
+      return { text, redactedCount: 0 };
+    }
+
+    // Redact each secret match from the text
+    let redacted = text;
+    let count = 0;
+    for (const f of findings) {
+      const secret = f.Secret || f.Match || "";
+      if (!secret) continue;
+      // Escape regex special chars in the secret literal
+      const escaped = secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const before = redacted;
+      redacted = redacted.replace(new RegExp(escaped, "g"), "[REDACTED]");
+      if (redacted !== before) count++;
+    }
+
+    return { text: redacted, redactedCount: count };
+  } catch {
+    // gitleaks not installed or other failure — return original
+    return { text, redactedCount: 0 };
+  } finally {
+    if (tmpDir) {
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  }
 }
 
 const ARTIFACT_NAMES = [
@@ -447,12 +538,27 @@ export async function runFailureRca(failureCtx, ctx) {
       const upstreamRepo = monitorConfig.upstreamRepo;
       try {
         const title = `[coder-rca] ${issue.title || issue.id} (${issue.id})`;
-        const body = buildIssueBody(
+        const rawBody = buildIssueBody(
           issue,
           failureContext,
           rcaAnalysis,
           loopRunId,
         );
+
+        // Scan for secrets before publishing to upstream GitHub
+        const gitleaksConfig = path.join(repoRoot, "gitleaks.toml");
+        const { text: body, redactedCount } = scanAndRedactSecrets(
+          rawBody,
+          existsSync(gitleaksConfig) ? gitleaksConfig : undefined,
+        );
+        if (redactedCount > 0) {
+          ctx.log({
+            event: "failure_monitor_secrets_redacted",
+            issueId: issue.id,
+            redactedCount,
+          });
+        }
+
         const labels = monitorConfig.labels || ["coder-rca", "automated"];
         const filed = fileRcaIssue({
           repoRoot: upstreamRepo ? null : repoRoot,

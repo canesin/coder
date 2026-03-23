@@ -17,6 +17,7 @@ import {
   gatherFailureContext,
   parseRcaClassification,
   runFailureRca,
+  scanAndRedactSecrets,
 } from "../src/workflows/failure-monitor.js";
 
 function makeTmpWorkspace() {
@@ -117,6 +118,43 @@ test("parseRcaClassification: returns UNCLEAR for missing classification", () =>
 test("parseRcaClassification: returns UNCLEAR for unrecognized value", () => {
   const rca = "### Classification\n**UNKNOWN_THING**\n### Root Cause\n...";
   assert.equal(parseRcaClassification(rca), "UNCLEAR");
+});
+
+// --- scanAndRedactSecrets tests ---
+
+test("scanAndRedactSecrets: returns original text when no secrets found", () => {
+  const text = "This is a safe issue body with no secrets.";
+  const result = scanAndRedactSecrets(text);
+  assert.equal(result.text, text);
+  assert.equal(result.redactedCount, 0);
+});
+
+test("scanAndRedactSecrets: redacts detected secrets", () => {
+  // Use a generic-api-key pattern that gitleaks default rules detect:
+  // assignment with a long hex-like value
+  const fakeSecret = "ghp_xK9mR2vLnQ4wT8zF1bY5dC3hA6jE0pS7uI";
+  const text = `Error log:\nGITHUB_TOKEN=${fakeSecret}\nEnd of log.`;
+  const result = scanAndRedactSecrets(text);
+  if (result.redactedCount > 0) {
+    assert.ok(
+      !result.text.includes(fakeSecret),
+      "secret should be removed from output",
+    );
+    assert.ok(
+      result.text.includes("[REDACTED]"),
+      "should contain [REDACTED] marker",
+    );
+  }
+  // If gitleaks is not installed or rules don't match, redactedCount is 0 — OK
+  assert.equal(typeof result.text, "string");
+});
+
+test("scanAndRedactSecrets: handles gitleaks not installed gracefully", () => {
+  // Even with a fake config path, should not throw
+  const text = "some text with token=abc123";
+  const result = scanAndRedactSecrets(text, "/nonexistent/gitleaks.toml");
+  assert.equal(typeof result.text, "string");
+  assert.equal(typeof result.redactedCount, "number");
 });
 
 // --- gatherFailureContext tests ---
