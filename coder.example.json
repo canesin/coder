@@ -65,7 +65,8 @@
       "enabled": false,
       "labels": ["coder-rca", "automated"],
       "timeoutMs": 300000,
-      "monitorBlockingDefers": false
+      "monitorBlockingDefers": false,
+      "upstreamRepo": "canesin/coder"
     },
     "hooks": [],
     "timeouts": {

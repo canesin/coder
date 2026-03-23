@@ -10,6 +10,27 @@ const ARTIFACT_TRUNCATE = 4000;
 /** Max lines from agent log tail. */
 const LOG_TAIL_LINES = 50;
 
+const VALID_CLASSIFICATIONS = [
+  "CODER_BUG",
+  "PROJECT_ISSUE",
+  "INFRA",
+  "UNCLEAR",
+];
+
+/**
+ * Parse the classification from the RCA agent output.
+ * Looks for ### Classification followed by a **KEYWORD** marker.
+ * @param {string} rcaText
+ * @returns {string} one of VALID_CLASSIFICATIONS or "UNCLEAR"
+ */
+export function parseRcaClassification(rcaText) {
+  const classBlock =
+    rcaText
+      .match(/###\s*Classification[\s\S]*?\*\*(\w+)\*\*/i)?.[1]
+      ?.toUpperCase() ?? "";
+  return VALID_CLASSIFICATIONS.includes(classBlock) ? classBlock : "UNCLEAR";
+}
+
 const ARTIFACT_NAMES = [
   { file: "ISSUE.md", key: "issue" },
   { file: "PLAN.md", key: "plan" },
@@ -143,7 +164,14 @@ function buildRcaPrompt(issue, failureContext) {
   }
 
   sections.push(`
-Perform a root cause analysis. Structure your response as:
+Perform a root cause analysis. Structure your response EXACTLY as shown:
+
+### Classification
+One of:
+- **CODER_BUG** — the failure is caused by a bug or limitation in the coder workflow engine itself (e.g. incorrect prompt construction, state management error, missing error handling in a machine, wrong git operations, sandbox misconfiguration, agent orchestration bug). These are issues in the coder project that affect any user project.
+- **PROJECT_ISSUE** — the failure is specific to the user's project (e.g. build errors in their code, missing dependencies, test failures in their tests, merge conflicts in their repo, flaky CI). The coder workflow operated correctly but the project has issues the agent couldn't resolve.
+- **INFRA** — external infrastructure failure (API rate limits, network timeouts, disk full, auth expired). Neither coder nor the project is at fault.
+- **UNCLEAR** — not enough information to determine the root cause.
 
 ### Root Cause
 What went wrong and why.
@@ -225,13 +253,17 @@ function buildIssueBody(issue, failureContext, rcaAnalysis, loopRunId) {
  * @param {{ repoRoot: string, title: string, body: string, labels: string[] }} opts
  * @returns {{ issueUrl: string }}
  */
-export function fileRcaIssue({ repoRoot, title, body, labels }) {
+export function fileRcaIssue({ repoRoot, title, body, labels, repo }) {
   const args = ["issue", "create", "--title", title, "--body", body];
   if (labels.length > 0) {
     args.push("--label", labels.join(","));
   }
+  // When upstreamRepo is configured, file against that repo explicitly.
+  if (repo) {
+    args.push("--repo", repo);
+  }
   const res = spawnSync("gh", args, {
-    cwd: repoRoot,
+    cwd: repoRoot || undefined,
     encoding: "utf8",
     timeout: 30_000,
   });
@@ -251,26 +283,31 @@ export function fileRcaIssue({ repoRoot, title, body, labels }) {
 
 /**
  * Check for existing open RCA issue for this issue ID.
+ * @param {string} repoRoot - workspace dir for cwd fallback
+ * @param {string} issueId
+ * @param {string} [upstreamRepo] - e.g. "owner/repo" to check against
  * @returns {boolean} true if a duplicate exists
  */
-function hasDuplicateRcaIssue(repoRoot, issueId) {
+function hasDuplicateRcaIssue(repoRoot, issueId, upstreamRepo) {
   try {
-    const res = spawnSync(
-      "gh",
-      [
-        "issue",
-        "list",
-        "--state",
-        "open",
-        "--search",
-        `[coder-rca] ${issueId}`,
-        "--json",
-        "url",
-        "--limit",
-        "1",
-      ],
-      { cwd: repoRoot, encoding: "utf8", timeout: 15_000 },
-    );
+    const args = [
+      "issue",
+      "list",
+      "--state",
+      "open",
+      "--search",
+      `[coder-rca] ${issueId}`,
+      "--json",
+      "url",
+      "--limit",
+      "1",
+    ];
+    if (upstreamRepo) args.push("--repo", upstreamRepo);
+    const res = spawnSync("gh", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
     if (res.status !== 0) return false;
     const parsed = JSON.parse(res.stdout || "[]");
     return Array.isArray(parsed) && parsed.length > 0;
@@ -340,8 +377,9 @@ export async function runFailureRca(failureCtx, ctx) {
     // so callers that fire-and-forget this promise are not blocked.
     await new Promise((r) => setImmediate(r));
 
-    // Dedup check
-    if (hasDuplicateRcaIssue(repoRoot, issue.id)) {
+    // Dedup check — look in the upstream repo (if configured) for existing RCA issues
+    const upstreamRepo = monitorConfig.upstreamRepo || null;
+    if (hasDuplicateRcaIssue(repoRoot, issue.id, upstreamRepo)) {
       ctx.log({
         event: "failure_monitor_dedup",
         issueId: issue.id,
@@ -371,55 +409,85 @@ export async function runFailureRca(failureCtx, ctx) {
         ? (rcaResult.stdout || "").trim() || "(empty agent response)"
         : `(agent failed with exit code ${rcaResult.exitCode})\n${(rcaResult.stderr || "").slice(0, 1000)}`;
 
-    // Persist RCA to artifacts dir so it survives archival and process restarts
+    const classification = parseRcaClassification(rcaAnalysis);
+
+    // Persist RCA to artifacts dir so it survives archival and process restarts.
+    // Agents read this file on retry to understand the prior failure.
     try {
       const artifactsDir = path.join(ctx.workspaceDir, ".coder", "artifacts");
       mkdirSync(artifactsDir, { recursive: true });
       writeFileSync(
         path.join(artifactsDir, "RCA.md"),
-        `# Root Cause Analysis: ${issue.title || issue.id}\n\n${rcaAnalysis}\n`,
+        `# Root Cause Analysis: ${issue.title || issue.id}\n\n` +
+          `**Classification:** ${classification}\n\n${rcaAnalysis}\n`,
         "utf8",
       );
     } catch {
       /* best-effort */
     }
 
+    ctx.log({
+      event: "failure_monitor_rca_complete",
+      issueId: issue.id,
+      classification,
+    });
+
     // Cancel check before filing
     if (ctx.cancelToken?.cancelled) {
-      return { issueUrl: null, skipped: true };
+      return { issueUrl: null, skipped: true, classification };
     }
 
-    // File the GitHub issue (best-effort — RCA.md on disk is the primary
-    // persistence; the GitHub issue is a notification/tracking artifact).
+    // Only file upstream bug reports when the RCA concludes this is a coder
+    // infrastructure bug — not a project-specific issue or external infra failure.
+    // The GitHub issue goes to the upstream coder repo as an automated bug report
+    // so the coder project can fix the underlying issue.
     let issueUrl = null;
-    try {
-      const title = `[coder-rca] ${issue.title || issue.id} (${issue.id})`;
-      const body = buildIssueBody(
-        issue,
-        failureContext,
-        rcaAnalysis,
-        loopRunId,
-      );
-      const labels = monitorConfig.labels || ["coder-rca", "automated"];
-      const filed = fileRcaIssue({ repoRoot, title, body, labels });
-      issueUrl = filed.issueUrl;
+    if (classification === "CODER_BUG") {
+      const upstreamRepo = monitorConfig.upstreamRepo;
+      try {
+        const title = `[coder-rca] ${issue.title || issue.id} (${issue.id})`;
+        const body = buildIssueBody(
+          issue,
+          failureContext,
+          rcaAnalysis,
+          loopRunId,
+        );
+        const labels = monitorConfig.labels || ["coder-rca", "automated"];
+        const filed = fileRcaIssue({
+          repoRoot: upstreamRepo ? null : repoRoot,
+          title,
+          body,
+          labels,
+          repo: upstreamRepo || null,
+        });
+        issueUrl = filed.issueUrl;
 
-      ctx.log({
-        event: "failure_monitor_rca_filed",
-        issueId: issue.id,
-        rcaIssueUrl: issueUrl,
-      });
+        ctx.log({
+          event: "failure_monitor_rca_filed",
+          issueId: issue.id,
+          rcaIssueUrl: issueUrl,
+          classification,
+        });
 
-      runHooks(ctx, loopRunId, "rca_filed", "", {
-        issueUrl,
-        originalIssueId: issue.id,
-        originalIssueTitle: issue.title || "",
-      });
-    } catch (fileErr) {
+        runHooks(ctx, loopRunId, "rca_filed", "", {
+          issueUrl,
+          originalIssueId: issue.id,
+          originalIssueTitle: issue.title || "",
+          classification,
+        });
+      } catch (fileErr) {
+        ctx.log({
+          event: "failure_monitor_filing_failed",
+          issueId: issue.id,
+          error: fileErr.message || String(fileErr),
+        });
+      }
+    } else {
       ctx.log({
-        event: "failure_monitor_filing_failed",
+        event: "failure_monitor_filing_skipped",
         issueId: issue.id,
-        error: fileErr.message || String(fileErr),
+        classification,
+        reason: "not a coder bug",
       });
     }
 

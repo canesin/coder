@@ -208,6 +208,8 @@ export const FailureMonitorSchema = z.object({
   labels: z.array(z.string()).default(["coder-rca", "automated"]),
   timeoutMs: z.number().int().positive().default(300_000),
   monitorBlockingDefers: z.boolean().default(false),
+  /** GitHub owner/repo to file RCA bug reports against (e.g. "canesin/coder"). */
+  upstreamRepo: z.string().nullable().default(null),
 });
 
 export const AgentFallbackSchema = z

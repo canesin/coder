@@ -15,6 +15,7 @@ import { FailureMonitorSchema } from "../src/config.js";
 import {
   fileRcaIssue,
   gatherFailureContext,
+  parseRcaClassification,
   runFailureRca,
 } from "../src/workflows/failure-monitor.js";
 
@@ -86,6 +87,36 @@ test("FailureMonitorSchema: accepts custom values", () => {
   assert.deepEqual(result.labels, ["bug", "auto-rca"]);
   assert.equal(result.timeoutMs, 120_000);
   assert.equal(result.monitorBlockingDefers, true);
+});
+
+// --- parseRcaClassification tests ---
+
+test("parseRcaClassification: extracts CODER_BUG", () => {
+  const rca =
+    "### Classification\n\n- **CODER_BUG** — the planner failed\n\n### Root Cause\n...";
+  assert.equal(parseRcaClassification(rca), "CODER_BUG");
+});
+
+test("parseRcaClassification: extracts PROJECT_ISSUE", () => {
+  const rca =
+    "### Classification\n**PROJECT_ISSUE**\n\n### Root Cause\nBuild failed.";
+  assert.equal(parseRcaClassification(rca), "PROJECT_ISSUE");
+});
+
+test("parseRcaClassification: extracts INFRA", () => {
+  const rca =
+    "### Classification\n**INFRA** — rate limited\n### Root Cause\n...";
+  assert.equal(parseRcaClassification(rca), "INFRA");
+});
+
+test("parseRcaClassification: returns UNCLEAR for missing classification", () => {
+  const rca = "### Root Cause\nSomething went wrong.";
+  assert.equal(parseRcaClassification(rca), "UNCLEAR");
+});
+
+test("parseRcaClassification: returns UNCLEAR for unrecognized value", () => {
+  const rca = "### Classification\n**UNKNOWN_THING**\n### Root Cause\n...";
+  assert.equal(parseRcaClassification(rca), "UNCLEAR");
 });
 
 // --- gatherFailureContext tests ---
@@ -273,7 +304,7 @@ test("runFailureRca: persists RCA.md to artifacts for agent consumption", async 
             executeWithRetry: async () => ({
               exitCode: 0,
               stdout:
-                "### Root Cause\nMissing import\n### Suggested Fix\nAdd import.",
+                "### Classification\n\n- **PROJECT_ISSUE**\n\n### Root Cause\nMissing import\n### Suggested Fix\nAdd import.",
               stderr: "",
             }),
           },
@@ -304,6 +335,10 @@ test("runFailureRca: persists RCA.md to artifacts for agent consumption", async 
     assert.ok(
       rcaContent.startsWith("# Root Cause Analysis:"),
       "should have title header",
+    );
+    assert.ok(
+      rcaContent.includes("**Classification:** PROJECT_ISSUE"),
+      "should include classification",
     );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
