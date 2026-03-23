@@ -18,6 +18,7 @@ export function spawnAsync(cmd, args, opts = {}) {
     const child = spawn(cmd, args, opts);
     let stdout = "";
     let stderr = "";
+    let spawnError;
     if (child.stdout) {
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (d) => {
@@ -30,10 +31,19 @@ export function spawnAsync(cmd, args, opts = {}) {
         stderr += d;
       });
     }
-    child.on("error", (err) =>
-      resolve({ stdout, stderr, status: null, error: err }),
-    );
-    child.on("close", (status) => resolve({ stdout, stderr, status }));
+    child.on("error", (err) => {
+      spawnError = err;
+    });
+    child.on("close", (code, sig) => {
+      let error = spawnError;
+      if (!error && sig) {
+        error = Object.assign(new Error(`Command killed with signal ${sig}`), {
+          code: sig === "SIGTERM" ? "ETIMEDOUT" : "ABORT_ERR",
+          signal: sig,
+        });
+      }
+      resolve({ stdout, stderr, status: code, signal: sig, error });
+    });
   });
 }
 

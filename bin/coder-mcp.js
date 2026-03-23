@@ -271,7 +271,18 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
       return;
     }
     const transport = transports.get(sessionId);
-    await transport.handleRequest(req, res);
+    try {
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      console.error("[coder-mcp] HTTP transport error (GET):", err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
   });
 
   app.delete(routePath, async (req, res) => {
@@ -284,7 +295,18 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
       return;
     }
     const transport = transports.get(sessionId);
-    await transport.handleRequest(req, res);
+    try {
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      console.error("[coder-mcp] HTTP transport error (DELETE):", err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
   });
 
   // Periodic cleanup of stale sessions

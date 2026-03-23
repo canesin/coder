@@ -20,6 +20,7 @@ import {
   runHostTests,
   sanitizeIssueMarkdown,
   shellEscape,
+  spawnAsync,
   stripAgentNoise,
   TestInfrastructureError,
 } from "../src/helpers.js";
@@ -104,6 +105,23 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   const result = resolvePassEnv({});
   assert.deepEqual(result, defaults.passEnv);
   assert.ok(result.includes("GITLAB_TOKEN"));
+});
+
+test("spawnAsync synthesizes ETIMEDOUT error when process is killed by timeout", async () => {
+  const res = await spawnAsync("sleep", ["60"], { timeout: 100 });
+  assert.equal(res.status, null);
+  assert.ok(res.signal, "should have a signal");
+  assert.ok(res.error, "should have a synthesized error");
+  assert.equal(res.error.code, "ETIMEDOUT");
+});
+
+test("spawnAsync synthesizes ABORT_ERR when cancelled via AbortSignal", async () => {
+  const ac = new AbortController();
+  const p = spawnAsync("sleep", ["60"], { signal: ac.signal });
+  setTimeout(() => ac.abort(), 100);
+  const res = await p;
+  assert.equal(res.status, null);
+  assert.ok(res.error, "should have an error");
 });
 
 test("detectDefaultBranch rejects when only develop exists", async () => {

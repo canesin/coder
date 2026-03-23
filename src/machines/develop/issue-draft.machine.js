@@ -258,10 +258,19 @@ export default defineMachine({
     // Optional base branch checkout for stacked PRs
     if (state.baseBranch) {
       // Fetch the branch in case it only exists on the remote (#108)
-      spawnSync("git", ["fetch", "origin", state.baseBranch], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
+      const fetchRes = await spawnAsync(
+        "git",
+        ["fetch", "origin", state.baseBranch],
+        { cwd: repoRoot, signal: ctx.signal },
+      );
+      if (
+        fetchRes.error ||
+        (fetchRes.status !== 0 && fetchRes.status !== null)
+      ) {
+        throw new Error(
+          `Failed to fetch base branch ${state.baseBranch}: ${fetchRes.stderr || fetchRes.error?.message || "unknown error"}`,
+        );
+      }
       const baseCheckout = spawnSync("git", ["checkout", state.baseBranch], {
         cwd: repoRoot,
         encoding: "utf8",
