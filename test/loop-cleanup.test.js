@@ -13,7 +13,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveRepoRoot } from "../src/machines/develop/_shared.js";
-import { archiveFailureArtifacts } from "../src/state/issue-backup.js";
+import {
+  archiveFailureArtifacts,
+  reconcileSteps,
+} from "../src/state/issue-backup.js";
 import {
   backupKeyFor,
   ensureCleanLoopStart,
@@ -1010,6 +1013,264 @@ test("prepareForIssue: restoring backup clears sessionsDisabled and stale sessio
       state.planReviewSessionId,
       null,
       "stale planReviewSessionId cleared",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// reconcileSteps
+// ---------------------------------------------------------------------------
+
+test("reconcileSteps: all artifacts present — no rollback", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue\n");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+    writeFileSync(path.join(artifactsDir, "PLANREVIEW.md"), "# Critique\n");
+    writeFileSync(
+      path.join(artifactsDir, "REVIEW_FINDINGS.md"),
+      "# Findings\n",
+    );
+
+    const steps = {
+      wroteIssue: true,
+      wrotePlan: true,
+      wroteCritique: true,
+      implemented: true,
+      reviewerCompleted: true,
+    };
+    const result = reconcileSteps(steps, artifactsDir);
+    assert.equal(result.rolledBack.length, 0);
+    assert.equal(result.steps.wroteIssue, true);
+    assert.equal(result.steps.reviewerCompleted, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("reconcileSteps: ISSUE.md missing — full reset", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+
+    const steps = { wroteIssue: true, wrotePlan: true };
+    const result = reconcileSteps(steps, artifactsDir);
+    assert.deepEqual(result.steps, {});
+    assert.ok(result.rolledBack.includes("wroteIssue"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("reconcileSteps: PLAN.md missing — keeps issue, clears plan and downstream", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue\n");
+    // No PLAN.md
+
+    const steps = {
+      wroteIssue: true,
+      wrotePlan: true,
+      wroteCritique: true,
+      implemented: true,
+      reviewerCompleted: true,
+      reviewRound: 2,
+      testsPassed: true,
+    };
+    const result = reconcileSteps(steps, artifactsDir);
+    assert.ok(result.rolledBack.includes("wrotePlan"));
+    assert.equal(result.steps.wroteIssue, true, "issue preserved");
+    assert.equal(result.steps.wrotePlan, false, "plan cleared");
+    assert.equal(result.steps.wroteCritique, false, "critique cleared");
+    assert.equal(result.steps.implemented, false, "implementation cleared");
+    assert.equal(result.steps.reviewRound, undefined, "review round cleared");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("reconcileSteps: PLANREVIEW.md missing — keeps issue+plan, clears critique downstream", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue\n");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+    // No PLANREVIEW.md
+
+    const steps = {
+      wroteIssue: true,
+      wrotePlan: true,
+      wroteCritique: true,
+      implemented: true,
+    };
+    const result = reconcileSteps(steps, artifactsDir);
+    assert.ok(result.rolledBack.includes("wroteCritique"));
+    assert.equal(result.steps.wroteIssue, true, "issue preserved");
+    assert.equal(result.steps.wrotePlan, true, "plan preserved");
+    assert.equal(result.steps.wroteCritique, false, "critique cleared");
+    assert.equal(result.steps.implemented, false, "implementation cleared");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("reconcileSteps: null steps — returns empty", () => {
+  const result = reconcileSteps(null, "/tmp/nonexistent");
+  assert.deepEqual(result.steps, {});
+  assert.equal(result.rolledBack.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// prepareForIssue: partial resume
+// ---------------------------------------------------------------------------
+
+test("prepareForIssue: partial resume when PLAN.md missing from backup", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const issue = { source: "github", id: "50", title: "Partial" };
+    const backupKey = "github-50-root";
+    const backupDir = path.join(tmp, ".coder", "backups", backupKey);
+    mkdirSync(path.join(backupDir, "artifacts"), { recursive: true });
+    writeFileSync(
+      path.join(backupDir, "state.json"),
+      JSON.stringify({
+        selected: { source: "github", id: "50", title: "Partial" },
+        steps: { wroteIssue: true, wrotePlan: true, wroteCritique: true },
+      }),
+    );
+    // Only ISSUE.md in backup — PLAN.md missing
+    writeFileSync(
+      path.join(backupDir, "artifacts", "ISSUE.md"),
+      "# Issue 50\n",
+    );
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: (e) => logEvents.push(e),
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    // Should have restored and partially resumed
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    assert.ok(
+      existsSync(path.join(artifactsDir, "ISSUE.md")),
+      "ISSUE.md restored",
+    );
+    assert.ok(
+      !existsSync(path.join(artifactsDir, "PLAN.md")),
+      "PLAN.md not restored",
+    );
+
+    const state = JSON.parse(
+      readFileSync(path.join(tmp, ".coder", "state.json"), "utf8"),
+    );
+    assert.equal(state.steps.wroteIssue, true, "issue step preserved");
+    assert.equal(state.steps.wrotePlan, false, "plan step rolled back");
+    assert.equal(state.steps.wroteCritique, false, "critique step rolled back");
+
+    assert.ok(
+      logEvents.some((e) => e.event === "loop_resume_partial"),
+      "should emit loop_resume_partial",
+    );
+    assert.ok(
+      logEvents.some(
+        (e) => e.event === "loop_resume_detected" && e.from === "backup",
+      ),
+      "should still emit loop_resume_detected",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("prepareForIssue: partial resume from current state when PLAN.md deleted", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const issue = { source: "github", id: "51", title: "Current partial" };
+    const statePath = path.join(tmp, ".coder", "state.json");
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        selected: { source: "github", id: "51", title: "Current partial" },
+        steps: { wroteIssue: true, wrotePlan: true, wroteCritique: true },
+      }),
+    );
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue 51\n");
+    // PLAN.md intentionally missing
+
+    const logEvents = [];
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: (e) => logEvents.push(e),
+    };
+
+    await prepareForIssue(tmp, issue, ctx);
+
+    assert.ok(
+      existsSync(path.join(artifactsDir, "ISSUE.md")),
+      "ISSUE.md preserved",
+    );
+
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.equal(state.steps.wroteIssue, true, "issue step preserved");
+    assert.equal(state.steps.wrotePlan, false, "plan step rolled back");
+
+    assert.ok(
+      logEvents.some(
+        (e) => e.event === "loop_resume_partial" && e.from === "current",
+      ),
+      "should emit loop_resume_partial from current",
+    );
+    assert.ok(
+      logEvents.some(
+        (e) => e.event === "loop_resume_detected" && e.from === "current",
+      ),
+      "should still emit loop_resume_detected",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("prepareForIssue: does not archive completed issues to failures on switch", async () => {
+  const tmp = makeTmpRepo();
+  try {
+    const statePath = path.join(tmp, ".coder", "state.json");
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        selected: { source: "github", id: "60", title: "Done" },
+        steps: { wroteIssue: true, wrotePlan: true, prCreated: true },
+      }),
+    );
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Done");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan done");
+
+    const newIssue = { source: "github", id: "61", title: "Next" };
+    const ctx = {
+      config: { workflow: { resumeStepState: true } },
+      scratchpadDir: path.join(tmp, ".coder", "scratchpad"),
+      log: () => {},
+    };
+
+    await prepareForIssue(tmp, newIssue, ctx);
+
+    const failuresDir = path.join(tmp, ".coder", "failures");
+    assert.ok(
+      !existsSync(failuresDir),
+      "should not archive completed issue to failures",
     );
   } finally {
     rmSync(tmp, { recursive: true, force: true });

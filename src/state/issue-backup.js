@@ -23,27 +23,93 @@ export function backupKeyFor(issue) {
   );
 }
 
-/** Verifies that artifact files exist for each step flag set. If a step flag is true
- * but the corresponding file is missing (e.g. manually deleted), returns false —
- * resume will not occur and we start fresh. */
+/** @deprecated Use reconcileSteps for graceful partial recovery. */
 export function artifactConsistent(workspaceDir, steps, artifactsDirOverride) {
-  const artifactsDir =
-    artifactsDirOverride ?? path.join(workspaceDir, ".coder", "artifacts");
-  if (steps?.wroteIssue && !existsSync(path.join(artifactsDir, "ISSUE.md")))
-    return false;
-  if (steps?.wrotePlan && !existsSync(path.join(artifactsDir, "PLAN.md")))
-    return false;
+  const { rolledBack } = reconcileSteps(
+    steps,
+    artifactsDirOverride ?? path.join(workspaceDir, ".coder", "artifacts"),
+  );
+  return rolledBack.length === 0;
+}
+
+/**
+ * Reconcile step flags with actual artifact files on disk. Instead of an
+ * all-or-nothing rejection, rolls back only the broken step and its downstream
+ * dependencies — preserving valid upstream work for partial resume.
+ *
+ * @param {object|null} steps
+ * @param {string} artifactsDir
+ * @returns {{ steps: object, rolledBack: string[] }}
+ */
+export function reconcileSteps(steps, artifactsDir) {
+  if (!steps) return { steps: {}, rolledBack: [] };
+  const reconciled = { ...steps };
+  const rolledBack = [];
+
+  const clearDownstreamFromPlan = () => {
+    reconciled.wrotePlan = false;
+    reconciled.wroteCritique = false;
+    reconciled.implemented = false;
+    reconciled.reviewerCompleted = false;
+    delete reconciled.reviewRound;
+    delete reconciled.reviewVerdict;
+    delete reconciled.programmerFixedRound;
+    delete reconciled.testsPassed;
+    delete reconciled.ppcommitClean;
+    delete reconciled.prCreated;
+  };
+
+  const clearDownstreamFromCritique = () => {
+    reconciled.wroteCritique = false;
+    reconciled.implemented = false;
+    reconciled.reviewerCompleted = false;
+    delete reconciled.reviewRound;
+    delete reconciled.reviewVerdict;
+    delete reconciled.programmerFixedRound;
+    delete reconciled.testsPassed;
+    delete reconciled.ppcommitClean;
+    delete reconciled.prCreated;
+  };
+
+  // ISSUE.md is the foundation — if missing, nothing can resume
   if (
-    steps?.wroteCritique &&
+    reconciled.wroteIssue &&
+    !existsSync(path.join(artifactsDir, "ISSUE.md"))
+  ) {
+    return { steps: {}, rolledBack: ["wroteIssue"] };
+  }
+
+  // PLAN.md missing → clear plan + all downstream, keep issue
+  if (reconciled.wrotePlan && !existsSync(path.join(artifactsDir, "PLAN.md"))) {
+    rolledBack.push("wrotePlan");
+    clearDownstreamFromPlan();
+  }
+
+  // PLANREVIEW.md missing → clear critique + downstream, keep plan
+  if (
+    reconciled.wroteCritique &&
     !existsSync(path.join(artifactsDir, "PLANREVIEW.md"))
-  )
-    return false;
+  ) {
+    rolledBack.push("wroteCritique");
+    clearDownstreamFromCritique();
+  }
+
+  // REVIEW_FINDINGS.md missing → clear review state, keep implementation
   if (
-    steps?.reviewerCompleted &&
+    reconciled.reviewerCompleted &&
     !existsSync(path.join(artifactsDir, "REVIEW_FINDINGS.md"))
-  )
-    return false;
-  return true;
+  ) {
+    rolledBack.push("reviewerCompleted");
+    reconciled.reviewerCompleted = false;
+    delete reconciled.reviewRound;
+    delete reconciled.reviewVerdict;
+    delete reconciled.programmerFixedRound;
+    delete reconciled.testsPassed;
+    delete reconciled.ppcommitClean;
+    delete reconciled.prCreated;
+  }
+
+  return { steps: reconciled, rolledBack };
 }
 
 /** Artifact names archived on failure — all optional, whatever exists gets copied. */
@@ -220,6 +286,8 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
       ? backupKeyFor({ ...issue, repo_path: "." })
       : null;
 
+  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
+
   for (const key of [primaryKey, legacyKey].filter(Boolean)) {
     const backupDir = path.join(workspaceDir, ".coder", "backups", key);
     if (!existsSync(path.join(backupDir, "state.json"))) continue;
@@ -234,10 +302,36 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
     if (
       restored?.selected?.id === issue.id &&
       restored?.selected?.source === issue.source &&
-      repoMatch &&
-      artifactConsistent(workspaceDir, restored.steps, backupArtifactsDir)
+      repoMatch
     ) {
+      // Check what's recoverable from the backup's artifacts
+      const { steps: reconciledSteps, rolledBack } = reconcileSteps(
+        restored.steps,
+        backupArtifactsDir,
+      );
+      // If the foundation (ISSUE.md) is missing, backup is unusable — skip it
+      if (rolledBack.includes("wroteIssue")) continue;
+
+      // Clear workspace artifacts before restoring to prevent stale files
+      // from a different issue bleeding into the restored state.
+      clearStateAndArtifacts(workspaceDir);
       await restoreBackup(workspaceDir, backupDir, issue, ctx);
+
+      // Apply reconciled steps to the restored state
+      if (rolledBack.length > 0) {
+        const current = await loadState(workspaceDir).catch(() => null);
+        if (current) {
+          current.steps = reconciledSteps;
+          await saveState(workspaceDir, current);
+        }
+        ctx.log({
+          event: "loop_resume_partial",
+          issueId: issue.id,
+          from: "backup",
+          rolledBack,
+        });
+      }
+
       rmSync(backupDir, { recursive: true, force: true });
       ctx.log({
         event: "loop_resume_detected",
@@ -253,9 +347,28 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
   if (
     state?.selected?.id === issue.id &&
     state?.selected?.source === issue.source &&
-    repoMatch &&
-    artifactConsistent(workspaceDir, state.steps)
+    repoMatch
   ) {
+    // Reconcile steps against what's actually on disk
+    const { steps: reconciledSteps, rolledBack } = reconcileSteps(
+      state.steps,
+      artifactsDir,
+    );
+    // Foundation gone — fall through to fresh start
+    if (rolledBack.includes("wroteIssue")) {
+      clearStateAndArtifacts(workspaceDir);
+      return;
+    }
+    if (rolledBack.length > 0) {
+      state.steps = reconciledSteps;
+      await saveState(workspaceDir, state);
+      ctx.log({
+        event: "loop_resume_partial",
+        issueId: issue.id,
+        from: "current",
+        rolledBack,
+      });
+    }
     ctx.log({
       event: "loop_resume_detected",
       issueId: issue.id,
@@ -266,9 +379,9 @@ export async function prepareForIssue(workspaceDir, issue, ctx) {
   if (state?.selected && state?.steps?.wrotePlan) {
     saveBackup(workspaceDir, state);
   }
-  // Archive artifacts before switching issues (e.g. crash recovery, edge cases).
+  // Archive artifacts only for interrupted/failed issues — not completed ones.
   // Best-effort — don't let archival failure block the issue switch.
-  if (state?.selected) {
+  if (state?.selected && !state?.steps?.prCreated) {
     try {
       archiveFailureArtifacts(workspaceDir, state.selected, "issue_switch");
     } catch {
