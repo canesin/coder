@@ -122,6 +122,8 @@ export default defineMachine({
       ["push", "--force-with-lease", "-u", "origin", `HEAD:${remoteBranch}`],
       { cwd: repoRoot, signal: ctx.signal },
     );
+    if (push.error?.code === "ABORT_ERR" || push.error?.code === "ETIMEDOUT")
+      throw push.error;
     if (push.status !== 0)
       throw new Error(`git push failed: ${push.stderr || push.error?.message}`);
 
@@ -180,6 +182,8 @@ export default defineMachine({
         cwd: repoRoot,
         signal: ctx.signal,
       });
+      if (mr.error?.code === "ABORT_ERR" || mr.error?.code === "ETIMEDOUT")
+        throw mr.error;
       if (mr.status !== 0)
         throw new Error(`glab mr create failed: ${mr.stderr || mr.stdout}`);
       const mrRaw = (mr.stdout || "").trim();
@@ -206,6 +210,8 @@ export default defineMachine({
         cwd: repoRoot,
         signal: ctx.signal,
       });
+      if (pr.error?.code === "ABORT_ERR" || pr.error?.code === "ETIMEDOUT")
+        throw pr.error;
       if (pr.status !== 0)
         throw new Error(`gh pr create failed: ${pr.stderr || pr.stdout}`);
       const raw = (pr.stdout || "").trim();

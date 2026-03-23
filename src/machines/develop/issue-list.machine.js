@@ -117,6 +117,8 @@ async function fetchGithubIssues(cwd, { signal } = {}) {
     ],
     { cwd, signal, timeout: 15000 },
   );
+  if (res.error?.code === "ABORT_ERR" || res.error?.code === "ETIMEDOUT")
+    throw res.error;
   if (res.error) {
     throw new Error(`gh: ${res.error.message}`);
   }
@@ -161,6 +163,8 @@ async function fetchGitlabIssues(cwd, { signal } = {}) {
       ["api", `projects/:id/issues?state=opened&per_page=100&page=${page}`],
       { cwd, signal, timeout: 15000 },
     );
+    if (res.error?.code === "ABORT_ERR" || res.error?.code === "ETIMEDOUT")
+      throw res.error;
     if (res.error) {
       throw new Error(`glab: ${res.error.message}`);
     }
