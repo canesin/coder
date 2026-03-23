@@ -1334,12 +1334,29 @@ export async function runDevelopLoop(opts, ctx) {
       await prepareForIssue(ctx.workspaceDir, issue, ctx);
     }
 
+    // Build clarifications — include RCA from prior failure if available
+    let clarifications = `Autonomous mode. Goal: ${goal}`;
+    const priorRca = loopState.issueQueue[i]?.rcaAnalysis;
+    if (priorRca && isRetry) {
+      clarifications +=
+        "\n\n---\n## Prior Failure Analysis\n\n" +
+        "This issue failed on a previous attempt. The root cause analysis below " +
+        "describes what went wrong. Use this to avoid the same failure and fix " +
+        "any issues if they relate to the code you are developing.\n\n" +
+        priorRca;
+      ctx.log({
+        event: "rca_injected_into_retry",
+        issueId: issue.id,
+        rcaLength: priorRca.length,
+      });
+    }
+
     try {
       const pipelineResult = await runDevelopPipeline(
         {
           issue,
           repoPath,
-          clarifications: `Autonomous mode. Goal: ${goal}`,
+          clarifications,
           baseBranch: baseBranch || undefined,
           prBase: baseBranch || "",
           testCmd,

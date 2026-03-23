@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { logsDir } from "../logging.js";
 import { saveLoopState } from "../state/workflow-state.js";
@@ -371,44 +371,86 @@ export async function runFailureRca(failureCtx, ctx) {
         ? (rcaResult.stdout || "").trim() || "(empty agent response)"
         : `(agent failed with exit code ${rcaResult.exitCode})\n${(rcaResult.stderr || "").slice(0, 1000)}`;
 
-    // Cancel check before filing
-    if (ctx.cancelToken?.cancelled) {
-      return { issueUrl: null, skipped: true };
+    // Persist RCA to artifacts dir so it survives archival and process restarts
+    try {
+      const artifactsDir = path.join(ctx.workspaceDir, ".coder", "artifacts");
+      mkdirSync(artifactsDir, { recursive: true });
+      writeFileSync(
+        path.join(artifactsDir, "RCA.md"),
+        `# Root Cause Analysis: ${issue.title || issue.id}\n\n${rcaAnalysis}\n`,
+        "utf8",
+      );
+    } catch {
+      /* best-effort */
     }
 
-    // Build and file the issue
-    const title = `[coder-rca] ${issue.title || issue.id} (${issue.id})`;
-    const body = buildIssueBody(issue, failureContext, rcaAnalysis, loopRunId);
-    const labels = monitorConfig.labels || ["coder-rca", "automated"];
-
-    const { issueUrl } = fileRcaIssue({ repoRoot, title, body, labels });
-
-    ctx.log({
-      event: "failure_monitor_rca_filed",
-      issueId: issue.id,
-      rcaIssueUrl: issueUrl,
-    });
-
-    // Update loop state with RCA URL
+    // Persist RCA analysis to loop state immediately — before attempting
+    // GitHub filing — so retry injection works even if filing fails.
+    const rcaSummary = rcaAnalysis.slice(0, 4000);
     if (loopState.issueQueue?.[issueIndex]) {
-      loopState.issueQueue[issueIndex].rcaIssueUrl = issueUrl;
+      loopState.issueQueue[issueIndex].rcaAnalysis = rcaSummary;
       try {
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
       } catch {
-        /* best-effort — don't fail RCA because of state save */
+        /* best-effort */
       }
     }
 
-    // Fire hook
-    runHooks(ctx, loopRunId, "rca_filed", "", {
-      issueUrl,
-      originalIssueId: issue.id,
-      originalIssueTitle: issue.title || "",
-    });
+    // Cancel check before filing
+    if (ctx.cancelToken?.cancelled) {
+      return { issueUrl: null, skipped: true, rcaAnalysis: rcaSummary };
+    }
 
-    return { issueUrl, skipped: false };
+    // Build and file the GitHub issue (best-effort — RCA is already persisted)
+    let issueUrl = null;
+    try {
+      const title = `[coder-rca] ${issue.title || issue.id} (${issue.id})`;
+      const body = buildIssueBody(
+        issue,
+        failureContext,
+        rcaAnalysis,
+        loopRunId,
+      );
+      const labels = monitorConfig.labels || ["coder-rca", "automated"];
+      const filed = fileRcaIssue({ repoRoot, title, body, labels });
+      issueUrl = filed.issueUrl;
+
+      ctx.log({
+        event: "failure_monitor_rca_filed",
+        issueId: issue.id,
+        rcaIssueUrl: issueUrl,
+      });
+
+      // Update loop state with the issue URL
+      if (loopState.issueQueue?.[issueIndex]) {
+        loopState.issueQueue[issueIndex].rcaIssueUrl = issueUrl;
+        try {
+          await saveLoopState(ctx.workspaceDir, loopState, {
+            guardRunId: loopState.runId,
+          });
+        } catch {
+          /* best-effort */
+        }
+      }
+
+      runHooks(ctx, loopRunId, "rca_filed", "", {
+        issueUrl,
+        originalIssueId: issue.id,
+        originalIssueTitle: issue.title || "",
+      });
+    } catch (fileErr) {
+      ctx.log({
+        event: "failure_monitor_filing_failed",
+        issueId: issue.id,
+        error: fileErr.message || String(fileErr),
+      });
+      // RCA analysis is still persisted in loop state and RCA.md — filing
+      // failure doesn't lose the analysis. Return what we have.
+    }
+
+    return { issueUrl, skipped: false, rcaAnalysis: rcaSummary };
   } catch (err) {
     ctx.log({
       event: "failure_monitor_error",

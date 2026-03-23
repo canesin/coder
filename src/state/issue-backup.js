@@ -118,6 +118,7 @@ const FAILURE_ARTIFACT_NAMES = [
   "PLAN.md",
   "PLANREVIEW.md",
   "REVIEW_FINDINGS.md",
+  "RCA.md",
 ];
 
 /**
