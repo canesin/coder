@@ -47,6 +47,16 @@ export function spawnAsync(cmd, args, opts = {}) {
   });
 }
 
+/** Throw if a spawnAsync result carries an abort or timeout error. */
+function throwIfAborted(res) {
+  if (
+    res.error &&
+    (res.error.code === "ABORT_ERR" || res.error.code === "ETIMEDOUT")
+  ) {
+    throw res.error;
+  }
+}
+
 /**
  * Detect the default branch for a git repository.
  * Tries `git symbolic-ref --short refs/remotes/origin/HEAD` first,
@@ -62,6 +72,7 @@ export async function detectDefaultBranch(repoDir, { signal } = {}) {
     ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
     { cwd: repoDir, signal },
   );
+  throwIfAborted(originHead);
   if (originHead.status === 0) {
     const raw = (originHead.stdout || "").trim();
     if (raw.startsWith("origin/") && raw.length > "origin/".length) {
@@ -70,6 +81,7 @@ export async function detectDefaultBranch(repoDir, { signal } = {}) {
         cwd: repoDir,
         signal,
       });
+      throwIfAborted(verify);
       if (verify.status === 0) return branch;
     }
   }
@@ -78,6 +90,7 @@ export async function detectDefaultBranch(repoDir, { signal } = {}) {
     cwd: repoDir,
     signal,
   });
+  throwIfAborted(mainCheck);
   if (mainCheck.status === 0) return "main";
 
   const masterCheck = await spawnAsync(
@@ -85,6 +98,7 @@ export async function detectDefaultBranch(repoDir, { signal } = {}) {
     ["rev-parse", "--verify", "master"],
     { cwd: repoDir, signal },
   );
+  throwIfAborted(masterCheck);
   if (masterCheck.status === 0) return "master";
 
   throw new Error(
@@ -110,6 +124,7 @@ export async function checkDefaultBranchTracking(
     cwd: repoDir,
     signal,
   });
+  throwIfAborted(hasOrigin);
   if (hasOrigin.status !== 0) return true; // No remote; tracking check N/A
 
   const remote = await spawnAsync(

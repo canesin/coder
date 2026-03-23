@@ -257,7 +257,10 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
     }
   });
 
-  app.get("/health", (_req, res) =>
+  const healthPath = routePath.endsWith("/")
+    ? `${routePath}health`
+    : `${routePath}/health`;
+  app.get(healthPath, (_req, res) =>
     res.json({ status: "ok", sessions: transports.size }),
   );
 
