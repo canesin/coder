@@ -55,6 +55,13 @@ export function reconcileSteps(steps, artifactsDir) {
   const reconciled = { ...steps };
   const rolledBack = [];
 
+  // Remove stale downstream artifact files that are no longer valid
+  // after a step rollback (prevents resumed pipelines consuming stale data).
+  const removeStale = (file) => {
+    const p = path.join(artifactsDir, file);
+    if (existsSync(p)) rmSync(p);
+  };
+
   const clearDownstreamFromPlan = () => {
     reconciled.wrotePlan = false;
     reconciled.wroteCritique = false;
@@ -92,6 +99,8 @@ export function reconcileSteps(steps, artifactsDir) {
   if (reconciled.wrotePlan && !existsSync(path.join(artifactsDir, "PLAN.md"))) {
     rolledBack.push("wrotePlan");
     clearDownstreamFromPlan();
+    removeStale("PLANREVIEW.md");
+    removeStale("REVIEW_FINDINGS.md");
   }
 
   // PLANREVIEW.md missing → clear critique + downstream, keep plan
@@ -101,6 +110,7 @@ export function reconcileSteps(steps, artifactsDir) {
   ) {
     rolledBack.push("wroteCritique");
     clearDownstreamFromCritique();
+    removeStale("REVIEW_FINDINGS.md");
   }
 
   // REVIEW_FINDINGS.md missing → clear review state, keep implementation

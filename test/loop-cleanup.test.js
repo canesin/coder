@@ -1125,6 +1125,64 @@ test("reconcileSteps: null steps — returns empty", () => {
   assert.equal(result.rolledBack.length, 0);
 });
 
+test("reconcileSteps: removes stale downstream artifacts when plan rolled back", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue\n");
+    // PLAN.md missing, but stale downstream artifacts exist
+    writeFileSync(path.join(artifactsDir, "PLANREVIEW.md"), "# Stale\n");
+    writeFileSync(path.join(artifactsDir, "REVIEW_FINDINGS.md"), "# Stale\n");
+
+    const steps = {
+      wroteIssue: true,
+      wrotePlan: true,
+      wroteCritique: true,
+      reviewerCompleted: true,
+    };
+    reconcileSteps(steps, artifactsDir);
+    assert.ok(
+      !existsSync(path.join(artifactsDir, "PLANREVIEW.md")),
+      "stale PLANREVIEW.md should be deleted",
+    );
+    assert.ok(
+      !existsSync(path.join(artifactsDir, "REVIEW_FINDINGS.md")),
+      "stale REVIEW_FINDINGS.md should be deleted",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("reconcileSteps: removes stale REVIEW_FINDINGS.md when critique rolled back", () => {
+  const tmp = makeTmpRepo();
+  try {
+    const artifactsDir = path.join(tmp, ".coder", "artifacts");
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "# Issue\n");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "# Plan\n");
+    // PLANREVIEW.md missing, but stale REVIEW_FINDINGS.md exists
+    writeFileSync(path.join(artifactsDir, "REVIEW_FINDINGS.md"), "# Stale\n");
+
+    const steps = {
+      wroteIssue: true,
+      wrotePlan: true,
+      wroteCritique: true,
+      reviewerCompleted: true,
+    };
+    reconcileSteps(steps, artifactsDir);
+    assert.ok(
+      !existsSync(path.join(artifactsDir, "REVIEW_FINDINGS.md")),
+      "stale REVIEW_FINDINGS.md should be deleted",
+    );
+    assert.ok(
+      existsSync(path.join(artifactsDir, "PLAN.md")),
+      "PLAN.md should be preserved",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // prepareForIssue: partial resume
 // ---------------------------------------------------------------------------

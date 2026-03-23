@@ -373,21 +373,56 @@ export function fileRcaIssue({ repoRoot, title, body, labels, repo }) {
 }
 
 /**
+ * Derive "owner/repo" from git remote origin. Returns null on failure.
+ * @param {string} repoRoot
+ * @returns {string|null}
+ */
+function getRepoSlug(repoRoot) {
+  try {
+    const res = spawnSync("git", ["remote", "get-url", "origin"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    if (res.status !== 0) return null;
+    const url = (res.stdout || "").trim();
+    // Match ssh (git@github.com:owner/repo.git) or https (https://github.com/owner/repo.git)
+    const m = url.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a dedup-safe RCA key that includes the source repo when filing
+ * to a shared upstream, preventing cross-repo id collisions.
+ * @param {string} issueId
+ * @param {string|null} repoSlug
+ * @returns {string}
+ */
+function rcaDedupKey(issueId, repoSlug) {
+  return repoSlug ? `${repoSlug}${issueId}` : issueId;
+}
+
+/**
  * Check for existing open RCA issue for this issue ID.
  * @param {string} repoRoot - workspace dir for cwd fallback
  * @param {string} issueId
  * @param {string} [upstreamRepo] - e.g. "owner/repo" to check against
+ * @param {string|null} [repoSlug] - source repo identifier for cross-repo dedup
  * @returns {boolean} true if a duplicate exists
  */
-function hasDuplicateRcaIssue(repoRoot, issueId, upstreamRepo) {
+function hasDuplicateRcaIssue(repoRoot, issueId, upstreamRepo, repoSlug) {
   try {
+    const key = rcaDedupKey(issueId, repoSlug);
     const args = [
       "issue",
       "list",
       "--state",
       "open",
       "--search",
-      `[coder-rca] ${issueId}`,
+      `[coder-rca] ${key}`,
       "--json",
       "url",
       "--limit",
@@ -457,10 +492,10 @@ export async function runFailureRca(failureCtx, ctx) {
 
     // Prefer caller-supplied error/deferredReason over loop-state values
     // so runFailureRca is self-contained and not dependent on mutation ordering.
-    if (failureCtx.error && !failureContext.error) {
+    if (failureCtx.error) {
       failureContext.error = failureCtx.error;
     }
-    if (failureCtx.deferredReason && !failureContext.deferredReason) {
+    if (failureCtx.deferredReason) {
       failureContext.deferredReason = failureCtx.deferredReason;
     }
 
@@ -468,9 +503,12 @@ export async function runFailureRca(failureCtx, ctx) {
     // so callers that fire-and-forget this promise are not blocked.
     await new Promise((r) => setImmediate(r));
 
-    // Dedup check — look in the upstream repo (if configured) for existing RCA issues
+    // Dedup check — look in the upstream repo (if configured) for existing RCA issues.
+    // Include source repo slug in the key to prevent cross-repo collisions when
+    // multiple repos file to a shared upstream.
     const upstreamRepo = monitorConfig.upstreamRepo || null;
-    if (hasDuplicateRcaIssue(repoRoot, issue.id, upstreamRepo)) {
+    const repoSlug = upstreamRepo ? getRepoSlug(repoRoot) : null;
+    if (hasDuplicateRcaIssue(repoRoot, issue.id, upstreamRepo, repoSlug)) {
       ctx.log({
         event: "failure_monitor_dedup",
         issueId: issue.id,
@@ -538,7 +576,8 @@ export async function runFailureRca(failureCtx, ctx) {
     if (classification !== "PROJECT_ISSUE") {
       const upstreamRepo = monitorConfig.upstreamRepo;
       try {
-        const title = `[coder-rca] ${issue.title || issue.id} (${issue.id})`;
+        const dedupId = rcaDedupKey(issue.id, repoSlug);
+        const title = `[coder-rca] ${issue.title || issue.id} (${dedupId})`;
         const rawBody = buildIssueBody(
           issue,
           failureContext,
