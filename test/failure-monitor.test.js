@@ -258,7 +258,7 @@ test("runFailureRca: agent failure is non-blocking", async () => {
   }
 });
 
-test("runFailureRca: persists RCA.md to artifacts and rcaAnalysis to loop state", async () => {
+test("runFailureRca: persists RCA.md to artifacts for agent consumption", async () => {
   const tmp = makeTmpWorkspace();
   try {
     const loopState = {
@@ -272,17 +272,17 @@ test("runFailureRca: persists RCA.md to artifacts and rcaAnalysis to loop state"
           agent: {
             executeWithRetry: async () => ({
               exitCode: 0,
-              stdout: "### Root Cause\nMissing import\n### Suggested Fix\nAdd import.",
+              stdout:
+                "### Root Cause\nMissing import\n### Suggested Fix\nAdd import.",
               stderr: "",
             }),
           },
         }),
       },
     });
-    // Skip the gh issue create by making it non-GitHub
     ctx.config.workflow.issueSource = "github";
 
-    const result = await runFailureRca(
+    await runFailureRca(
       {
         issue: { source: "github", id: "#5", title: "Broken build" },
         error: "compile error",
@@ -293,23 +293,18 @@ test("runFailureRca: persists RCA.md to artifacts and rcaAnalysis to loop state"
       ctx,
     );
 
-    // RCA.md should be written to artifacts dir
+    // RCA.md should be written to artifacts dir for agents to read
     const rcaPath = path.join(tmp, ".coder", "artifacts", "RCA.md");
     assert.ok(existsSync(rcaPath), "RCA.md should be persisted");
     const rcaContent = readFileSync(rcaPath, "utf8");
-    assert.ok(rcaContent.includes("Missing import"), "RCA content should include analysis");
-
-    // Loop state should have rcaAnalysis
-    assert.ok(loopState.issueQueue[0].rcaAnalysis, "rcaAnalysis should be in loop state");
     assert.ok(
-      loopState.issueQueue[0].rcaAnalysis.includes("Missing import"),
-      "rcaAnalysis should contain the analysis",
+      rcaContent.includes("Missing import"),
+      "RCA content should include analysis",
     );
-
-    // Return value should include rcaAnalysis
-    if (!result.error) {
-      assert.ok(result.rcaAnalysis, "return value should include rcaAnalysis");
-    }
+    assert.ok(
+      rcaContent.startsWith("# Root Cause Analysis:"),
+      "should have title header",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

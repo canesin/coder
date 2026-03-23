@@ -1334,20 +1334,21 @@ export async function runDevelopLoop(opts, ctx) {
       await prepareForIssue(ctx.workspaceDir, issue, ctx);
     }
 
-    // Build clarifications — include RCA from prior failure if available
+    // Build clarifications — reference RCA file from prior failure if available
     let clarifications = `Autonomous mode. Goal: ${goal}`;
-    const priorRca = loopState.issueQueue[i]?.rcaAnalysis;
-    if (priorRca && isRetry) {
+    const rcaPath = artifactPaths(ctx.artifactsDir).rca;
+    if (isRetry && existsSync(rcaPath)) {
       clarifications +=
         "\n\n---\n## Prior Failure Analysis\n\n" +
-        "This issue failed on a previous attempt. The root cause analysis below " +
-        "describes what went wrong. Use this to avoid the same failure and fix " +
-        "any issues if they relate to the code you are developing.\n\n" +
-        priorRca;
+        "This issue failed on a previous attempt. A root cause analysis " +
+        `is available at \`${rcaPath}\`. Read it before starting — it ` +
+        "describes what went wrong and suggests fixes. Use this to avoid " +
+        "the same failure and fix any issues if they relate to the code " +
+        "you are developing.";
       ctx.log({
-        event: "rca_injected_into_retry",
+        event: "rca_reference_injected",
         issueId: issue.id,
-        rcaLength: priorRca.length,
+        rcaPath,
       });
     }
 

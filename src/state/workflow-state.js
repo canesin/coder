@@ -369,7 +369,6 @@ const LoopIssueResultSchema = z
     lastFailedRunId: z.string().nullable().default(null),
     deferredReason: z.string().nullable().optional(),
     rcaIssueUrl: z.string().nullable().optional(),
-    rcaAnalysis: z.string().nullable().optional(),
   })
   .passthrough();
 

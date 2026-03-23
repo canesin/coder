@@ -384,26 +384,13 @@ export async function runFailureRca(failureCtx, ctx) {
       /* best-effort */
     }
 
-    // Persist RCA analysis to loop state immediately — before attempting
-    // GitHub filing — so retry injection works even if filing fails.
-    const rcaSummary = rcaAnalysis.slice(0, 4000);
-    if (loopState.issueQueue?.[issueIndex]) {
-      loopState.issueQueue[issueIndex].rcaAnalysis = rcaSummary;
-      try {
-        await saveLoopState(ctx.workspaceDir, loopState, {
-          guardRunId: loopState.runId,
-        });
-      } catch {
-        /* best-effort */
-      }
-    }
-
     // Cancel check before filing
     if (ctx.cancelToken?.cancelled) {
-      return { issueUrl: null, skipped: true, rcaAnalysis: rcaSummary };
+      return { issueUrl: null, skipped: true };
     }
 
-    // Build and file the GitHub issue (best-effort — RCA is already persisted)
+    // File the GitHub issue (best-effort — RCA.md on disk is the primary
+    // persistence; the GitHub issue is a notification/tracking artifact).
     let issueUrl = null;
     try {
       const title = `[coder-rca] ${issue.title || issue.id} (${issue.id})`;
@@ -423,18 +410,6 @@ export async function runFailureRca(failureCtx, ctx) {
         rcaIssueUrl: issueUrl,
       });
 
-      // Update loop state with the issue URL
-      if (loopState.issueQueue?.[issueIndex]) {
-        loopState.issueQueue[issueIndex].rcaIssueUrl = issueUrl;
-        try {
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-        } catch {
-          /* best-effort */
-        }
-      }
-
       runHooks(ctx, loopRunId, "rca_filed", "", {
         issueUrl,
         originalIssueId: issue.id,
@@ -446,11 +421,21 @@ export async function runFailureRca(failureCtx, ctx) {
         issueId: issue.id,
         error: fileErr.message || String(fileErr),
       });
-      // RCA analysis is still persisted in loop state and RCA.md — filing
-      // failure doesn't lose the analysis. Return what we have.
     }
 
-    return { issueUrl, skipped: false, rcaAnalysis: rcaSummary };
+    // Update loop state with RCA issue URL (if filed)
+    if (loopState.issueQueue?.[issueIndex] && issueUrl) {
+      loopState.issueQueue[issueIndex].rcaIssueUrl = issueUrl;
+      try {
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    return { issueUrl, skipped: false };
   } catch (err) {
     ctx.log({
       event: "failure_monitor_error",

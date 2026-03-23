@@ -12,6 +12,7 @@ export const ISSUE_FILE = "ISSUE.md";
 export const PLAN_FILE = "PLAN.md";
 export const CRITIQUE_FILE = "PLANREVIEW.md";
 export const REVIEW_FINDINGS_FILE = "REVIEW_FINDINGS.md";
+export const RCA_FILE = "RCA.md";
 
 export function artifactPaths(artifactsDir) {
   return {
@@ -19,6 +20,7 @@ export function artifactPaths(artifactsDir) {
     plan: path.join(artifactsDir, PLAN_FILE),
     critique: path.join(artifactsDir, CRITIQUE_FILE),
     reviewFindings: path.join(artifactsDir, REVIEW_FINDINGS_FILE),
+    rca: path.join(artifactsDir, RCA_FILE),
   };
 }
 
