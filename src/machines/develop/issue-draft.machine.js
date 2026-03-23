@@ -70,6 +70,8 @@ async function fetchIssueBody(
       ["issue", "view", num, "--json", "body,comments"],
       { cwd: repoRoot, signal, timeout: 10000 },
     );
+    if (res.error?.code === "ABORT_ERR" || res.error?.code === "ETIMEDOUT")
+      throw res.error;
     if (res.error || res.status !== 0 || !res.stdout) return null;
     try {
       const data = JSON.parse(res.stdout);
@@ -86,6 +88,8 @@ async function fetchIssueBody(
       ["issue", "view", iid, "--output", "json"],
       { cwd: repoRoot, signal, timeout: 10000 },
     );
+    if (res.error?.code === "ABORT_ERR" || res.error?.code === "ETIMEDOUT")
+      throw res.error;
     if (res.error || res.status !== 0 || !res.stdout) return null;
     try {
       const data = JSON.parse(res.stdout);
@@ -263,13 +267,14 @@ export default defineMachine({
         ["fetch", "origin", state.baseBranch],
         { cwd: repoRoot, signal: ctx.signal },
       );
+      // Propagate abort/timeout, but treat other fetch failures as best-effort
+      // (offline, no remote, etc.) — the subsequent checkout will fail if needed.
       if (
-        fetchRes.error ||
-        (fetchRes.status !== 0 && fetchRes.status !== null)
+        fetchRes.error &&
+        (fetchRes.error.code === "ABORT_ERR" ||
+          fetchRes.error.code === "ETIMEDOUT")
       ) {
-        throw new Error(
-          `Failed to fetch base branch ${state.baseBranch}: ${fetchRes.stderr || fetchRes.error?.message || "unknown error"}`,
-        );
+        throw fetchRes.error;
       }
       const baseCheckout = spawnSync("git", ["checkout", state.baseBranch], {
         cwd: repoRoot,

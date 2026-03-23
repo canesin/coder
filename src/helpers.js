@@ -132,11 +132,13 @@ export async function checkDefaultBranchTracking(
     ["config", "--get", `branch.${defaultBranch}.remote`],
     { cwd: repoDir, signal },
   );
+  throwIfAborted(remote);
   const merge = await spawnAsync(
     "git",
     ["config", "--get", `branch.${defaultBranch}.merge`],
     { cwd: repoDir, signal },
   );
+  throwIfAborted(merge);
   if (remote.status !== 0 || merge.status !== 0) {
     const remoteName = getDefaultBranchRemoteName(repoDir, defaultBranch);
     log({
