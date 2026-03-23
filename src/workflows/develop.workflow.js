@@ -896,9 +896,12 @@ export async function runDevelopLoop(opts, ctx) {
   }
 
   if (issueIds.length > 0) {
-    const foundSet = new Set(rawIssues.map((i) => String(i.id).toLowerCase()));
+    // Validate against the full fetched list (not the maxIssues-truncated one)
+    // so that a requested issue beyond the truncation point isn't rejected.
+    const fullList = listResult.data.issues;
+    const fullSet = new Set(fullList.map((i) => String(i.id).toLowerCase()));
     const missing = issueIds.filter(
-      (id) => !foundSet.has(String(id).toLowerCase()),
+      (id) => !fullSet.has(String(id).toLowerCase()),
     );
     if (missing.length > 0) {
       return {
@@ -907,6 +910,10 @@ export async function runDevelopLoop(opts, ctx) {
         results: [],
       };
     }
+    // Filter rawIssues to requested IDs so maxIssues truncation doesn't
+    // silently drop explicitly requested issues.
+    const reqSet = new Set(issueIds.map((id) => String(id).toLowerCase()));
+    rawIssues = fullList.filter((i) => reqSet.has(String(i.id).toLowerCase()));
   }
 
   if (rawIssues.length === 0) {
