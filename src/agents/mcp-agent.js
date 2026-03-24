@@ -66,6 +66,8 @@ export class McpAgent extends AgentAdapter {
     this._transport = null;
     /** @type {Map<string, object>|null} */
     this._toolsCache = null;
+    /** @type {Promise<Client>|null} */
+    this._connectPromise = null;
   }
 
   _withRetry(fn, label) {
@@ -94,8 +96,9 @@ export class McpAgent extends AgentAdapter {
 
   async _ensureClient() {
     if (this._client) return this._client;
+    if (this._connectPromise) return this._connectPromise;
 
-    return this._withRetry(async () => {
+    this._connectPromise = this._withRetry(async () => {
       // Reset stale state from a prior failed attempt
       this._client = null;
       this._transport = null;
@@ -140,6 +143,12 @@ export class McpAgent extends AgentAdapter {
       await this._client.connect(this._transport);
       return this._client;
     }, "connect");
+
+    try {
+      return await this._connectPromise;
+    } finally {
+      this._connectPromise = null;
+    }
   }
 
   /**
@@ -245,6 +254,7 @@ export class McpAgent extends AgentAdapter {
   }
 
   async kill() {
+    this._connectPromise = null;
     if (this._client) {
       try {
         await this._client.close();
