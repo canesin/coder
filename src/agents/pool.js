@@ -144,19 +144,20 @@ export class AgentPool {
    * Get an agent instance for a given role and scope.
    *
    * @param {string} role - Agent role from config (issueSelector, planner, etc.)
-   * @param {{ scope?: "workspace" | "repo", mode?: "cli" | "api" | "mcp" }} [opts]
+   * @param {Record<string, unknown> & { scope?: "workspace" | "repo", mode?: "cli" | "api" | "mcp" }} [opts]
    * @returns {{ agentName: string, agent: import("./_base.js").AgentAdapter }}
    */
-  getAgent(role, { scope = "repo", mode = "cli" } = {}) {
+  getAgent(role, opts = {}) {
+    const { scope = "repo", mode = "cli", ...rest } = opts;
     const agentName = this._roleAgentName(role);
     const cwd = scope === "workspace" ? this.workspaceDir : this.repoRoot;
 
     if (mode === "api") {
-      return this._getApiAgent(role, { scope });
+      return this._getApiAgent(role, { scope, ...rest });
     }
 
     if (mode === "mcp") {
-      return this._getMcpAgent(role, { scope });
+      return this._getMcpAgent(role, { scope, ...rest });
     }
 
     if (mode !== "cli") {
