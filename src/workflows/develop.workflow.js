@@ -801,7 +801,8 @@ export async function runDevelopLoop(opts, ctx) {
   });
   loopState.currentIndex = 0;
   loopState.startedAt = new Date().toISOString();
-  loopState.runId = ctx.runId ?? loopState.runId; // ctx.runId typically unset; use prior if present
+  const priorRunId = loopState.runId;
+  loopState.runId = ctx.runId || randomUUID().slice(0, 8);
 
   const loopRunId = randomUUID().slice(0, 8);
   runHooks(ctx, loopRunId, "loop_start", "", {
@@ -835,7 +836,7 @@ export async function runDevelopLoop(opts, ctx) {
     stateForCleanupFailure.runId = loopState.runId;
     stateForCleanupFailure.completedAt = new Date().toISOString();
     await saveLoopState(ctx.workspaceDir, stateForCleanupFailure, {
-      guardRunId: loopState.runId,
+      guardRunId: priorRunId ?? "",
     });
     runHooks(ctx, loopRunId, "loop_complete", "", {
       status: "failed",
@@ -852,7 +853,7 @@ export async function runDevelopLoop(opts, ctx) {
   }
 
   await saveLoopState(ctx.workspaceDir, loopState, {
-    guardRunId: loopState.runId,
+    guardRunId: priorRunId ?? "",
   });
 
   /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */

@@ -36,7 +36,7 @@ function workflowSqlitePath(workspaceDir) {
   return path.resolve(workspaceDir, config.workflow.scratchpad.sqlitePath);
 }
 
-function startWorkflowActor({
+export function startWorkflowActor({
   workflow = "develop",
   workspaceDir,
   runId,
@@ -52,6 +52,7 @@ function startWorkflowActor({
       workflow,
       snapshot: actor.getPersistedSnapshot(),
       sqlitePath,
+      guardRunId: runId,
     }).catch(() => {});
   });
   actor.start();
@@ -703,6 +704,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
           const workflowCtx = {
             workspaceDir: ws,
             repoPath: params.repoPath || ".",
+            runId: nextRunId,
             config,
             agentPool,
             log,
