@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { sanitizeUserData } from "../../helpers.js";
 import { checkCancel, defineMachine } from "../_base.js";
 import {
   appendScratchpad,

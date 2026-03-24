@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   gitCleanOrThrow,
   sanitizeIssueMarkdown,
+  sanitizeUserData,
   spawnAsync,
   stripAgentNoise,
 } from "../../helpers.js";
@@ -342,11 +343,11 @@ export default defineMachine({
 Chosen issue:
 - source: ${input.issue.source}
 - id: ${input.issue.id}
-- title: ${input.issue.title}
+- title: <user-data field="issue.title">${sanitizeUserData(input.issue.title)}</user-data>
 - repo_root: ${repoRoot}
 ${issueBodySection}
 Clarifications from user:
-${input.clarifications || "(none provided)"}
+<user-data field="clarifications">${sanitizeUserData(input.clarifications || "(none provided)")}</user-data>
 
 Scratchpad for iterative notes:
 - path: ${scratchpadPath}

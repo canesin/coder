@@ -601,6 +601,10 @@ export function sanitizeIssueMarkdown(text) {
   return unwrapped;
 }
 
+export function sanitizeUserData(text) {
+  return String(text || "").replace(/<\/?user-data[^>]*>/gi, "");
+}
+
 export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {
   const cleaned = sanitizeIssueMarkdown(issueMd);
   if (!cleaned) return "";
