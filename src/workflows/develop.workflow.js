@@ -794,12 +794,17 @@ function buildIssueQueue(issues, { source } = {}) {
 function resolveDependencyBranch(issue, outcomeMap) {
   const deps = issue.dependsOn || issue.depends_on || [];
   if (deps.length === 0) {
-    return { baseBranch: null, allDepsFailed: false, depOutcomes: {} };
+    return {
+      baseBranch: null,
+      anyDepsFailed: false,
+      multipleBranches: false,
+      depOutcomes: {},
+    };
   }
 
   const outcomes = {};
   let failCount = 0;
-  let baseBranch = null;
+  const uniqueBranches = new Set();
 
   for (const depId of deps) {
     const outcome = outcomeMap.get(depId);
@@ -809,17 +814,22 @@ function resolveDependencyBranch(issue, outcomeMap) {
     }
     outcomes[depId] = outcome.status;
     if (outcome.status === "completed" && outcome.branch) {
-      // Use the first successful dependency branch as base
-      if (!baseBranch) baseBranch = outcome.branch;
+      uniqueBranches.add(outcome.branch);
     } else if (outcome.status === "failed" || outcome.status === "skipped") {
       failCount++;
     }
   }
 
   const knownDeps = deps.filter((d) => outcomeMap.has(d));
-  const allDepsFailed = knownDeps.length > 0 && failCount === knownDeps.length;
+  const anyDepsFailed = knownDeps.length > 0 && failCount > 0;
+  const branchArray = [...uniqueBranches];
 
-  return { baseBranch, allDepsFailed, depOutcomes: outcomes };
+  return {
+    baseBranch: branchArray[0] || null,
+    anyDepsFailed,
+    multipleBranches: branchArray.length > 1,
+    depOutcomes: outcomes,
+  };
 }
 
 const isRateLimitError = (text) =>
@@ -841,6 +851,7 @@ export {
   isGlabMrListFormatMismatchStderr,
   prepareForIssue,
   resetForNextIssue,
+  resolveDependencyBranch,
 };
 
 /**
@@ -1151,26 +1162,24 @@ export async function runDevelopLoop(opts, ctx) {
     };
     runHooks(ctx, loopRunId, "issue_start", "", {}, issueEnv);
 
-    const { baseBranch, allDepsFailed, depOutcomes } = resolveDependencyBranch(
-      issue,
-      outcomeMap,
-    );
+    const { baseBranch, anyDepsFailed, multipleBranches, depOutcomes } =
+      resolveDependencyBranch(issue, outcomeMap);
 
-    if (allDepsFailed) {
+    if (anyDepsFailed) {
       ctx.log({
         event: "issue_skipped",
         issueId: issue.id,
-        reason: "all_dependencies_failed",
+        reason: "dependency_failed",
         depOutcomes,
       });
       loopState.issueQueue[i].status = "skipped";
-      loopState.issueQueue[i].error = "All dependencies failed";
+      loopState.issueQueue[i].error = "One or more dependencies failed";
       outcomeMap.set(issue.id, { status: "skipped" });
       skipped++;
       results.push({
         ...issue,
         status: "skipped",
-        error: "All dependencies failed",
+        error: "One or more dependencies failed",
       });
       await saveLoopState(ctx.workspaceDir, loopState, {
         guardRunId: loopState.runId,
@@ -1180,7 +1189,7 @@ export async function runDevelopLoop(opts, ctx) {
         loopRunId,
         "issue_skipped",
         "",
-        { status: "skipped", reason: "all_dependencies_failed" },
+        { status: "skipped", reason: "dependency_failed" },
         issueEnv,
       );
       return "skipped";
@@ -1188,7 +1197,7 @@ export async function runDevelopLoop(opts, ctx) {
 
     // Defer if any dependency hasn't been processed yet (first pass only)
     const hasUnresolvedDeps = Object.values(depOutcomes).some(
-      (s) => s === "pending",
+      (s) => s === "pending" || s === "deferred",
     );
     if (hasUnresolvedDeps && !isRetry) {
       ctx.log({ event: "issue_deferred", issueId: issue.id, depOutcomes });
@@ -1205,6 +1214,40 @@ export async function runDevelopLoop(opts, ctx) {
         issueEnv,
       );
       return "deferred";
+    }
+
+    if (multipleBranches) {
+      ctx.log({
+        event: "issue_failed",
+        issueId: issue.id,
+        reason: "multiple_dependency_branches",
+        depOutcomes,
+      });
+      loopState.issueQueue[i].status = "failed";
+      loopState.issueQueue[i].error =
+        "Multiple dependency branches found. Please merge prerequisite branches into the default branch before proceeding.";
+      outcomeMap.set(issue.id, { status: "failed" });
+      failed++;
+      results.push({
+        ...issue,
+        status: "failed",
+        error: loopState.issueQueue[i].error,
+      });
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_failed",
+        "",
+        {
+          status: "failed",
+          reason: "multiple_dependency_branches",
+        },
+        issueEnv,
+      );
+      return "failed";
     }
 
     if (baseBranch) {

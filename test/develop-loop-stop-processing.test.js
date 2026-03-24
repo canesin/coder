@@ -296,6 +296,147 @@ test("dependency chain: dependents skipped, independent issues continue", async 
   }
 });
 
+test("dependency chain: partial failure skips dependent with mixed deps (EARS-1)", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    // A failed in a prior run (seeded into outcomeMap, not in current manifest).
+    // B completes in current run. C depends on [A, B].
+    // A not in current issue list → eager-skip doesn't fire for C.
+    // resolveDependencyBranch sees A=failed, B=completed.
+    // Old allDepsFailed: 1/2 ≠ 2/2 → false → C proceeds (bug)
+    // New anyDepsFailed: failCount > 0 → true → C skipped (correct)
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "B", title: "Issue B", difficulty: 2 },
+      { id: "C", title: "Issue C", difficulty: 3, dependsOn: ["A", "B"] },
+    ]);
+
+    // Seed prior loop state with A as "failed" so outcomeMap picks it up
+    writeFileSync(
+      path.join(ws, ".coder", "loop-state.json"),
+      JSON.stringify({
+        runId: "prior-run",
+        status: "failed",
+        issueQueue: [
+          {
+            id: "A",
+            title: "Issue A",
+            source: "local",
+            status: "failed",
+            error: "prior failure",
+          },
+        ],
+      }),
+    );
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-partial-fail",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-partial-fail");
+    };
+
+    const ctx = makeCtx(ws);
+    await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        preserveFailedIssues: true,
+      },
+      ctx,
+    );
+
+    const finalState = await loadLoopState(ws);
+    const issueB = finalState.issueQueue.find((issue) => issue.id === "B");
+    const issueC = finalState.issueQueue.find((issue) => issue.id === "C");
+    assert.equal(issueB.status, "completed");
+    assert.equal(issueC.status, "skipped");
+    assert.match(issueC.error, /one or more dependencies failed/i);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("dependency chain: multiple dependency branches fails dependent (EARS-3)", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    // A and B complete with different branches, C depends on both
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+      { id: "B", title: "Issue B", difficulty: 2 },
+      { id: "C", title: "Issue C", difficulty: 3, dependsOn: ["A", "B"] },
+    ]);
+    let currentIssueId = null;
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (machineName === "develop.issue_draft") {
+        currentIssueId = steps[0]?.inputMapper?.()?.issue?.id;
+      }
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-multi-branch",
+          durationMs: 0,
+        };
+      }
+      // Return per-issue branches so A and B produce distinct branches
+      const branch =
+        currentIssueId === "A"
+          ? "feat/a"
+          : currentIssueId === "B"
+            ? "feat/b"
+            : "feat/c";
+      return {
+        status: "completed",
+        results: [
+          {
+            machine: "develop.pr_creation",
+            status: "ok",
+            data: {
+              branch,
+              prUrl: `https://example.test/pr-${currentIssueId}`,
+            },
+          },
+        ],
+        runId: "run-multi-branch",
+        durationMs: 0,
+      };
+    };
+
+    const ctx = makeCtx(ws);
+    await runDevelopLoop(
+      { issueSource: "local", localIssuesDir: issuesDir },
+      ctx,
+    );
+
+    const finalState = await loadLoopState(ws);
+    const issueC = finalState.issueQueue.find((issue) => issue.id === "C");
+    assert.equal(issueC.status, "failed");
+    assert.match(issueC.error, /multiple dependency branches/i);
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
 test("rate-limited failures defer and do not trigger queue abort", async () => {
   const ws = makeTmpWorkspace();
   const originalRun = WorkflowRunner.prototype.run;
