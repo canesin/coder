@@ -37,7 +37,7 @@ test("REV-03: concurrent callers share one initialization promise", async (t) =>
   );
 });
 
-test("REV-03: kill() clears _connectPromise", async (t) => {
+test("REV-03: kill() aborts in-flight _ensureClient()", async (t) => {
   const agent = new McpAgent({
     transport: "http",
     serverUrl: "http://localhost:1",
@@ -57,9 +57,6 @@ test("REV-03: kill() clears _connectPromise", async (t) => {
     "_connectPromise should be null after kill()",
   );
 
-  try {
-    await p;
-  } catch {
-    // may fail, that's fine
-  }
+  await assert.rejects(p, { message: /aborted by kill/ });
+  assert.equal(agent._client, null, "_client should remain null after kill()");
 });

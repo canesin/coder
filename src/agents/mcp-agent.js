@@ -68,6 +68,8 @@ export class McpAgent extends AgentAdapter {
     this._toolsCache = null;
     /** @type {Promise<Client>|null} */
     this._connectPromise = null;
+    /** @type {number} Monotonic counter incremented by kill() to invalidate in-flight connects */
+    this._connectEpoch = 0;
   }
 
   _withRetry(fn, label) {
@@ -98,7 +100,14 @@ export class McpAgent extends AgentAdapter {
     if (this._client) return this._client;
     if (this._connectPromise) return this._connectPromise;
 
+    const epoch = ++this._connectEpoch;
+
     this._connectPromise = this._withRetry(async () => {
+      // If kill() was called before this retry attempt, abort early
+      if (this._connectEpoch !== epoch) {
+        throw new Error("McpAgent: initialization aborted by kill()");
+      }
+
       // Reset stale state from a prior failed attempt
       this._client = null;
       this._transport = null;
@@ -141,13 +150,32 @@ export class McpAgent extends AgentAdapter {
       );
 
       await this._client.connect(this._transport);
+
+      // If kill() ran while connect() was in flight, clean up and abort
+      if (this._connectEpoch !== epoch) {
+        const client = this._client;
+        const transport = this._transport;
+        this._client = null;
+        this._transport = null;
+        try {
+          await client?.close();
+        } catch {}
+        try {
+          await transport?.close();
+        } catch {}
+        throw new Error("McpAgent: initialization aborted by kill()");
+      }
+
       return this._client;
     }, "connect");
 
     try {
       return await this._connectPromise;
     } finally {
-      this._connectPromise = null;
+      // Only clear if this is still the active attempt
+      if (this._connectEpoch === epoch) {
+        this._connectPromise = null;
+      }
     }
   }
 
@@ -254,6 +282,7 @@ export class McpAgent extends AgentAdapter {
   }
 
   async kill() {
+    this._connectEpoch++;
     this._connectPromise = null;
     if (this._client) {
       try {
