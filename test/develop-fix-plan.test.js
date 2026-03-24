@@ -875,7 +875,9 @@ test("hard failure when git pull --ff-only fails with non-stale error", async ()
       { id: "A", title: "Issue A", difficulty: 1 },
     ]);
 
+    let runCalled = false;
     WorkflowRunner.prototype.run = async function runStub() {
+      runCalled = true;
       return completedRunnerResult("run-1");
     };
 
@@ -891,6 +893,16 @@ test("hard failure when git pull --ff-only fails with non-stale error", async ()
       ),
       /Git pull failed/,
     );
+
+    // Verify loop state is persisted as failed
+    const loopState = await loadLoopState(ws);
+    assert.equal(loopState.status, "failed");
+    assert.ok(loopState.completedAt, "loop should have completedAt timestamp");
+    assert.equal(loopState.issueQueue[0].status, "failed");
+    assert.match(loopState.issueQueue[0].error, /Git pull failed/);
+
+    // Verify planning/implementation never started
+    assert.equal(runCalled, false, "WorkflowRunner.run should not be called");
   } finally {
     WorkflowRunner.prototype.run = originalRun;
     rmSync(tmp, { recursive: true, force: true });

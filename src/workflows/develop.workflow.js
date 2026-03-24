@@ -1300,7 +1300,33 @@ export async function runDevelopLoop(opts, ctx) {
         );
         return "deferred";
       }
-      throw new Error(`Git pull failed: ${stderr.slice(0, 200)}`);
+      const errMsg = `Git pull failed: ${stderr.slice(0, 200)}`;
+      loopState.issueQueue[i].status = "failed";
+      loopState.issueQueue[i].error = errMsg;
+      outcomeMap.set(issue.id, { status: "failed" });
+      failed++;
+      results.push({ ...issue, status: "failed", error: errMsg });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_failed",
+        "",
+        { status: "failed", error: errMsg },
+        issueEnv,
+      );
+      loopState.status = "failed";
+      loopState.completedAt = new Date().toISOString();
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(ctx, loopRunId, "loop_complete", "", {
+        status: "failed",
+        completed,
+        failed,
+        skipped,
+        deferred: 0,
+      });
+      throw new Error(errMsg);
     }
 
     // Build active branch context for conflict detection (skipped when disabled).
