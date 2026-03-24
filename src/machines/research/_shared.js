@@ -34,6 +34,9 @@ export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
         end = newlineBoundary;
       }
     }
+    if (end <= cursor) {
+      end = Math.min(cursor + Math.max(1, maxChars), normalized.length);
+    }
     const chunk = normalized.slice(cursor, end).trim();
     if (chunk) chunks.push(chunk);
     cursor = end;
