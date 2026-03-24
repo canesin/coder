@@ -81,9 +81,17 @@ const SKIP_DIRS = new Set([
   ".gemini",
 ]);
 
-const MARKDOWN_ALLOWED_DIRS = new Set(["docs", "doc", ".github"]);
+const MARKDOWN_ALLOWED_DIRS = new Set([
+  "docs",
+  "doc",
+  ".github",
+  ".claude",
+  ".claude/commands",
+]);
 const MARKDOWN_ALLOWED_FILES = new Set([
   "README.md",
+  "DESIGN.md",
+  "SECURITY.md",
   "CHANGELOG.md",
   "LICENSE.md",
   "CONTRIBUTING.md",
