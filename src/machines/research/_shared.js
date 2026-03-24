@@ -20,7 +20,7 @@ import {
  */
 export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
   maxChars = Math.max(1, Math.floor(Number(maxChars) || 1));
-  maxChunks = Math.max(1, Math.floor(Number(maxChunks) || 1));
+  maxChunks = Math.max(0, Math.floor(Number(maxChunks) || 0));
   const normalized = String(text || "")
     .replace(/\r\n/g, "\n")
     .trim();

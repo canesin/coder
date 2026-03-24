@@ -15,20 +15,41 @@ test("chunkPointers - chunks correctly on newlines with valid maxChars", () => {
   assert.deepEqual(chunks, ["line1\nline2", "line3"]);
 });
 
-test("chunkPointers - coerces NaN maxChars to 1", { timeout: 3000 }, () => {
+test("chunkPointers - coerces NaN maxChars to 1", {
+  timeout: 3000,
+}, () => {
   const chunks = chunkPointers("ab", { maxChars: NaN });
-  assert.ok(chunks.length > 0, "should produce chunks, not hang");
+  assert.deepEqual(chunks, ["a", "b"]);
 });
 
 test("chunkPointers - coerces negative maxChars to 1", {
   timeout: 3000,
 }, () => {
   const chunks = chunkPointers("ab", { maxChars: -5 });
-  assert.ok(chunks.length > 0, "should produce chunks, not hang");
+  assert.deepEqual(chunks, ["a", "b"]);
 });
 
 test("chunkPointers - floors fractional maxChars", () => {
   const chunks = chunkPointers("abcde", { maxChars: 2.9 });
-  // maxChars floors to 2, so "abcde" splits into chunks of at most 2 chars
-  assert.ok(chunks.length >= 2, "fractional maxChars should be floored");
+  // maxChars floors to 2, so "abcde" splits into chunks of 2
+  assert.deepEqual(chunks, ["ab", "cd", "e"]);
+});
+
+test("chunkPointers - maxChunks 0 returns empty array", () => {
+  const chunks = chunkPointers("hello world", { maxChunks: 0 });
+  assert.deepEqual(chunks, []);
+});
+
+test("chunkPointers - coerces NaN maxChunks to 0 (empty)", {
+  timeout: 3000,
+}, () => {
+  const chunks = chunkPointers("hello", { maxChunks: NaN });
+  assert.deepEqual(chunks, []);
+});
+
+test("chunkPointers - coerces negative maxChunks to 0 (empty)", {
+  timeout: 3000,
+}, () => {
+  const chunks = chunkPointers("hello", { maxChunks: -3 });
+  assert.deepEqual(chunks, []);
 });
