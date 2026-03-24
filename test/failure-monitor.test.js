@@ -365,7 +365,10 @@ test("runFailureRca: persists RCA.md to per-issue rca dir for agent consumption"
     // RCA.md should be written to per-issue rca dir (immune to archive/clear races)
     // Key uses backupKeyFor format: source-id-repoPart
     const rcaPath = path.join(tmp, ".coder", "rca", "github-#5-root.md");
-    assert.ok(existsSync(rcaPath), "RCA.md should be persisted to per-issue path");
+    assert.ok(
+      existsSync(rcaPath),
+      "RCA.md should be persisted to per-issue path",
+    );
     const rcaContent = readFileSync(rcaPath, "utf8");
     assert.ok(
       rcaContent.includes("Missing import"),
