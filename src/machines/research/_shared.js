@@ -19,6 +19,8 @@ import {
  * @returns {string[]}
  */
 export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
+  maxChars = Math.max(1, Math.floor(Number(maxChars) || 1));
+  maxChunks = Math.max(1, Math.floor(Number(maxChunks) || 1));
   const normalized = String(text || "")
     .replace(/\r\n/g, "\n")
     .trim();
@@ -35,7 +37,7 @@ export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
       }
     }
     if (end <= cursor) {
-      end = Math.min(cursor + Math.max(1, maxChars), normalized.length);
+      end = Math.min(cursor + maxChars, normalized.length);
     }
     const chunk = normalized.slice(cursor, end).trim();
     if (chunk) chunks.push(chunk);

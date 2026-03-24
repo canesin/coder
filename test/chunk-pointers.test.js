@@ -14,3 +14,21 @@ test("chunkPointers - chunks correctly on newlines with valid maxChars", () => {
   const chunks = chunkPointers("line1\nline2\nline3", { maxChars: 11 });
   assert.deepEqual(chunks, ["line1\nline2", "line3"]);
 });
+
+test("chunkPointers - coerces NaN maxChars to 1", { timeout: 3000 }, () => {
+  const chunks = chunkPointers("ab", { maxChars: NaN });
+  assert.ok(chunks.length > 0, "should produce chunks, not hang");
+});
+
+test("chunkPointers - coerces negative maxChars to 1", {
+  timeout: 3000,
+}, () => {
+  const chunks = chunkPointers("ab", { maxChars: -5 });
+  assert.ok(chunks.length > 0, "should produce chunks, not hang");
+});
+
+test("chunkPointers - floors fractional maxChars", () => {
+  const chunks = chunkPointers("abcde", { maxChars: 2.9 });
+  // maxChars floors to 2, so "abcde" splits into chunks of at most 2 chars
+  assert.ok(chunks.length >= 2, "fractional maxChars should be floored");
+});
