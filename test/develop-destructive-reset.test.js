@@ -28,13 +28,17 @@ function makeTmpWorkspace() {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "destructive-reset-"));
   mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
-  execSync("git init", { cwd: tmp, stdio: "ignore" });
+  execSync("git init -b main", { cwd: tmp, stdio: "ignore" });
   execSync("git config user.email test@example.com", {
     cwd: tmp,
     stdio: "ignore",
   });
   execSync("git config user.name 'Test User'", { cwd: tmp, stdio: "ignore" });
   execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+  const bare = mkdtempSync(path.join(os.tmpdir(), "destructive-reset-bare-"));
+  execSync("git init --bare", { cwd: bare, stdio: "ignore" });
+  execSync(`git remote add origin ${bare}`, { cwd: tmp, stdio: "ignore" });
+  execSync("git push -u origin main", { cwd: tmp, stdio: "ignore" });
   return tmp;
 }
 

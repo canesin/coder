@@ -285,13 +285,17 @@ test("forced local issues preserve order through develop loop queue", async () =
   const ws = mkdtempSync(path.join(os.tmpdir(), "forced-order-"));
   mkdirSync(path.join(ws, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(ws, ".coder", "logs"), { recursive: true });
-  execSync("git init", { cwd: ws, stdio: "ignore" });
+  execSync("git init -b main", { cwd: ws, stdio: "ignore" });
   execSync("git config user.email test@example.com", {
     cwd: ws,
     stdio: "ignore",
   });
   execSync("git config user.name 'Test User'", { cwd: ws, stdio: "ignore" });
   execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
+  const bare = mkdtempSync(path.join(os.tmpdir(), "forced-order-bare-"));
+  execSync("git init --bare", { cwd: bare, stdio: "ignore" });
+  execSync(`git remote add origin ${bare}`, { cwd: ws, stdio: "ignore" });
+  execSync("git push -u origin main", { cwd: ws, stdio: "ignore" });
 
   // Issues in intentional order: highest difficulty first
   const issuesDir = path.join(ws, ".coder", "local-issues");

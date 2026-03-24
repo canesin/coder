@@ -1300,6 +1300,7 @@ export async function runDevelopLoop(opts, ctx) {
         );
         return "deferred";
       }
+      throw new Error(`Git pull failed: ${stderr.slice(0, 200)}`);
     }
 
     // Build active branch context for conflict detection (skipped when disabled).

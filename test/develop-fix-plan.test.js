@@ -23,7 +23,7 @@ function makeTmpWorkspace() {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "fix-plan-"));
   mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
-  execSync("git init", { cwd: tmp, stdio: "ignore" });
+  execSync("git init -b main", { cwd: tmp, stdio: "ignore" });
   execSync("git config user.email test@example.com", {
     cwd: tmp,
     stdio: "ignore",
@@ -33,6 +33,10 @@ function makeTmpWorkspace() {
     stdio: "ignore",
   });
   execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+  const bare = mkdtempSync(path.join(os.tmpdir(), "fix-plan-bare-"));
+  execSync("git init --bare", { cwd: bare, stdio: "ignore" });
+  execSync(`git remote add origin ${bare}`, { cwd: tmp, stdio: "ignore" });
+  execSync("git push -u origin main", { cwd: tmp, stdio: "ignore" });
   return tmp;
 }
 
@@ -817,5 +821,78 @@ test("planReviewExhausted defer preserves state; next start retries and complete
   } finally {
     WorkflowRunner.prototype.run = originalRun;
     rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("hard failure when git pull --ff-only fails with non-stale error", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "fix-plan-pull-fail-"));
+  const bareDir = path.join(tmp, "bare");
+  const ws = path.join(tmp, "ws");
+  const clone2 = path.join(tmp, "clone2");
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    mkdirSync(bareDir, { recursive: true });
+    mkdirSync(ws, { recursive: true });
+    mkdirSync(clone2, { recursive: true });
+    mkdirSync(path.join(ws, ".coder", "artifacts"), { recursive: true });
+    mkdirSync(path.join(ws, ".coder", "logs"), { recursive: true });
+
+    execSync("git init --bare", { cwd: bareDir, stdio: "ignore" });
+    execSync("git init -b main", { cwd: ws, stdio: "ignore" });
+    execSync("git config user.email test@example.com", {
+      cwd: ws,
+      stdio: "ignore",
+    });
+    execSync("git config user.name 'Test User'", { cwd: ws, stdio: "ignore" });
+    execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
+    execSync(`git remote add origin ${bareDir}`, { cwd: ws, stdio: "ignore" });
+    execSync("git push -u origin main", { cwd: ws, stdio: "ignore" });
+
+    // Push a diverging commit via a second clone
+    execSync(`git clone ${bareDir} ${clone2}`, { stdio: "ignore" });
+    execSync("git config user.email test@example.com", {
+      cwd: clone2,
+      stdio: "ignore",
+    });
+    execSync("git config user.name 'Test User'", {
+      cwd: clone2,
+      stdio: "ignore",
+    });
+    execSync("git commit --allow-empty -m 'remote diverge'", {
+      cwd: clone2,
+      stdio: "ignore",
+    });
+    execSync("git push", { cwd: clone2, stdio: "ignore" });
+
+    // Create a local commit in ws that diverges from the remote
+    execSync("git commit --allow-empty -m 'local diverge'", {
+      cwd: ws,
+      stdio: "ignore",
+    });
+
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub() {
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws);
+    await assert.rejects(
+      runDevelopLoop(
+        {
+          issueSource: "local",
+          localIssuesDir: issuesDir,
+          destructiveReset: false,
+        },
+        ctx,
+      ),
+      /Git pull failed/,
+    );
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
