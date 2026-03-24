@@ -333,7 +333,7 @@ export default defineMachine({
     );
 
     const issueBodySection = issueBody
-      ? `\nIssue description (from ${input.issue.source}):\n${issueBody}\n`
+      ? `\nIssue description (from ${input.issue.source}):\n<user-data field="issue.body">${sanitizeUserData(issueBody)}</user-data>\n`
       : input.issue.source === "linear"
         ? "\nFetch the full issue description via Linear MCP using the issue id above.\n"
         : "";

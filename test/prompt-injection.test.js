@@ -107,6 +107,10 @@ test("issue-draft machine wraps and sanitizes title and clarifications", async (
     prompt.includes('<user-data field="clarifications">c </user-data>'),
     `prompt should wrap sanitized clarifications, got: ${prompt.slice(0, 500)}`,
   );
+  assert.ok(
+    !prompt.includes("</user-data></user-data>"),
+    "sanitization should prevent doubled closing tags from unsanitized input",
+  );
 });
 
 // ─── Test 3: context-gather wraps chunk pointers ────────────────────
@@ -177,6 +181,10 @@ test("context-gather machine wraps and sanitizes chunk pointers", async () => {
   assert.ok(
     chunkPrompt.includes('<user-data field="chunk">p </user-data>'),
     `chunk prompt should wrap sanitized pointer, got: ${chunkPrompt.slice(0, 500)}`,
+  );
+  assert.ok(
+    !chunkPrompt.includes("</user-data></user-data>"),
+    "sanitization should prevent doubled closing tags from unsanitized input",
   );
 });
 
@@ -282,5 +290,9 @@ test("issue-synthesis machine wraps and sanitizes clarifications", async () => {
   assert.ok(
     draftPrompt.includes('<user-data field="clarifications">c </user-data>'),
     `draft prompt should wrap sanitized clarifications, got: ${draftPrompt.slice(0, 500)}`,
+  );
+  assert.ok(
+    !draftPrompt.includes("</user-data></user-data>"),
+    "sanitization should prevent doubled closing tags from unsanitized input",
   );
 });
