@@ -11,7 +11,11 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { loadLoopState, saveLoopState } from "../src/state/workflow-state.js";
+import {
+  loadLoopState,
+  saveLoopState,
+  statePathFor,
+} from "../src/state/workflow-state.js";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import { runDevelopLoop } from "../src/workflows/develop.workflow.js";
 
@@ -689,6 +693,126 @@ test("start after blocked run processes deferred issues (blocked treated as term
     assert.ok(
       processedIds.includes("A"),
       "blocked-run deferred issue A should be retried on next start",
+    );
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("planReviewExhausted defer preserves state; next start retries and completes", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+  const processedIds = [];
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      const issueId = steps[0]?.inputMapper?.()?.issue?.id;
+      if (machineName === "develop.issue_draft") {
+        processedIds.push(issueId);
+      }
+      if (machineName === "develop.planning") {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { planMd: "plan" } }],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      if (machineName === "develop.plan_review") {
+        return {
+          status: "completed",
+          results: [
+            {
+              status: "ok",
+              data: {
+                verdict: "REJECT",
+                critiqueMd: "fundamentally unsound",
+              },
+            },
+          ],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          maxPlanRevisions: 2,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+        },
+      },
+    });
+
+    const result1 = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result1.status, "blocked");
+    assert.equal(result1.deferred, 1);
+
+    const stateAfterDefer = await loadLoopState(ws);
+    const issueA = stateAfterDefer.issueQueue.find((q) => q.id === "A");
+    assert.equal(issueA.status, "deferred");
+    assert.equal(issueA.deferredReason, "plan_blocked");
+
+    assert.ok(
+      existsSync(statePathFor(ws)),
+      "state.json must exist after planReviewExhausted defer (no reset)",
+    );
+
+    processedIds.length = 0;
+    WorkflowRunner.prototype.run = async function runStub2(steps) {
+      const machineName = steps[0]?.machine?.name;
+      const issueId = steps[0]?.inputMapper?.()?.issue?.id;
+      if (machineName === "develop.issue_draft") {
+        processedIds.push(issueId);
+      }
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-2",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-2");
+    };
+
+    const result2 = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result2.status, "completed");
+    assert.equal(result2.completed, 1);
+    assert.ok(
+      processedIds.includes("A"),
+      "plan_blocked deferred issue A should be retried and completed on next start",
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;

@@ -6,12 +6,12 @@ import merge from "deepmerge";
 import { z } from "zod";
 import { DEFAULT_PASS_ENV } from "./pass-env.js";
 
-const modelNameRegex = /^[a-zA-Z0-9._/-]+$/;
+const modelNameRegex = /^[a-zA-Z0-9._/:-]+$/;
 
 export const ModelEntrySchema = z.object({
   model: z.string().regex(modelNameRegex, "Invalid model name"),
   apiEndpoint: z.string().default(""),
-  apiKeyEnv: z.string().default(""),
+  apiKeyEnv: z.string().optional(),
 });
 
 /** Preset defaults for ppcommit check strictness levels. */
@@ -95,6 +95,7 @@ export const WorkflowAgentRolesSchema = z.object({
   reviewer: AgentNameSchema.default("codex"),
   committer: AgentNameSchema.default("gemini"),
   coalesce: AgentNameSchema.default("codex"),
+  failureMonitor: AgentNameSchema.default("codex"),
 });
 
 export const WorkflowWipSchema = z.object({
@@ -115,6 +116,8 @@ export const WorkflowTimeoutsSchema = z.object({
   webSearch: z.number().int().positive().default(900_000),
   pocValidation: z.number().int().positive().default(720_000),
   issueSelection: z.number().int().positive().default(600_000),
+  /** 0 = no hang kill during issue list; wall-clock still bounded by issueSelection. */
+  issueSelectionHangMs: z.number().int().nonnegative().default(0),
   issueDraft: z.number().int().positive().default(600_000),
   planning: z.number().int().positive().default(2_400_000),
   planReview: z.number().int().positive().default(2_400_000),
@@ -135,6 +138,7 @@ export const AgentRolesInputSchema = z.object({
   reviewer: AgentNameSchema.optional(),
   committer: AgentNameSchema.optional(),
   coalesce: AgentNameSchema.optional(),
+  failureMonitor: AgentNameSchema.optional(),
 });
 
 export const DesignConfigSchema = z.object({
@@ -166,6 +170,7 @@ export const HookSchema = z.object({
     "issue_failed",
     "issue_skipped",
     "issue_deferred",
+    "rca_filed",
   ]),
   machine: z
     .string()
@@ -196,6 +201,15 @@ export const AgentRetrySchema = z.object({
   backoffMs: z.number().int().min(0).default(5000),
   retryOnRateLimit: z.boolean().default(true),
   hangTimeoutMs: z.number().int().min(0).default(300_000),
+});
+
+export const FailureMonitorSchema = z.object({
+  enabled: z.boolean().default(false),
+  labels: z.array(z.string()).default(["coder-rca", "automated"]),
+  timeoutMs: z.number().int().positive().default(300_000),
+  monitorBlockingDefers: z.boolean().default(false),
+  /** GitHub owner/repo to file RCA bug reports against (e.g. "canesin/coder"). */
+  upstreamRepo: z.string().nullable().default(null),
 });
 
 export const AgentFallbackSchema = z
@@ -233,6 +247,8 @@ export const CoderConfigSchema = z.object({
   claude: z
     .object({
       skipPermissions: z.boolean().default(true),
+      /** Max output tokens for Claude CLI. Injected as CLAUDE_CODE_MAX_OUTPUT_TOKENS to avoid OpenRouter 402 when credits are low. */
+      maxOutputTokens: z.number().int().positive().optional(),
     })
     .prefault({}),
   mcp: z
@@ -250,12 +266,22 @@ export const CoderConfigSchema = z.object({
       resumeStepState: z.boolean().default(true),
       /** When true, treat connection-refused–style errors as infra (deferred). Default false to avoid misclassifying product bugs. */
       infraDetection: z.boolean().default(false),
+      maxMachineRetries: z.number().int().min(0).default(2),
+      retryBackoffMs: z.number().int().min(0).default(5000),
       maxPlanRevisions: z.number().int().min(1).max(10).default(3),
+      /** Cap how many fetched issues are embedded in the issue-selector LLM prompt. */
+      issueListPromptMaxIssues: z
+        .number()
+        .int()
+        .positive()
+        .max(1000)
+        .default(50),
       issueSource: z
         .enum(["github", "linear", "gitlab", "local"])
         .default("github"),
       localIssuesDir: z.string().default(""),
       hooks: z.array(HookSchema).default([]),
+      failureMonitor: FailureMonitorSchema.prefault({}),
       preflight: z
         .object({
           checks: z

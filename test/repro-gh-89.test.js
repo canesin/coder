@@ -11,6 +11,13 @@ function makeCommandFatalStderrError(message, category = "auth") {
   return err;
 }
 
+function makeCommandFatalStdoutError(message, category = "auth") {
+  const err = new Error(message);
+  err.name = "CommandFatalStdoutError";
+  err.category = category;
+  return err;
+}
+
 function makeConfig() {
   return CoderConfigSchema.parse({});
 }
@@ -107,6 +114,7 @@ test("All expected Claude resume failure patterns are present", async () => {
     "Invalid session ID",
     "Conversation has expired",
     "Session has expired",
+    "already in use", // "Session ID X is already in use", --resume variants (claude-code #5524)
   ];
   assert.equal(capturedOpts.killOnStderrPatterns.length, expected.length);
   for (const pattern of expected) {
@@ -117,6 +125,12 @@ test("All expected Claude resume failure patterns are present", async () => {
       `should include pattern: "${pattern}"`,
     );
   }
+  // Claude emits "Session ID X is already in use" to stdout — must also kill on stdout
+  assert.equal(
+    capturedOpts.killOnStdoutPatterns.length,
+    expected.length,
+    "should wire same patterns to killOnStdoutPatterns for stdout errors",
+  );
 });
 
 test("CliAgent does NOT add resume patterns for claude without resumeId or sessionId", async () => {
@@ -140,6 +154,7 @@ test("CliAgent does NOT add resume patterns for claude without resumeId or sessi
 
   await agent.execute("test prompt", {});
   assert.deepEqual(capturedOpts.killOnStderrPatterns, []);
+  assert.deepEqual(capturedOpts.killOnStdoutPatterns, []);
 });
 
 test("CliAgent does NOT add resume patterns for gemini with resumeId", async () => {
@@ -175,7 +190,8 @@ test("CliAgent does NOT add resume patterns for gemini with resumeId", async () 
     ),
     "should include Gemini auth failure pattern",
   );
-  assert.equal(capturedOpts.killOnStderrPatterns.length, 5);
+  // 2 auth + 3 transient + 2 rate_limit = 7
+  assert.equal(capturedOpts.killOnStderrPatterns.length, 7);
 });
 
 // ---------------------------------------------------------------------------
@@ -224,6 +240,48 @@ test("CommandFatalStderrError with category auth and resumeId triggers session r
   assert.equal(calls.length, 2);
   assert.equal(calls[0].opts.resumeId, sessionId);
   assert.equal(calls[1].opts.resumeId, undefined);
+});
+
+test("CommandFatalStdoutError with category auth and resumeId triggers session retry (stdout path)", async () => {
+  const calls = [];
+  const mockAgent = {
+    async execute(prompt, opts) {
+      calls.push({ prompt, opts });
+      if (calls.length === 1) {
+        throw makeCommandFatalStdoutError(
+          "Command aborted after fatal stdout match [auth]: Session ID X is already in use",
+        );
+      }
+      return { exitCode: 0, stdout: "ok", stderr: "" };
+    },
+  };
+
+  const sessionId = "stale-session-uuid";
+  let currentSessionId = sessionId;
+  let res;
+
+  try {
+    res = await mockAgent.execute("do stuff", {
+      resumeId: currentSessionId,
+      timeoutMs: 60_000,
+    });
+  } catch (err) {
+    if (
+      (err.name === "CommandFatalStderrError" ||
+        err.name === "CommandFatalStdoutError") &&
+      err.category === "auth" &&
+      currentSessionId
+    ) {
+      currentSessionId = null;
+      res = await mockAgent.execute("do stuff", { timeoutMs: 60_000 });
+    } else {
+      throw err;
+    }
+  }
+
+  assert.equal(res.exitCode, 0);
+  assert.equal(currentSessionId, null);
+  assert.equal(calls.length, 2);
 });
 
 test("CommandFatalStderrError with category auth without resumeId is not caught as session failure", async () => {

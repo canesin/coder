@@ -31,25 +31,5 @@ test("chunkPointers - coerces negative maxChars to 1", {
 
 test("chunkPointers - floors fractional maxChars", () => {
   const chunks = chunkPointers("abcde", { maxChars: 2.9 });
-  // maxChars floors to 2, so "abcde" splits into chunks of 2
   assert.deepEqual(chunks, ["ab", "cd", "e"]);
-});
-
-test("chunkPointers - maxChunks 0 returns empty array", () => {
-  const chunks = chunkPointers("hello world", { maxChunks: 0 });
-  assert.deepEqual(chunks, []);
-});
-
-test("chunkPointers - coerces NaN maxChunks to 0 (empty)", {
-  timeout: 3000,
-}, () => {
-  const chunks = chunkPointers("hello", { maxChunks: NaN });
-  assert.deepEqual(chunks, []);
-});
-
-test("chunkPointers - coerces negative maxChunks to 0 (empty)", {
-  timeout: 3000,
-}, () => {
-  const chunks = chunkPointers("hello", { maxChunks: -3 });
-  assert.deepEqual(chunks, []);
 });

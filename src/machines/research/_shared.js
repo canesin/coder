@@ -11,16 +11,45 @@ import {
   extractJson,
   formatCommandFailure,
 } from "../../helpers.js";
+import { CancelledError } from "../_base.js";
+import { withSessionResume } from "../_session.js";
+
+/**
+ * Load session state from the run directory.
+ * @param {string} runDir
+ * @returns {object}
+ */
+export function loadSessionState(runDir) {
+  const p = path.join(runDir, "session-state.json");
+  if (!existsSync(p)) return {};
+  try {
+    return JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Save session state to the run directory.
+ * @param {string} runDir
+ * @param {object} state
+ */
+export function saveSessionState(runDir, state) {
+  writeFileSync(
+    path.join(runDir, "session-state.json"),
+    `${JSON.stringify(state, null, 2)}\n`,
+  );
+}
 
 /**
  * Chunk a large pointer text into manageable pieces for analysis.
+ * No upper limit on chunk count — the full input is always preserved.
  * @param {string} text
- * @param {{ maxChars?: number, maxChunks?: number }} [opts]
+ * @param {{ maxChars?: number }} [opts]
  * @returns {string[]}
  */
-export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
+export function chunkPointers(text, { maxChars = 24000 } = {}) {
   maxChars = Math.max(1, Math.floor(Number(maxChars) || 1));
-  maxChunks = Math.max(0, Math.floor(Number(maxChunks) || 0));
   const normalized = String(text || "")
     .replace(/\r\n/g, "\n")
     .trim();
@@ -28,7 +57,7 @@ export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
 
   const chunks = [];
   let cursor = 0;
-  while (cursor < normalized.length && chunks.length < maxChunks) {
+  while (cursor < normalized.length) {
     let end = Math.min(cursor + maxChars, normalized.length);
     if (end < normalized.length) {
       const newlineBoundary = normalized.lastIndexOf("\n", end);
@@ -42,12 +71,6 @@ export function chunkPointers(text, { maxChars = 12000, maxChunks = 24 } = {}) {
     const chunk = normalized.slice(cursor, end).trim();
     if (chunk) chunks.push(chunk);
     cursor = end;
-  }
-
-  if (cursor < normalized.length && chunks.length > 0) {
-    const omitted = normalized.length - cursor;
-    chunks[chunks.length - 1] +=
-      `\n\n[TRUNCATED: ${omitted} chars omitted due to chunk limit]`;
   }
 
   return chunks;
@@ -80,6 +103,74 @@ export function parseAgentPayload(agentName, stdout) {
 }
 
 /**
+ * Validate that a step payload contains required fields with expected types.
+ * Enforces the JSON contract between machines — fail fast if agent output
+ * doesn't match the schema we depend on downstream.
+ *
+ * @param {any} payload
+ * @param {Record<string, "array"|"string"|"number"|"object">} schema - field → expected type
+ * @param {string} stepName - for error messages
+ * @returns {any} the payload (for chaining)
+ */
+export function requirePayloadFields(payload, schema, stepName) {
+  if (payload == null || typeof payload !== "object") {
+    throw new Error(
+      `${stepName}: expected object payload, got ${typeof payload}`,
+    );
+  }
+  const errors = [];
+  for (const [field, type] of Object.entries(schema)) {
+    const value = payload[field];
+    if (type === "array") {
+      if (!Array.isArray(value))
+        errors.push(
+          `${field}: expected array, got ${value == null ? "missing" : typeof value}`,
+        );
+    } else if (type === "string") {
+      if (typeof value !== "string" || !value.trim())
+        errors.push(`${field}: expected non-empty string`);
+    } else if (type === "number") {
+      if (typeof value !== "number")
+        errors.push(
+          `${field}: expected number, got ${value == null ? "missing" : typeof value}`,
+        );
+    } else if (type === "object") {
+      if (value == null || typeof value !== "object" || Array.isArray(value))
+        errors.push(
+          `${field}: expected object, got ${value == null ? "missing" : typeof value}`,
+        );
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(
+      `${stepName} payload contract violation:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
+    );
+  }
+  return payload;
+}
+
+/**
+ * Normalize a verdict string to a known enum value.
+ * Mirrors parsePlanVerdict() from the develop workflow — deterministic
+ * extraction of a verdict from potentially noisy agent output.
+ *
+ * @param {string} raw
+ * @param {string[]} allowed - e.g. ["approve", "revise"]
+ * @param {string} fallback - default if no match
+ * @returns {string}
+ */
+export function normalizeVerdict(raw, allowed, fallback) {
+  const upper = String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[*_`"'[\]()]/g, "");
+  for (const v of allowed) {
+    if (upper.includes(v.toUpperCase())) return v;
+  }
+  return fallback;
+}
+
+/**
  * Ensure an agent result has exit code 0, throw otherwise.
  * @param {string} agentName
  * @param {string} label
@@ -105,6 +196,8 @@ export function requireExitZero(agentName, label, res) {
  *   pipeline: object,
  *   pipelinePath: string,
  *   ctx: import("../_base.js").WorkflowContext & { agentPool: any },
+ *   sessionState?: object,
+ *   sessionKey?: string,
  * }} opts
  * @returns {Promise<{ payload: any, agentName: string, outputPath: string, relOutputPath: string }>}
  */
@@ -119,15 +212,32 @@ export async function runStructuredStep({
   pipeline,
   pipelinePath,
   ctx,
+  sessionState,
+  sessionKey,
 }) {
-  if (ctx.cancelToken.cancelled) throw new Error("Run cancelled");
+  if (ctx.cancelToken.cancelled) throw new CancelledError();
 
   beginPipelineStep(pipeline, pipelinePath, scratchpadPath, stepName, { role });
   const { agentName, agent } = ctx.agentPool.getAgent(role, {
     scope: "workspace",
   });
 
-  const res = await agent.execute(prompt, { timeoutMs });
+  let res;
+  if (sessionState && sessionKey) {
+    res = await withSessionResume({
+      agentName,
+      agent,
+      state: sessionState,
+      sessionKey,
+      agentNameKey: `${sessionKey}_agent`,
+      workspaceDir: ctx.workspaceDir,
+      executeFn: (sessionOpts) =>
+        agent.execute(prompt, { timeoutMs, ...sessionOpts }),
+      log: ctx.log,
+    });
+  } else {
+    res = await agent.execute(prompt, { timeoutMs });
+  }
   if (res.exitCode !== 0) {
     endPipelineStep(
       pipeline,
@@ -163,6 +273,31 @@ export async function runStructuredStep({
     },
   );
   return { payload, agentName, outputPath, relOutputPath };
+}
+
+/**
+ * Ensure an artifact is written to disk (idempotent).
+ * Artifacts from prior pipeline steps are already on disk via runStructuredStep,
+ * but when a machine is called standalone with params, they may not be.
+ * @param {string} stepsDir
+ * @param {string} artifactName
+ * @param {any} data
+ * @returns {string} absolute path to the artifact file
+ */
+export function ensureArtifactOnDisk(stepsDir, artifactName, data) {
+  const p = path.join(
+    stepsDir,
+    `${sanitizeFilenameSegment(artifactName)}.json`,
+  );
+  if (
+    !existsSync(p) &&
+    data != null &&
+    typeof data === "object" &&
+    Object.keys(data).length > 0
+  ) {
+    writeFileSync(p, `${JSON.stringify(data, null, 2)}\n`);
+  }
+  return p;
 }
 
 /**

@@ -18,13 +18,15 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
   { pattern: "rejected stored OAuth token", category: "auth" },
   { pattern: "Please re-authenticate using: /mcp auth", category: "auth" },
 ];
-const CLAUDE_RESUME_FAILURE_PATTERNS = [
+/** @internal Exported for testing */
+export const CLAUDE_RESUME_FAILURE_PATTERNS = [
   { pattern: "No conversation found with session ID", category: "auth" },
   { pattern: "Conversation not found", category: "auth" },
   { pattern: "Session not found", category: "auth" },
   { pattern: "Invalid session ID", category: "auth" },
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
+  { pattern: "is already in use", category: "auth" }, // "Session ID X is already in use", --resume variants (claude-code #5524)
 ];
 const CODEX_RESUME_FAILURE_PATTERNS = [
   { pattern: "session not found", category: "auth" },
@@ -36,6 +38,8 @@ const GEMINI_TRANSIENT_FAILURE_PATTERNS = [
   { pattern: "An unexpected critical error occurred", category: "transient" },
   { pattern: "fetch failed sending request", category: "transient" },
   { pattern: "Error when talking to Gemini API", category: "transient" },
+  { pattern: "exceeded your current quota", category: "rate_limit" },
+  { pattern: "RESOURCE_EXHAUSTED", category: "rate_limit" },
 ];
 const CODEX_FAILURE_PATTERNS = [
   { pattern: "org.freedesktop.secrets", category: "auth" },
@@ -103,9 +107,29 @@ export class CliAgent extends AgentAdapter {
     this.workspaceDir = opts.workspaceDir;
 
     this._events = new EventEmitter();
+    let baseEnv = opts.secrets;
+    if (this.name === "claude") {
+      const claudeCfg = this.config.models?.claude;
+      baseEnv = { ...baseEnv };
+      const maxTokens = this.config.claude?.maxOutputTokens;
+      if (maxTokens !== undefined && maxTokens !== null) {
+        baseEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
+      }
+      // Non-Anthropic API (e.g. OpenRouter): set env Claude Code expects — from models.claude only
+      const ep = (claudeCfg?.apiEndpoint || "").trim();
+      const customAnthropic = ep && !/anthropic\.com/i.test(ep);
+      if (customAnthropic) {
+        baseEnv.ANTHROPIC_BASE_URL = ep;
+        baseEnv.ANTHROPIC_API_KEY = "";
+        if (claudeCfg.apiKeyEnv && opts.secrets[claudeCfg.apiKeyEnv]) {
+          baseEnv.ANTHROPIC_AUTH_TOKEN = opts.secrets[claudeCfg.apiKeyEnv];
+        }
+      }
+      // Model is passed via --model only (see _buildCommand); not duplicated in env
+    }
     this._provider = new HostSandboxProvider({
       defaultCwd: opts.cwd,
-      baseEnv: opts.secrets,
+      baseEnv,
     });
     this._sandbox = null;
     this._sandboxPromise = null;
@@ -299,22 +323,46 @@ export class CliAgent extends AgentAdapter {
     const hangTimeoutMs = opts.hangTimeoutMs ?? configHangTimeout;
     const hangResetOnStderr = opts.hangResetOnStderr ?? !isGemini;
 
+    const hasSessionOpts = !!(opts.resumeId || opts.sessionId);
     const defaultPatterns = isGemini
       ? [...GEMINI_AUTH_FAILURE_PATTERNS, ...GEMINI_TRANSIENT_FAILURE_PATTERNS]
-      : isClaude && (opts.resumeId || opts.sessionId)
+      : isClaude && hasSessionOpts
         ? CLAUDE_RESUME_FAILURE_PATTERNS
-        : isCodex && (opts.resumeId || opts.sessionId)
+        : isCodex && hasSessionOpts
           ? CODEX_RESUME_FAILURE_PATTERNS
           : isCodex
             ? CODEX_FAILURE_PATTERNS
             : [];
     const killOnStderrPatterns = opts.killOnStderrPatterns ?? defaultPatterns;
+    // Claude emits "Session ID X is already in use" to stdout, not stderr — kill on both
+    const killOnStdoutPatterns =
+      opts.killOnStdoutPatterns ??
+      (isClaude && hasSessionOpts ? CLAUDE_RESUME_FAILURE_PATTERNS : []);
 
+    if (this._log && (hasSessionOpts || killOnStderrPatterns.length > 0)) {
+      this._log({
+        event: "cli_agent_execute_opts",
+        agentName: this.name,
+        hasSessionOpts,
+        sessionId: opts.sessionId ?? null,
+        resumeId: opts.resumeId ?? null,
+        killPatternsCount:
+          (killOnStderrPatterns?.length ?? 0) +
+          (killOnStdoutPatterns?.length ?? 0),
+      });
+    }
+
+    const hasKillPatterns =
+      (killOnStderrPatterns?.length ?? 0) +
+        (killOnStdoutPatterns?.length ?? 0) >
+      0;
     const result = await sandbox.commands.run(cmd, {
       timeoutMs: opts.timeoutMs ?? 1000 * 60 * 10,
       hangTimeoutMs,
       hangResetOnStderr,
       killOnStderrPatterns,
+      killOnStdoutPatterns,
+      log: hasKillPatterns && this._log ? this._log : undefined,
     });
 
     if (isCodex && opts.execWithJsonCapture && result.stdout) {
@@ -370,7 +418,11 @@ export class CliAgent extends AgentAdapter {
           const err = ctx.error;
           if (err.name === "AbortError") return false;
           if (err.name === "CommandTimeoutError") return false;
-          if (err.name === "CommandFatalStderrError" && err.category === "auth")
+          if (
+            (err.name === "CommandFatalStderrError" ||
+              err.name === "CommandFatalStdoutError") &&
+            err.category === "auth"
+          )
             return false;
           if (err.name === "McpStartupError") return false;
           return true;

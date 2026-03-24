@@ -20,6 +20,7 @@ import {
   runHostTests,
   sanitizeIssueMarkdown,
   shellEscape,
+  spawnAsync,
   stripAgentNoise,
   TestInfrastructureError,
 } from "../src/helpers.js";
@@ -106,7 +107,24 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   assert.ok(result.includes("GITLAB_TOKEN"));
 });
 
-test("detectDefaultBranch throws when only develop exists", () => {
+test("spawnAsync synthesizes ETIMEDOUT error when process is killed by timeout", async () => {
+  const res = await spawnAsync("sleep", ["60"], { timeout: 100 });
+  assert.equal(res.status, null);
+  assert.ok(res.signal, "should have a signal");
+  assert.ok(res.error, "should have a synthesized error");
+  assert.equal(res.error.code, "ETIMEDOUT");
+});
+
+test("spawnAsync synthesizes ABORT_ERR when cancelled via AbortSignal", async () => {
+  const ac = new AbortController();
+  const p = spawnAsync("sleep", ["60"], { signal: ac.signal });
+  setTimeout(() => ac.abort(), 100);
+  const res = await p;
+  assert.equal(res.status, null);
+  assert.ok(res.error, "should have an error");
+});
+
+test("detectDefaultBranch rejects when only develop exists", async () => {
   const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
@@ -124,13 +142,13 @@ test("detectDefaultBranch throws when only develop exists", () => {
     });
     if (check.status === 0) runGit("branch", "-D", b);
   }
-  assert.throws(() => detectDefaultBranch(repoDir), {
+  await assert.rejects(detectDefaultBranch(repoDir), {
     message:
       /Could not detect default branch.*origin\/HEAD.*main.*master.*unavailable or absent/,
   });
 });
 
-test("detectDefaultBranch returns main when it exists", () => {
+test("detectDefaultBranch resolves to main when it exists", async () => {
   const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
@@ -141,7 +159,12 @@ test("detectDefaultBranch returns main when it exists", () => {
     }
   };
   runGit("branch", "-m", "main");
-  assert.equal(detectDefaultBranch(repoDir), "main");
+  const result = detectDefaultBranch(repoDir);
+  assert.ok(
+    result instanceof Promise,
+    "detectDefaultBranch should return a Promise",
+  );
+  assert.equal(await result, "main");
 });
 
 test("detectRemoteType identifies GitLab HTTPS remotes", () => {
@@ -171,6 +194,22 @@ test("resolvePassEnv returns config sandbox.passEnv when set", () => {
     sandbox: { passEnv: ["MY_KEY", "OTHER_KEY"], passEnvPatterns: [] },
   };
   assert.deepEqual(resolvePassEnv(config), ["MY_KEY", "OTHER_KEY"]);
+});
+
+test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
+  const config = {
+    models: {
+      claude: {
+        model: "m",
+        apiEndpoint: "https://openrouter.ai/api",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+      },
+    },
+    sandbox: { passEnv: ["GITLAB_TOKEN"], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GITLAB_TOKEN"));
+  assert.ok(r.includes("OPENROUTER_API_KEY"));
 });
 
 test("resolvePassEnv merges passEnvPatterns matches from env", () => {
@@ -268,6 +307,109 @@ test("extractGeminiPayloadJson unwraps fenced JSON in Gemini envelope response",
   const parsed = extractGeminiPayloadJson(stdout);
 
   assert.deepEqual(parsed, { issues: [], recommended_index: 0 });
+});
+
+test("extractGeminiPayloadJson throws when envelope response is not parseable JSON (no silent envelope return)", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: "not json at all {{{",
+    stats: {},
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: could not parse issues payload from envelope response\n/,
+      );
+      assert.match(err.message, /not json at all/);
+      assert.ok(err.cause instanceof Error);
+      return true;
+    },
+  );
+});
+
+test("extractGeminiPayloadJson throws when Gemini envelope omits response (no silent envelope return)", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    stats: { tokens: 1 },
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
+      );
+      assert.match(err.message, /response field missing/);
+      return true;
+    },
+  );
+});
+
+test("extractGeminiPayloadJson unwraps object response on envelope when it matches issues payload shape", () => {
+  const inner = { issues: [], recommended_index: 0 };
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: inner,
+    stats: {},
+  });
+  const parsed = extractGeminiPayloadJson(stdout);
+  assert.deepEqual(parsed, inner);
+});
+
+test("extractGeminiPayloadJson returns non-issues object payloads from session envelopes", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: { references: ["a"], searchSummary: "ok" },
+    stats: {},
+  });
+  const result = extractGeminiPayloadJson(stdout);
+  assert.deepStrictEqual(result, { references: ["a"], searchSummary: "ok" });
+});
+
+test("extractGeminiPayloadJson throws when session envelope response is null", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: null,
+  });
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
+      );
+      return true;
+    },
+  );
+});
+
+test("resolvePassEnv uses default key env when models.gemini omits apiKeyEnv", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GEMINI_API_KEY"));
+});
+
+test("resolvePassEnv skips key env when apiKeyEnv is explicitly empty", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "", apiKeyEnv: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(!r.includes("GEMINI_API_KEY"));
 });
 
 test("gitCleanOrThrow automatically ignores .gemini/ directory", () => {

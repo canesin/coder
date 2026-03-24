@@ -44,7 +44,7 @@ From ideas + UI specs, produces GitHub issues organized as Epics/User Stories.
 - \`coder_research_deep_research\` — Web search, article analysis, repo mining
 - \`coder_research_poc_validation\` — Build PoC, benchmark, validate
 - \`coder_research_issue_synthesis\` — Draft/critique issues with iterative refinement
-- \`coder_research_spec_publish\` — Render markdown issues + manifest
+- \`coder_research_issue_publish\` — Render markdown issues + manifest
 
 **Or use the workflow tool:**
 \`coder_workflow { action: "start", workflow: "research", pointers: "..." }\`
@@ -66,7 +66,8 @@ From intents/descriptions, generates UI designs via Google Stitch.
 Unified control plane for all three workflows:
 - \`action: "start"\` — Launch a workflow run (returns runId)
 - \`action: "status"\` — Check progress, current stage, heartbeat
-- \`action: "events"\` — Read structured events with cursor pagination
+- \`action: "events"\` — Read structured events (\`afterSeq\` / \`limit\`; \`seq\` is line-based). Use \`allRuns: true\` if pages look empty due to runId filtering.
+- \`action: "reconcile"\` — If \`status\` shows a stale run, mark the loop failed on disk so \`start\` can run again.
 - \`action: "cancel"\` — Cooperative cancellation (requires runId)
 - \`action: "pause" / "resume"\` — Control execution at stage boundaries
 
@@ -90,7 +91,7 @@ You can resume a partially-completed workflow — check status first.
 
 For autonomous multi-issue processing:
 \`coder_workflow { action: "start", workflow: "develop", goal: "resolve all assigned issues" }\`
-Monitor with \`coder_workflow { action: "status" }\``,
+To monitor progress, use \`coder_workflow { action: "status" }\` or \`coder_status\` — do NOT call action: "start" to check status; that would cancel and restart the run.`,
           },
         },
       ],

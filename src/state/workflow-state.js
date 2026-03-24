@@ -368,6 +368,7 @@ const LoopIssueResultSchema = z
     dependsOn: z.array(z.string()).default([]),
     lastFailedRunId: z.string().nullable().default(null),
     deferredReason: z.string().nullable().optional(),
+    rcaIssueUrl: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -412,6 +413,9 @@ export async function loadLoopState(workspaceDir) {
   }
 }
 
+/**
+ * @returns {Promise<boolean>} true if loop-state.json was written; false if guardRunId skipped the write (stale run)
+ */
 export async function saveLoopState(
   workspaceDir,
   loopState,
@@ -438,8 +442,9 @@ export async function saveLoopState(
     });
   setWriteChain(workspaceDir, chain);
   await chain;
-  if (guarded) return;
+  if (guarded) return false;
   if (writeErr) throw writeErr;
+  return true;
 }
 
 // --- CLI control signals (file-based cancel/pause/resume) ---
@@ -545,6 +550,7 @@ const IssueStateSchema = z
     programmerFixSessionId: z.string().nullable().default(null),
     planReviewSessionId: z.string().nullable().default(null),
     reviewerSessionId: z.string().nullable().default(null),
+    sessionsDisabled: z.boolean().default(false),
     plannerAgentName: z.string().nullable().default(null),
     implementationAgentName: z.string().nullable().default(null),
     planReviewAgentName: z.string().nullable().default(null),
@@ -576,6 +582,7 @@ const DEFAULT_ISSUE_STATE = {
   programmerFixSessionId: null,
   planReviewSessionId: null,
   reviewerSessionId: null,
+  sessionsDisabled: false,
   plannerAgentName: null,
   implementationAgentName: null,
   planReviewAgentName: null,
@@ -632,4 +639,24 @@ export async function saveState(workspaceDir, state) {
   setWriteChain(workspaceDir, chain);
   await chain;
   if (writeErr) throw writeErr;
+}
+
+const SESSION_KEYS = [
+  "planningSessionId",
+  "planReviewSessionId",
+  "implementationSessionId",
+  "programmerFixSessionId",
+  "reviewerSessionId",
+];
+
+/**
+ * Clear all session IDs and set sessionsDisabled for the current issue.
+ * Call on session auth/collision to poison-proof state for same-issue resume.
+ * @param {object} state - Mutable issue state
+ */
+export function clearAllSessionIdsAndDisable(state) {
+  state.sessionsDisabled = true;
+  for (const key of SESSION_KEYS) {
+    state[key] = null;
+  }
 }
