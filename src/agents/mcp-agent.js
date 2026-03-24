@@ -108,9 +108,9 @@ export class McpAgent extends AgentAdapter {
         throw new Error("McpAgent: initialization aborted by kill()");
       }
 
-      // Reset stale state from a prior failed attempt
-      this._client = null;
-      this._transport = null;
+      // Build client/transport in local vars — don't touch shared state
+      // until we confirm this attempt is still the active one.
+      let transport;
 
       if (this.transportType === "http") {
         if (!this.serverUrl) {
@@ -128,7 +128,7 @@ export class McpAgent extends AgentAdapter {
           }
         }
 
-        this._transport = new StreamableHTTPClientTransport(url, {
+        transport = new StreamableHTTPClientTransport(url, {
           requestInit,
         });
       } else {
@@ -137,35 +137,35 @@ export class McpAgent extends AgentAdapter {
             "McpAgent: serverCommand is required for stdio transport.",
           );
         }
-        this._transport = new StdioClientTransport({
+        transport = new StdioClientTransport({
           command: this.serverCommand,
           args: this.serverArgs,
           env: { ...process.env, ...this.env },
         });
       }
 
-      this._client = new Client(
+      const client = new Client(
         { name: "coder-mcp-agent", version: "1.0.0" },
         { capabilities: {} },
       );
 
-      await this._client.connect(this._transport);
+      await client.connect(transport);
 
-      // If kill() ran while connect() was in flight, clean up and abort
+      // If kill() ran while connect() was in flight, clean up local
+      // resources only — shared state belongs to the newer attempt.
       if (this._connectEpoch !== epoch) {
-        const client = this._client;
-        const transport = this._transport;
-        this._client = null;
-        this._transport = null;
         try {
-          await client?.close();
+          await client.close();
         } catch {}
         try {
-          await transport?.close();
+          await transport.close();
         } catch {}
         throw new Error("McpAgent: initialization aborted by kill()");
       }
 
+      // Publish to shared state only after confirming we're still active
+      this._client = client;
+      this._transport = transport;
       return this._client;
     }, "connect");
 

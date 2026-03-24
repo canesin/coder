@@ -60,3 +60,45 @@ test("REV-03: kill() aborts in-flight _ensureClient()", async (t) => {
   await assert.rejects(p, { message: /aborted by kill/ });
   assert.equal(agent._client, null, "_client should remain null after kill()");
 });
+
+test("REV-03: restart after kill() does not corrupt new attempt", async (t) => {
+  const agent = new McpAgent({
+    transport: "http",
+    serverUrl: "http://localhost:1",
+    retries: 0,
+    backoffMs: 0,
+  });
+
+  // Controllable connect mock: each call gets its own resolver
+  const resolvers = [];
+  t.mock.method(Client.prototype, "connect", () => {
+    return new Promise((resolve) => {
+      resolvers.push(resolve);
+    });
+  });
+
+  // Attempt A starts connecting
+  const pA = agent._ensureClient();
+  assert.equal(resolvers.length, 1, "first connect started");
+
+  // kill() invalidates attempt A
+  await agent.kill();
+
+  // Attempt B starts a fresh connection
+  const pB = agent._ensureClient();
+  assert.equal(resolvers.length, 2, "second connect started");
+
+  // Resolve attempt A first, then attempt B
+  resolvers[0]();
+  resolvers[1]();
+
+  await assert.rejects(pA, { message: /aborted by kill/ });
+
+  const clientB = await pB;
+  assert.ok(clientB, "second _ensureClient() should return a non-null client");
+  assert.equal(
+    agent._client,
+    clientB,
+    "agent._client should be the client from attempt B",
+  );
+});
