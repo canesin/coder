@@ -602,7 +602,7 @@ export function sanitizeIssueMarkdown(text) {
 }
 
 export function sanitizeUserData(text) {
-  return String(text || "").replace(/<\/?user-data[^>]*>/gi, "");
+  return String(text == null ? "" : text).replace(/<\/?user-data[^>]*>/gi, "");
 }
 
 export function buildPrBodyFromIssue(issueMd, { maxLines = 10 } = {}) {

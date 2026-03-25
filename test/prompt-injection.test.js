@@ -31,6 +31,8 @@ test("sanitizeUserData strips malicious user-data tags", async () => {
   );
   assert.equal(sanitizeUserData(null), "");
   assert.equal(sanitizeUserData(undefined), "");
+  assert.equal(sanitizeUserData(0), "0");
+  assert.equal(sanitizeUserData(false), "false");
   assert.equal(sanitizeUserData("clean text"), "clean text");
 });
 
@@ -191,8 +193,13 @@ test("context-gather machine writes chunk data to file and references file path 
   );
 
   // Verify the chunk file was written with the pointer data
-  const chunkFilePath = chunkPrompt.match(/Read the chunk file at: (.+)/)?.[1]?.trim();
-  assert.ok(chunkFilePath, "should be able to extract chunk file path from prompt");
+  const chunkFilePath = chunkPrompt
+    .match(/Read the chunk file at: (.+)/)?.[1]
+    ?.trim();
+  assert.ok(
+    chunkFilePath,
+    "should be able to extract chunk file path from prompt",
+  );
   const chunkContent = readFileSync(chunkFilePath, "utf8");
   assert.ok(
     chunkContent.includes("p"),

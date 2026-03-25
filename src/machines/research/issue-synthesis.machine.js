@@ -124,7 +124,7 @@ Clarifications:
 <user-data field="clarifications">${sanitizeUserData(clarifications || "(none provided)")}</user-data>
 
 Feedback to incorporate:
-${feedbackSection}
+<user-data field="feedback">${sanitizeUserData(feedbackSection)}</user-data>
 
 ## Phase 1: Codebase Exploration (MANDATORY)
 Before drafting issues, explore the codebase at \`${repoRoot}\`:
