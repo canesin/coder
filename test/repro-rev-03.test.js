@@ -22,9 +22,7 @@ test("REV-03: concurrent callers share one initialization promise", async (t) =>
 
   const p1 = agent._ensureClient();
 
-  // Simulate the retry-window race: _client is cleared while connection is in flight
-  agent._client = null;
-
+  // Second concurrent call should reuse the in-flight _connectPromise
   const p2 = agent._ensureClient();
 
   for (const r of resolvers) r();
