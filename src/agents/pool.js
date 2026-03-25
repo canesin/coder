@@ -219,7 +219,7 @@ export class AgentPool {
   /**
    * Get or create an MCP agent for a given server config.
    * @param {string} role
-   * @param {{ transport?: "stdio" | "http", serverCommand?: string, serverArgs?: string[], serverUrl?: string, authHeader?: string, env?: Record<string, string>, serverName?: string }} [opts]
+   * @param {{ transport?: "stdio" | "http", serverCommand?: string, serverArgs?: string[], serverUrl?: string, authHeader?: string, apiKeyEnvVar?: string, env?: Record<string, string>, serverName?: string }} [opts]
    */
   _getMcpAgent(role, opts = {}) {
     const transport = opts.transport || "stdio";
@@ -252,6 +252,7 @@ export class AgentPool {
           serverArgs: opts.serverArgs || [],
           serverUrl,
           authHeader: opts.authHeader || "",
+          apiKeyEnvVar: opts.apiKeyEnvVar || "",
           env: opts.env || {},
           serverName,
           retries: retryCfg?.retries ?? 3,

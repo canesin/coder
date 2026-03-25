@@ -42,6 +42,7 @@ export class McpAgent extends AgentAdapter {
    *   serverArgs?: string[],
    *   serverUrl?: string,
    *   authHeader?: string,
+   *   apiKeyEnvVar?: string,
    *   env?: Record<string, string>,
    *   serverName?: string,
    *   retries?: number,
@@ -55,6 +56,7 @@ export class McpAgent extends AgentAdapter {
     this.serverArgs = opts.serverArgs || [];
     this.serverUrl = opts.serverUrl || "";
     this.authHeader = opts.authHeader || "";
+    this.apiKeyEnvVar = opts.apiKeyEnvVar || "";
     this.env = opts.env || {};
     this.serverName = opts.serverName || "mcp-server";
     this._retries = opts.retries ?? 3;
@@ -122,7 +124,9 @@ export class McpAgent extends AgentAdapter {
         const requestInit = {};
 
         if (this.authHeader) {
-          const apiKey = Object.values(this.env)[0] || "";
+          const apiKey = this.apiKeyEnvVar
+            ? this.env[this.apiKeyEnvVar] || ""
+            : Object.values(this.env)[0] || "";
           if (apiKey) {
             requestInit.headers = { [this.authHeader]: apiKey };
           }
