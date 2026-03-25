@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   access,
   mkdir,
@@ -47,7 +48,7 @@ function nowIso() {
 
 async function atomicWriteJson(filePath, data) {
   const dir = path.dirname(filePath);
-  const tmpPath = filePath + ".tmp";
+  const tmpPath = `${filePath}.${randomUUID().slice(0, 8)}.tmp`;
   let op = "mkdir";
   try {
     await mkdir(dir, { recursive: true });
@@ -56,6 +57,9 @@ async function atomicWriteJson(filePath, data) {
     op = "rename";
     await rename(tmpPath, filePath);
   } catch (err) {
+    try {
+      await unlink(tmpPath);
+    } catch {}
     const code = err.code ? ` (${err.code})` : "";
     throw new Error(
       `Failed to write state ${filePath} [${op}]${code}: ${err.message}`,
