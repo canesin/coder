@@ -1314,6 +1314,14 @@ export async function runDevelopLoop(opts, ctx) {
         { status: "failed", error: errMsg },
         issueEnv,
       );
+      // Cancel remaining pending items — they won't be processed.
+      let cancelled = 0;
+      for (const q of loopState.issueQueue) {
+        if (q.status === "pending") {
+          q.status = "cancelled";
+          cancelled++;
+        }
+      }
       loopState.status = "failed";
       loopState.completedAt = new Date().toISOString();
       await saveLoopState(ctx.workspaceDir, loopState, {
@@ -1324,6 +1332,7 @@ export async function runDevelopLoop(opts, ctx) {
         completed,
         failed,
         skipped,
+        cancelled,
         deferred: loopState.issueQueue.filter((q) => q.status === "deferred")
           .length,
       });
