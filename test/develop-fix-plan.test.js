@@ -20,7 +20,9 @@ import { WorkflowRunner } from "../src/workflows/_base.js";
 import { runDevelopLoop } from "../src/workflows/develop.workflow.js";
 
 function makeTmpWorkspace() {
-  const tmp = mkdtempSync(path.join(os.tmpdir(), "fix-plan-"));
+  const parent = mkdtempSync(path.join(os.tmpdir(), "fix-plan-"));
+  const tmp = path.join(parent, "ws");
+  mkdirSync(tmp);
   mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
   execSync("git init -b main", { cwd: tmp, stdio: "ignore" });
@@ -33,8 +35,8 @@ function makeTmpWorkspace() {
     stdio: "ignore",
   });
   execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
-  const bare = mkdtempSync(path.join(os.tmpdir(), "fix-plan-bare-"));
-  execSync("git init --bare", { cwd: bare, stdio: "ignore" });
+  const bare = path.join(parent, "bare.git");
+  execSync(`git init --bare ${bare}`, { stdio: "ignore" });
   execSync(`git remote add origin ${bare}`, { cwd: tmp, stdio: "ignore" });
   execSync("git push -u origin main", { cwd: tmp, stdio: "ignore" });
   return tmp;
@@ -171,7 +173,7 @@ test("infra failure with infraDetection enabled yields deferred and run status b
     assert.match(issueA.error, /ECONNREFUSED|connection refused/);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -240,7 +242,7 @@ test("infra failure with infraDetection disabled yields failed not deferred", as
     assert.equal(issueA.deferredReason, undefined);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -331,7 +333,7 @@ test("infra/plan_blocked deferred issues are excluded from same-run retry pass",
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -379,7 +381,7 @@ test("preflight command check fails before loop processes any issue", async () =
     assert.equal(pipelineStarted, false);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -436,7 +438,7 @@ test("preflight command check passes and loop proceeds", async () => {
     assert.equal(result.completed, 1);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -484,7 +486,7 @@ test("preflight tcp check fails when port refuses", async () => {
     assert.equal(pipelineStarted, false);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -547,7 +549,7 @@ test("preflight tcp check passes when port accepts", async () => {
   } finally {
     server.close();
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -700,7 +702,7 @@ test("start after blocked run processes deferred issues (blocked treated as term
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -820,7 +822,7 @@ test("planReviewExhausted defer preserves state; next start retries and complete
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 

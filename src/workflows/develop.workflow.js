@@ -1324,7 +1324,8 @@ export async function runDevelopLoop(opts, ctx) {
         completed,
         failed,
         skipped,
-        deferred: 0,
+        deferred: loopState.issueQueue.filter((q) => q.status === "deferred")
+          .length,
       });
       throw new Error(errMsg);
     }

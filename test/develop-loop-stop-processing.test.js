@@ -16,7 +16,9 @@ import { WorkflowRunner } from "../src/workflows/_base.js";
 import { runDevelopLoop } from "../src/workflows/develop.workflow.js";
 
 function makeTmpWorkspace() {
-  const tmp = mkdtempSync(path.join(os.tmpdir(), "stop-loop-"));
+  const parent = mkdtempSync(path.join(os.tmpdir(), "stop-loop-"));
+  const tmp = path.join(parent, "ws");
+  mkdirSync(tmp);
   mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
   execSync("git init -b main", { cwd: tmp, stdio: "ignore" });
@@ -26,8 +28,8 @@ function makeTmpWorkspace() {
   });
   execSync("git config user.name 'Test User'", { cwd: tmp, stdio: "ignore" });
   execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
-  const bare = mkdtempSync(path.join(os.tmpdir(), "stop-loop-bare-"));
-  execSync("git init --bare", { cwd: bare, stdio: "ignore" });
+  const bare = path.join(parent, "bare.git");
+  execSync(`git init --bare ${bare}`, { stdio: "ignore" });
   execSync(`git remote add origin ${bare}`, { cwd: tmp, stdio: "ignore" });
   execSync("git push -u origin main", { cwd: tmp, stdio: "ignore" });
   return tmp;
@@ -177,7 +179,7 @@ test("independent issues continue after failure (no blanket abort)", async () =>
     assert.equal(finalState.status, "failed");
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -290,7 +292,7 @@ test("dependency chain: dependents skipped, independent issues continue", async 
     }
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -362,6 +364,6 @@ test("rate-limited failures defer and do not trigger queue abort", async () => {
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
