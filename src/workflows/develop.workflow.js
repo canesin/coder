@@ -1300,6 +1300,43 @@ export async function runDevelopLoop(opts, ctx) {
         );
         return "deferred";
       }
+      const errMsg = `Git pull failed: ${stderr.slice(0, 200)}`;
+      loopState.issueQueue[i].status = "failed";
+      loopState.issueQueue[i].error = errMsg;
+      outcomeMap.set(issue.id, { status: "failed" });
+      failed++;
+      results.push({ ...issue, status: "failed", error: errMsg });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_failed",
+        "",
+        { status: "failed", error: errMsg },
+        issueEnv,
+      );
+      // Cancel remaining pending items — they won't be processed.
+      let cancelled = 0;
+      for (const q of loopState.issueQueue) {
+        if (q.status === "pending") {
+          q.status = "cancelled";
+          cancelled++;
+        }
+      }
+      loopState.status = "failed";
+      loopState.completedAt = new Date().toISOString();
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(ctx, loopRunId, "loop_complete", "", {
+        status: "failed",
+        completed,
+        failed,
+        skipped,
+        cancelled,
+        deferred: loopState.issueQueue.filter((q) => q.status === "deferred")
+          .length,
+      });
+      throw new Error(errMsg);
     }
 
     // Build active branch context for conflict detection (skipped when disabled).

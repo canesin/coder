@@ -25,16 +25,22 @@ import {
 } from "../src/workflows/develop.workflow.js";
 
 function makeTmpWorkspace() {
-  const tmp = mkdtempSync(path.join(os.tmpdir(), "destructive-reset-"));
+  const parent = mkdtempSync(path.join(os.tmpdir(), "destructive-reset-"));
+  const tmp = path.join(parent, "ws");
+  mkdirSync(tmp);
   mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
-  execSync("git init", { cwd: tmp, stdio: "ignore" });
+  execSync("git init -b main", { cwd: tmp, stdio: "ignore" });
   execSync("git config user.email test@example.com", {
     cwd: tmp,
     stdio: "ignore",
   });
   execSync("git config user.name 'Test User'", { cwd: tmp, stdio: "ignore" });
   execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+  const bare = path.join(parent, "bare.git");
+  execSync(`git init --bare ${bare}`, { stdio: "ignore" });
+  execSync(`git remote add origin ${bare}`, { cwd: tmp, stdio: "ignore" });
+  execSync("git push -u origin main", { cwd: tmp, stdio: "ignore" });
   return tmp;
 }
 
@@ -228,7 +234,7 @@ test("destructiveReset retries failed/skipped issues but preserves completed", a
     assert.equal(issueC.error, null);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -328,7 +334,7 @@ test("with preserveFailedIssues, failed/skipped issues are preserved from prior 
     assert.equal(issueB.error, "quality review failed");
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -427,7 +433,7 @@ test("default: failed issues are retried on new start (no preserveFailedIssues)"
     assert.equal(result.failed, 0);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -457,7 +463,7 @@ test("resetForNextIssue throws when git checkout fails", async () => {
       },
     );
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -475,7 +481,7 @@ test("resetForNextIssue skips git restore on empty-commit repo", async () => {
       "untracked file should be cleaned",
     );
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -532,7 +538,7 @@ test("ensureCleanLoopStart: WIP-preserves known branch, switches to default", as
       ctx.logEvents.some((e) => e.event === "clean_loop_start_checkout"),
     );
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -558,7 +564,7 @@ test("ensureCleanLoopStart: discards dirty unknown branch", async () => {
       ctx.logEvents.some((e) => e.event === "clean_loop_start_discard"),
     );
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -605,7 +611,7 @@ test("ensureCleanLoopStart: resets stale in_progress to pending", async () => {
       ),
     );
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -618,7 +624,7 @@ test("ensureCleanLoopStart: no-op when clean", async () => {
     // No recovery events should have been logged
     assert.equal(ctx.logEvents.length, 0);
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -676,6 +682,6 @@ test("quality-review retry clears state.steps.implemented", async () => {
     const finalState = await loadState(ws);
     assert.equal(finalState.steps.implemented, false);
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });

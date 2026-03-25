@@ -282,16 +282,22 @@ test("forced local issues preserve order through develop loop queue", async () =
     "../src/workflows/develop.workflow.js"
   );
 
-  const ws = mkdtempSync(path.join(os.tmpdir(), "forced-order-"));
+  const wsParent = mkdtempSync(path.join(os.tmpdir(), "forced-order-"));
+  const ws = path.join(wsParent, "ws");
+  mkdirSync(ws);
   mkdirSync(path.join(ws, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(ws, ".coder", "logs"), { recursive: true });
-  execSync("git init", { cwd: ws, stdio: "ignore" });
+  execSync("git init -b main", { cwd: ws, stdio: "ignore" });
   execSync("git config user.email test@example.com", {
     cwd: ws,
     stdio: "ignore",
   });
   execSync("git config user.name 'Test User'", { cwd: ws, stdio: "ignore" });
   execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
+  const bare = path.join(wsParent, "bare.git");
+  execSync(`git init --bare ${bare}`, { stdio: "ignore" });
+  execSync(`git remote add origin ${bare}`, { cwd: ws, stdio: "ignore" });
+  execSync("git push -u origin main", { cwd: ws, stdio: "ignore" });
 
   // Issues in intentional order: highest difficulty first
   const issuesDir = path.join(ws, ".coder", "local-issues");
@@ -379,7 +385,7 @@ test("forced local issues preserve order through develop loop queue", async () =
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(wsParent, { recursive: true, force: true });
   }
 });
 
