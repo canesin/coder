@@ -46,6 +46,16 @@ export function startWorkflowActor({
 }) {
   const sqlitePath = workflowSqlitePath(workspaceDir);
   const actor = createActor(createWorkflowLifecycleMachine());
+
+  // Seed the state file with our runId (unguarded) so subsequent guarded
+  // writes can match.  Queued into the write-chain before subscribe fires.
+  saveWorkflowSnapshot(workspaceDir, {
+    runId,
+    workflow,
+    snapshot: { value: currentStage || "idle", context: {} },
+    sqlitePath,
+  }).catch(() => {});
+
   actor.subscribe(() => {
     saveWorkflowSnapshot(workspaceDir, {
       runId,
