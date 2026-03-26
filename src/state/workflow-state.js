@@ -43,12 +43,17 @@ function setWriteChain(key, promise) {
 }
 
 /**
- * Wait for the pending write-chain for a workspace to settle.
- * Useful after stopping a workflow actor whose subscribe callback
- * fires fire-and-forget saveWorkflowSnapshot() calls.
+ * Return the current write-chain promise for a workspace (resolves
+ * immediately if no writes are pending).  Does NOT guarantee global
+ * quiescence — new writes appended after this call are not covered.
  */
 export function drainWriteChain(workspaceDir) {
   return getWriteChain(workspaceDir);
+}
+
+/** Synchronous check: true when a write chain is still pending for `key`. */
+export function hasWriteChain(key) {
+  return _writeChains.has(key);
 }
 
 function nowIso() {
