@@ -29,8 +29,47 @@ export const ProjectsPayloadSchema = z.object({
   ),
 });
 
+export const SpecManifestSchema = z.object({
+  specId: z.string().min(1),
+  version: z.number().int().min(1),
+  repoPath: z.string().default("."),
+  domains: z.array(
+    z.object({
+      name: z.string().min(1),
+      docPath: z.string().min(1),
+    }),
+  ),
+  decisions: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        title: z.string().min(1),
+        status: z.enum(["proposed", "accepted", "deprecated", "superseded"]),
+        docPath: z.string().min(1),
+      }),
+    )
+    .default([]),
+  phases: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        title: z.string().min(1),
+        issueIds: z.array(z.string()).default([]),
+        docPath: z.string().min(1),
+      }),
+    )
+    .default([]),
+  issueManifestPath: z.string().default(""),
+  createdAt: z.string().min(1),
+});
+
 export const TestConfigSchema = z.object({
-  setup: z.array(z.string()).default([]),
+  setup: z
+    .array(z.string())
+    .default([])
+    .describe(
+      "Shell commands with cwd = repo root for this issue (repo_path); relative script paths must exist under that root.",
+    ),
   healthCheck: z
     .object({
       url: z.string(),
@@ -38,7 +77,17 @@ export const TestConfigSchema = z.object({
       intervalMs: z.number().int().positive().default(2000),
     })
     .optional(),
-  test: z.string().min(1),
-  teardown: z.array(z.string()).default([]),
+  test: z
+    .string()
+    .min(1)
+    .describe(
+      "Shell test command with cwd = repo root; use cd … && if scripts live outside that root.",
+    ),
+  teardown: z
+    .array(z.string())
+    .default([])
+    .describe(
+      "Shell commands with cwd = repo root after tests; relative paths are under that root.",
+    ),
   timeoutMs: z.number().int().positive().default(600000),
 });

@@ -1,9 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { discoverCodexSessionId } from "../../agents/codex-session-discovery.js";
-import { loadState, saveState } from "../../state/workflow-state.js";
+import {
+  clearAllSessionIdsAndDisable,
+  loadState,
+  saveState,
+} from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { makeClaudeSessionId } from "./_session.js";
 import {
   artifactPaths,
   ensureBranch,
@@ -11,6 +15,12 @@ import {
   requireExitZero,
   resolveRepoRoot,
 } from "./_shared.js";
+
+/** Wall-clock and hang budgets for the programmer CLI during implementation (must stay aligned). @internal */
+export function implementationAgentExecTimeouts(config) {
+  const timeoutMs = config.workflow.timeouts.implementation;
+  return { timeoutMs, hangTimeoutMs: timeoutMs };
+}
 
 export default defineMachine({
   name: "develop.implementation",
@@ -37,7 +47,7 @@ export default defineMachine({
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
-    ensureBranch(repoRoot, state.branch);
+    await ensureBranch(repoRoot, state.branch, { signal: ctx.signal });
 
     ctx.log({ event: "step4_implement" });
     const { agentName: programmerName, agent: programmerAgent } =
@@ -59,26 +69,26 @@ export default defineMachine({
     }
 
     const hadSessionBefore = !!state[sessionKey];
-    if (!state[sessionKey]) {
+    if (!state.sessionsDisabled && !state[sessionKey]) {
       if (programmerName === "codex") {
         if (codexUsesSession) {
-          state[sessionKey] = randomUUID();
+          state[sessionKey] = makeClaudeSessionId(ctx.workflowRunId);
           state.implementationAgentName = programmerName;
           await saveState(ctx.workspaceDir, state);
         }
       } else if (programmerName === "claude") {
-        state[sessionKey] = randomUUID();
+        state[sessionKey] = makeClaudeSessionId(ctx.workflowRunId);
         state.implementationAgentName = programmerName;
         await saveState(ctx.workspaceDir, state);
       }
       // gemini: no session create path in this iteration
     }
     const sessionOrResumeId = state[sessionKey];
-    const execOpts = {
-      timeoutMs: ctx.config.workflow.timeouts.implementation,
-    };
+    const execOpts = implementationAgentExecTimeouts(ctx.config);
     const codexWithoutSession = programmerName === "codex" && !codexUsesSession;
-    if (programmerName === "codex") {
+    if (state.sessionsDisabled) {
+      if (codexWithoutSession) execOpts.execWithJsonCapture = true;
+    } else if (programmerName === "codex") {
       if (codexUsesSession) {
         if (hadSessionBefore) execOpts.resumeId = sessionOrResumeId;
         else execOpts.sessionId = sessionOrResumeId;
@@ -114,23 +124,50 @@ Build upon existing correct work. Do not duplicate or revert it.
 
 `;
 
+    const difficulty = state.selected?.difficulty ?? 3;
+    const useRedGreen = difficulty >= 3;
+
     const implPrompt = `${recoveryContext}Read ${paths.plan} and ${paths.critique}.
 
 ## Step 1: Address Critique
 Update ${paths.plan} to address any Critical Issues or Over-Engineering Concerns from the critique.
 If critique says REJECT, revise the plan significantly before proceeding.
+${
+  useRedGreen
+    ? `
+## Step 2: RED — Write Failing Tests First
+This is a difficulty ${difficulty} issue. Use Red/Green TDD.
 
-## Step 2: Write Tests (TDD)
+Before writing ANY implementation code:
+1. Read the Testing Strategy from ${paths.issue} and the Testing section from ${paths.plan}
+2. Write test files/cases that capture the expected behavior described in the issue
+   - Each test should target one specific requirement
+   - Use the repo's existing test framework and conventions
+3. **Run the test suite and confirm the new tests FAIL**
+   - Verify they fail for the RIGHT reasons: missing functions, unimplemented behavior, wrong return values
+   - NOT for syntax errors, import failures in the test itself, or broken test setup
+   - If a test passes before implementation, it is not testing new behavior — rewrite it
+4. Do NOT proceed to Step 3 until you have confirmed RED (failing tests)
+
+## Step 3: GREEN — Implement to Pass Tests
+Implement the feature following the plan. Your goal: make every failing test from Step 2 pass.
+- Work incrementally — implement one piece, run tests, see progress
+- Do NOT weaken assertions, skip tests, or reduce coverage to get green
+- Do NOT modify the tests you wrote in Step 2 to make them pass (fix the implementation, not the tests)
+- When all tests pass, you are done with this step`
+    : `
+## Step 2: Write Tests
 Before writing implementation code:
 1. Read the Testing Strategy from ${paths.issue} and the Testing section from ${paths.plan}
-2. Write failing tests that capture the expected behavior described in the issue
+2. Write tests that capture the expected behavior described in the issue
 3. Run the test suite to confirm the new tests fail for the right reasons (missing implementation, not broken tests)
 4. Only then proceed to Step 3
 
-Skip this step ONLY when the change is purely non-behavioral (config files, documentation, pure refactors with no new behavior). For refactors, verify existing tests still pass before and after.
-
 ## Step 3: Implement
-Implement the feature following the plan. Make the failing tests pass without shortcuts — do not weaken assertions, skip tests, or reduce coverage to get green.
+Implement the feature following the plan. Make the failing tests pass without shortcuts — do not weaken assertions, skip tests, or reduce coverage to get green.`
+}
+
+Skip Steps 2-3 test phases ONLY when the change is purely non-behavioral (config files, documentation, pure refactors with no new behavior). For refactors, verify existing tests still pass before and after.
 
 ## STRICT Requirements
 
@@ -194,21 +231,22 @@ FORBIDDEN patterns:
       res = await programmerAgent.execute(implPrompt, execOpts);
     } catch (err) {
       if (
-        err.name === "CommandFatalStderrError" &&
+        (err.name === "CommandFatalStderrError" ||
+          err.name === "CommandFatalStdoutError") &&
         err.category === "auth" &&
-        state[sessionKey]
+        (state[sessionKey] || execOpts.sessionId || execOpts.resumeId)
       ) {
         ctx.log({
-          event: "session_resume_failed",
+          event: "session_auth_failed",
           sessionId: state[sessionKey],
         });
-        state[sessionKey] = null;
+        clearAllSessionIdsAndDisable(state);
         await saveState(ctx.workspaceDir, state);
         // Fresh session loses prior planning context — acceptable per GH-89
         const retryRunStart = codexWithoutSession ? Date.now() : 0;
         try {
           res = await programmerAgent.execute(implPrompt, {
-            timeoutMs: ctx.config.workflow.timeouts.implementation,
+            ...implementationAgentExecTimeouts(ctx.config),
             ...(codexWithoutSession && { execWithJsonCapture: true }),
           });
           if (codexWithoutSession) {

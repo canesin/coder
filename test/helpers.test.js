@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,7 +26,9 @@ import {
   runHostTests,
   sanitizeIssueMarkdown,
   shellEscape,
+  spawnAsync,
   stripAgentNoise,
+  TestCommandPathError,
   TestInfrastructureError,
 } from "../src/helpers.js";
 
@@ -106,7 +114,24 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   assert.ok(result.includes("GITLAB_TOKEN"));
 });
 
-test("detectDefaultBranch throws when only develop exists", () => {
+test("spawnAsync synthesizes ETIMEDOUT error when process is killed by timeout", async () => {
+  const res = await spawnAsync("sleep", ["60"], { timeout: 100 });
+  assert.equal(res.status, null);
+  assert.ok(res.signal, "should have a signal");
+  assert.ok(res.error, "should have a synthesized error");
+  assert.equal(res.error.code, "ETIMEDOUT");
+});
+
+test("spawnAsync synthesizes ABORT_ERR when cancelled via AbortSignal", async () => {
+  const ac = new AbortController();
+  const p = spawnAsync("sleep", ["60"], { signal: ac.signal });
+  setTimeout(() => ac.abort(), 100);
+  const res = await p;
+  assert.equal(res.status, null);
+  assert.ok(res.error, "should have an error");
+});
+
+test("detectDefaultBranch rejects when only develop exists", async () => {
   const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
@@ -124,13 +149,13 @@ test("detectDefaultBranch throws when only develop exists", () => {
     });
     if (check.status === 0) runGit("branch", "-D", b);
   }
-  assert.throws(() => detectDefaultBranch(repoDir), {
+  await assert.rejects(detectDefaultBranch(repoDir), {
     message:
       /Could not detect default branch.*origin\/HEAD.*main.*master.*unavailable or absent/,
   });
 });
 
-test("detectDefaultBranch returns main when it exists", () => {
+test("detectDefaultBranch resolves to main when it exists", async () => {
   const { repoDir } = setupGitRepo({ "a.txt": "a\n" });
   const runGit = (...args) => {
     const res = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
@@ -141,7 +166,12 @@ test("detectDefaultBranch returns main when it exists", () => {
     }
   };
   runGit("branch", "-m", "main");
-  assert.equal(detectDefaultBranch(repoDir), "main");
+  const result = detectDefaultBranch(repoDir);
+  assert.ok(
+    result instanceof Promise,
+    "detectDefaultBranch should return a Promise",
+  );
+  assert.equal(await result, "main");
 });
 
 test("detectRemoteType identifies GitLab HTTPS remotes", () => {
@@ -171,6 +201,22 @@ test("resolvePassEnv returns config sandbox.passEnv when set", () => {
     sandbox: { passEnv: ["MY_KEY", "OTHER_KEY"], passEnvPatterns: [] },
   };
   assert.deepEqual(resolvePassEnv(config), ["MY_KEY", "OTHER_KEY"]);
+});
+
+test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
+  const config = {
+    models: {
+      claude: {
+        model: "m",
+        apiEndpoint: "https://openrouter.ai/api",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+      },
+    },
+    sandbox: { passEnv: ["GITLAB_TOKEN"], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GITLAB_TOKEN"));
+  assert.ok(r.includes("OPENROUTER_API_KEY"));
 });
 
 test("resolvePassEnv merges passEnvPatterns matches from env", () => {
@@ -270,6 +316,109 @@ test("extractGeminiPayloadJson unwraps fenced JSON in Gemini envelope response",
   assert.deepEqual(parsed, { issues: [], recommended_index: 0 });
 });
 
+test("extractGeminiPayloadJson throws when envelope response is not parseable JSON (no silent envelope return)", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: "not json at all {{{",
+    stats: {},
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: could not parse issues payload from envelope response\n/,
+      );
+      assert.match(err.message, /not json at all/);
+      assert.ok(err.cause instanceof Error);
+      return true;
+    },
+  );
+});
+
+test("extractGeminiPayloadJson throws when Gemini envelope omits response (no silent envelope return)", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    stats: { tokens: 1 },
+  });
+
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
+      );
+      assert.match(err.message, /response field missing/);
+      return true;
+    },
+  );
+});
+
+test("extractGeminiPayloadJson unwraps object response on envelope when it matches issues payload shape", () => {
+  const inner = { issues: [], recommended_index: 0 };
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: inner,
+    stats: {},
+  });
+  const parsed = extractGeminiPayloadJson(stdout);
+  assert.deepEqual(parsed, inner);
+});
+
+test("extractGeminiPayloadJson returns non-issues object payloads from session envelopes", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: { references: ["a"], searchSummary: "ok" },
+    stats: {},
+  });
+  const result = extractGeminiPayloadJson(stdout);
+  assert.deepStrictEqual(result, { references: ["a"], searchSummary: "ok" });
+});
+
+test("extractGeminiPayloadJson throws when session envelope response is null", () => {
+  const stdout = JSON.stringify({
+    session_id: "abc",
+    response: null,
+  });
+  assert.throws(
+    () => extractGeminiPayloadJson(stdout),
+    (err) => {
+      assert.ok(err instanceof Error);
+      assert.match(
+        err.message,
+        /^\[coder\] Gemini -o json: envelope response field is missing or not a usable issues payload\n/,
+      );
+      return true;
+    },
+  );
+});
+
+test("resolvePassEnv uses default key env when models.gemini omits apiKeyEnv", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(r.includes("GEMINI_API_KEY"));
+});
+
+test("resolvePassEnv skips key env when apiKeyEnv is explicitly empty", () => {
+  const config = {
+    models: {
+      gemini: { model: "gemini-2.5-flash", apiEndpoint: "", apiKeyEnv: "" },
+    },
+    sandbox: { passEnv: [], passEnvPatterns: [] },
+  };
+  const r = resolvePassEnv(config);
+  assert.ok(!r.includes("GEMINI_API_KEY"));
+});
+
 test("gitCleanOrThrow automatically ignores .gemini/ directory", () => {
   const { repoDir } = setupGitRepo({
     "README.md": "hello\n",
@@ -359,6 +508,182 @@ test("runHostTests preserves exit code 5 when allowNoTests is false", async () =
     allowNoTests: false,
   });
   assert.equal(res.exitCode, 5);
+});
+
+test("runHostTests throws TestCommandPathError when bash script missing under repo root", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tests-path-"));
+  await assert.rejects(
+    async () => runHostTests(dir, { testCmd: "bash scripts/nope.sh" }),
+    (err) => {
+      assert.equal(err instanceof TestCommandPathError, true);
+      assert.match(err.message, /does not exist under the effective directory/);
+      return true;
+    },
+  );
+});
+
+test("runHostTests runs bash script when path exists under repo root", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tests-path-"));
+  mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(dir, "scripts", "t.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const res = await runHostTests(dir, { testCmd: "bash scripts/t.sh" });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests subdir repo root: script under subdir passes", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-host-ws-"));
+  const api = path.join(ws, "api");
+  mkdirSync(path.join(api, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(api, "scripts", "t.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const res = await runHostTests(api, { testCmd: "bash scripts/t.sh" });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests monorepo: script at workspace root, scoped repo_path subdir", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-host-mono-"));
+  const api = path.join(ws, "lib", "rotmeter_web", "live");
+  mkdirSync(api, { recursive: true });
+  mkdirSync(path.join(ws, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(ws, "scripts", "test.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const res = await runHostTests(api, {
+    testCmd: "bash scripts/test.sh",
+    workspaceDir: ws,
+    repoPath: "lib/rotmeter_web/live",
+  });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests allows cd .. && bash script when script lives in parent of repo root", async () => {
+  const parent = mkdtempSync(path.join(os.tmpdir(), "coder-host-cdup-"));
+  const api = path.join(parent, "api");
+  mkdirSync(api, { recursive: true });
+  mkdirSync(path.join(parent, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(parent, "scripts", "t.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const res = await runHostTests(api, {
+    testCmd: "cd .. && bash scripts/t.sh",
+  });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests throws TestCommandPathError for bash -c when inner script missing", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-bashc-"));
+  await assert.rejects(
+    async () =>
+      runHostTests(dir, { testCmd: 'bash -c "bash scripts/missing.sh"' }),
+    (err) => err instanceof TestCommandPathError,
+  );
+});
+
+test("runHostTests testConfigPath validates setup script before run", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tc-"));
+  writeFileSync(
+    path.join(dir, "tc.json"),
+    JSON.stringify({
+      setup: ["bash scripts/missing-setup.sh"],
+      test: "true",
+      teardown: [],
+      timeoutMs: 5000,
+    }),
+  );
+  await assert.rejects(
+    async () => runHostTests(dir, { testConfigPath: "tc.json" }),
+    (err) => {
+      assert.equal(err instanceof TestCommandPathError, true);
+      assert.match(err.message, /missing-setup\.sh/);
+      return true;
+    },
+  );
+});
+
+test("runHostTests testConfigPath coder.json throws when merge has no test.command and no package file", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-host-merge-null-"));
+  const pkg = path.join(ws, "packages", "x");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(
+    path.join(ws, "coder.json"),
+    JSON.stringify({ verbose: true }),
+    "utf8",
+  );
+  await assert.rejects(
+    async () =>
+      runHostTests(pkg, {
+        testConfigPath: "coder.json",
+        workspaceDir: ws,
+      }),
+    (err) => {
+      assert.match(err.message, /Test config invalid or empty/i);
+      assert.match(err.message, /no test\.command/i);
+      return true;
+    },
+  );
+});
+
+test("runHostTests testConfigPath validates teardown script before any run", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-teardown-"));
+  mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(dir, "scripts", "ok.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  writeFileSync(
+    path.join(dir, "tc.json"),
+    JSON.stringify({
+      setup: [],
+      test: "bash scripts/ok.sh",
+      teardown: ["bash scripts/bad-teardown.sh"],
+      timeoutMs: 5000,
+    }),
+  );
+  await assert.rejects(
+    async () => runHostTests(dir, { testConfigPath: "tc.json" }),
+    (err) => {
+      assert.equal(err instanceof TestCommandPathError, true);
+      assert.match(err.message, /bad-teardown\.sh/);
+      return true;
+    },
+  );
+});
+
+test("runHostTests emits run_host_tests_start with branch and cwd", async () => {
+  const events = [];
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-log-"));
+  mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(dir, "scripts", "t.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-host-ws2-"));
+  await runHostTests(dir, {
+    testCmd: "bash scripts/t.sh",
+    log: (o) => events.push(o),
+    workspaceDir: ws,
+    repoPath: ".",
+  });
+  assert.equal(events.length >= 1, true);
+  assert.equal(events[0].event, "run_host_tests_start");
+  assert.equal(events[0].branch, "explicit_test_cmd");
+  assert.equal(events[0].cwd, path.resolve(dir));
+  assert.equal(events[0].workspaceDir, path.resolve(ws));
+  assert.equal(
+    events[0].scriptsTestShExistsUnderRepoRoot,
+    existsSync(path.join(dir, "scripts", "test.sh")),
+  );
+  assert.equal(
+    events[0].scriptsTestShExistsUnderWorkspaceDir,
+    existsSync(path.join(ws, "scripts", "test.sh")),
+  );
 });
 
 test("shellEscape wraps plain string in single quotes", () => {

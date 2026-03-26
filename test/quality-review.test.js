@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -170,6 +170,51 @@ test("buildReviewerPrompt with specDeltaSummary references paths.plan in Scope C
   const delta = "### Additions\n- New constraint X";
   const result = buildReviewerPrompt(paths, "ppcommit passed.", 1, null, delta);
   assert.ok(result.includes("/a/PLAN.md"));
+});
+
+test("buildReviewerPrompt with planExhausted adds unapproved-plan caveat", () => {
+  const paths = {
+    issue: "/a/ISSUE.md",
+    plan: "/a/PLAN.md",
+    reviewFindings: "/a/REVIEW_FINDINGS.md",
+  };
+  const result = buildReviewerPrompt(paths, "ppcommit passed.", 1, null, "", {
+    planExhausted: true,
+  });
+  assert.ok(result.includes("NOT approved"));
+  assert.ok(result.includes("tentative guide"));
+});
+
+test("buildReviewerPrompt with planExhausted keeps plan adherence with revised wording", () => {
+  const paths = {
+    issue: "/a/ISSUE.md",
+    plan: "/a/PLAN.md",
+    reviewFindings: "/a/REVIEW_FINDINGS.md",
+  };
+  const delta = "### Additions\n- New constraint X";
+  const result = buildReviewerPrompt(
+    paths,
+    "ppcommit passed.",
+    1,
+    null,
+    delta,
+    {
+      planExhausted: true,
+    },
+  );
+  assert.ok(result.includes("Plan Adherence"));
+  assert.ok(result.includes("revised approach"));
+  assert.ok(result.includes("NOT approved"));
+});
+
+test("buildReviewerPrompt without planExhausted omits caveat", () => {
+  const paths = {
+    issue: "/a/ISSUE.md",
+    plan: "/a/PLAN.md",
+    reviewFindings: "/a/REVIEW_FINDINGS.md",
+  };
+  const result = buildReviewerPrompt(paths, "ppcommit passed.", 1, null, "");
+  assert.ok(!result.includes("NOT approved"));
 });
 
 // ---------------------------------------------------------------------------
@@ -435,6 +480,254 @@ test("quality_review: committer escalation ends in REVISE -> state cleared -> ma
     undefined,
     "stale testsPassed should be cleared",
   );
+});
+
+// ---------------------------------------------------------------------------
+// quality_review machine: reviewer session mode selection
+// ---------------------------------------------------------------------------
+
+test("quality_review: round 1 with existing reviewerSessionId uses resumeId (same-issue recovery)", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-qr-session-"));
+  try {
+    const artifactsDir = path.join(ws, ".coder", "artifacts");
+    mkdirSync(artifactsDir, { recursive: true });
+
+    spawnSync("git", ["init", "-b", "main"], { cwd: ws });
+    spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: ws });
+    spawnSync("git", ["config", "user.name", "T"], { cwd: ws });
+    writeFileSync(path.join(ws, ".gitignore"), ".coder/\n");
+    spawnSync("git", ["add", ".gitignore"], { cwd: ws });
+    spawnSync("git", ["commit", "-m", "init"], { cwd: ws });
+
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "Issue content");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "Plan content");
+
+    const reviewFindingsPath = path.join(artifactsDir, "REVIEW_FINDINGS.md");
+    const existingSessionId = "existing-recovery-session-id";
+
+    await saveState(ws, {
+      selected: null,
+      selectedProject: null,
+      linearProjects: null,
+      repoPath: ".",
+      baseBranch: "main",
+      branch: "main",
+      questions: null,
+      answers: null,
+      steps: { implemented: true },
+      specDeltaSummary: "### Additions\n- item A",
+      programmerFixSessionId: null,
+      reviewerSessionId: existingSessionId,
+      reviewerAgentName: "claude",
+      lastError: null,
+      reviewFingerprint: null,
+      reviewedAt: null,
+      prUrl: null,
+      prBranch: null,
+      prBase: null,
+      scratchpadPath: null,
+      lastWipPushAt: null,
+    });
+
+    let capturedReviewOpts = null;
+    const mockReviewerAgent = {
+      execute: async (prompt, opts) => {
+        if (
+          prompt.includes("Compare") &&
+          prompt.includes("Spec Delta Summary")
+        ) {
+          return {
+            exitCode: 0,
+            stdout:
+              "## Spec Delta Summary\n### Additions\n- item A\n### Omissions\n- item B\n",
+          };
+        }
+        if (prompt.includes("Review Checklist")) {
+          capturedReviewOpts = opts;
+          writeFileSync(
+            reviewFindingsPath,
+            "# Review Findings — Round 1\n\n## VERDICT: APPROVED\n",
+          );
+        }
+        return { exitCode: 0, stdout: "" };
+      },
+    };
+    const mockAgent = { execute: async () => ({ exitCode: 0, stdout: "" }) };
+
+    const ctx = {
+      workspaceDir: ws,
+      artifactsDir,
+      config: {
+        ppcommit: { blockSecrets: false },
+        models: {
+          gemini: {
+            model: "gemini-test",
+            apiEndpoint: "http://localhost",
+            apiKeyEnv: "GEMINI_API_KEY",
+          },
+        },
+        workflow: {
+          timeouts: {
+            reviewRound: 60000,
+            programmerFix: 60000,
+            committerEscalation: 60000,
+            finalGate: 60000,
+          },
+          wip: {},
+        },
+        test: { command: "", allowNoTests: true },
+      },
+      agentPool: {
+        getAgent: (role) => {
+          const agent = role === "reviewer" ? mockReviewerAgent : mockAgent;
+          return { agentName: "claude", agent };
+        },
+      },
+      log: () => {},
+      cancelToken: { cancelled: false, paused: false },
+      secrets: {},
+      scratchpadDir: path.join(ws, ".coder", "scratchpad"),
+    };
+
+    const result = await qualityReviewMachine.run({ allowNoTests: true }, ctx);
+    assert.equal(result.status, "ok", result.error);
+
+    assert.ok(capturedReviewOpts, "reviewer should have been called");
+    assert.ok(
+      capturedReviewOpts.resumeId,
+      "round 1 with existing session should use resumeId (same-issue recovery)",
+    );
+    assert.equal(
+      capturedReviewOpts.resumeId,
+      existingSessionId,
+      "resumeId should match pre-existing session",
+    );
+    assert.equal(capturedReviewOpts.sessionId, undefined);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("quality_review: reviewer agent change uses sessionId (create) not resumeId", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-qr-agent-change-"));
+  try {
+    const artifactsDir = path.join(ws, ".coder", "artifacts");
+    mkdirSync(artifactsDir, { recursive: true });
+
+    spawnSync("git", ["init", "-b", "main"], { cwd: ws });
+    spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: ws });
+    spawnSync("git", ["config", "user.name", "T"], { cwd: ws });
+    writeFileSync(path.join(ws, ".gitignore"), ".coder/\n");
+    spawnSync("git", ["add", ".gitignore"], { cwd: ws });
+    spawnSync("git", ["commit", "-m", "init"], { cwd: ws });
+
+    writeFileSync(path.join(artifactsDir, "ISSUE.md"), "Issue content");
+    writeFileSync(path.join(artifactsDir, "PLAN.md"), "Plan content");
+
+    const reviewFindingsPath = path.join(artifactsDir, "REVIEW_FINDINGS.md");
+    const oldSessionId = "old-codex-session-id";
+
+    await saveState(ws, {
+      selected: null,
+      selectedProject: null,
+      linearProjects: null,
+      repoPath: ".",
+      baseBranch: "main",
+      branch: "main",
+      questions: null,
+      answers: null,
+      steps: { implemented: true },
+      specDeltaSummary: "### Additions\n- item A",
+      programmerFixSessionId: null,
+      reviewerSessionId: oldSessionId,
+      reviewerAgentName: "codex",
+      lastError: null,
+      reviewFingerprint: null,
+      reviewedAt: null,
+      prUrl: null,
+      prBranch: null,
+      prBase: null,
+      scratchpadPath: null,
+      lastWipPushAt: null,
+    });
+
+    let capturedReviewOpts = null;
+    const mockReviewerAgent = {
+      execute: async (prompt, opts) => {
+        if (
+          prompt.includes("Compare") &&
+          prompt.includes("Spec Delta Summary")
+        ) {
+          return {
+            exitCode: 0,
+            stdout:
+              "## Spec Delta Summary\n### Additions\n- item A\n### Omissions\n- item B\n",
+          };
+        }
+        if (prompt.includes("Review Checklist")) {
+          capturedReviewOpts = opts;
+          writeFileSync(
+            reviewFindingsPath,
+            "# Review Findings — Round 1\n\n## VERDICT: APPROVED\n",
+          );
+        }
+        return { exitCode: 0, stdout: "" };
+      },
+    };
+    const mockAgent = { execute: async () => ({ exitCode: 0, stdout: "" }) };
+
+    const ctx = {
+      workspaceDir: ws,
+      artifactsDir,
+      config: {
+        ppcommit: { blockSecrets: false },
+        models: {
+          gemini: {
+            model: "gemini-test",
+            apiEndpoint: "http://localhost",
+            apiKeyEnv: "GEMINI_API_KEY",
+          },
+        },
+        workflow: {
+          timeouts: {
+            reviewRound: 60000,
+            programmerFix: 60000,
+            committerEscalation: 60000,
+            finalGate: 60000,
+          },
+          wip: {},
+        },
+        test: { command: "", allowNoTests: true },
+      },
+      agentPool: {
+        getAgent: (role) => {
+          const agent = role === "reviewer" ? mockReviewerAgent : mockAgent;
+          return { agentName: "claude", agent };
+        },
+      },
+      log: () => {},
+      cancelToken: { cancelled: false, paused: false },
+      secrets: {},
+      scratchpadDir: path.join(ws, ".coder", "scratchpad"),
+    };
+
+    const result = await qualityReviewMachine.run({ allowNoTests: true }, ctx);
+    assert.equal(result.status, "ok", result.error);
+
+    assert.ok(capturedReviewOpts, "reviewer should have been called");
+    assert.ok(
+      capturedReviewOpts.sessionId,
+      "reviewer agent change should use sessionId (create new session)",
+    );
+    assert.notEqual(
+      capturedReviewOpts.sessionId,
+      oldSessionId,
+      "new sessionId should differ from old codex session",
+    );
+    assert.equal(capturedReviewOpts.resumeId, undefined);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------

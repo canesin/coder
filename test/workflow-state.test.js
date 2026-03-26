@@ -11,6 +11,7 @@ import {
   loadState,
   loadWorkflowSnapshot,
   loopStatePathFor,
+  mutateLoopState,
   saveLoopState,
   saveState,
   saveWorkflowSnapshot,
@@ -204,6 +205,42 @@ test("saveLoopState + loadLoopState round-trip", async () => {
   assert.equal(loaded.runId, "abc123");
   assert.equal(loaded.status, "running");
   assert.equal(loaded.goal, "test goal");
+  rmSync(ws, { recursive: true, force: true });
+});
+
+test("mutateLoopState serializes concurrent updates so heartbeat and activeAgent both persist", async () => {
+  const ws = makeTmpDir();
+  const state = {
+    runId: "abc123",
+    goal: "test goal",
+    status: "running",
+    projectFilter: null,
+    maxIssues: 5,
+    issueQueue: [],
+    currentIndex: 0,
+    currentStage: "listing_issues",
+    currentStageStartedAt: new Date().toISOString(),
+    lastHeartbeatAt: "2020-01-01T00:00:00.000Z",
+    runnerPid: process.pid,
+    activeAgent: "gemini",
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  };
+  await saveLoopState(ws, state);
+
+  await Promise.all([
+    mutateLoopState(ws, (ls) => ({
+      ...ls,
+      lastHeartbeatAt: "2020-01-02T00:00:00.000Z",
+    })),
+    mutateLoopState(ws, (ls) => ({
+      ...ls,
+      activeAgent: "codex",
+    })),
+  ]);
+  const loaded = await loadLoopState(ws);
+  assert.equal(loaded.activeAgent, "codex");
+  assert.equal(loaded.lastHeartbeatAt, "2020-01-02T00:00:00.000Z");
   rmSync(ws, { recursive: true, force: true });
 });
 

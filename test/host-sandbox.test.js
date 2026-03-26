@@ -50,6 +50,103 @@ test("host sandbox aborts on Codex session-not-found pattern (auth category)", a
   );
 });
 
+test("host sandbox aborts command on configured stdout auth-failure pattern (session already in use)", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `echo "Error: Session ID 57ce9ef7-f502-451c-a258-535c8b62ccf5 is already in use."; sleep 2; echo "should-not-print"`,
+        {
+          timeoutMs: 5000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "already in use");
+      return true;
+    },
+  );
+});
+
+test("host sandbox aborts when pattern is split across stdout chunks", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  // Simulate error split across chunks: "Error: Session " + "ID X is already in use"
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `printf 'Error: Session '; printf 'ID 123 is already in use.'; sleep 2`,
+        {
+          timeoutMs: 5000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      return true;
+    },
+  );
+});
+
+test("host sandbox fatal pattern: child ignoring SIGTERM still yields CommandFatalError not timeout", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `trap '' TERM; echo "Session ID abc is already in use"; sleep 5`,
+        {
+          timeoutMs: 10000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "already in use");
+      return true;
+    },
+  );
+});
+
+test("host sandbox fatal pattern + hang timeout: yields CommandFatalError not hang timeout", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `trap '' TERM; echo "Session ID x is already in use"; sleep 5`,
+        {
+          timeoutMs: 10000,
+          hangTimeoutMs: 1000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "already in use");
+      return true;
+    },
+  );
+});
+
 test("host sandbox aborts with transient category on matching stderr pattern", async () => {
   const provider = new HostSandboxProvider();
   const sandbox = await provider.create();
@@ -74,6 +171,54 @@ test("host sandbox aborts with transient category on matching stderr pattern", a
   );
 });
 
+test("host sandbox fatal pattern: child ignoring SIGTERM still yields CommandFatalError not timeout", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `trap '' TERM; echo "Session ID abc is already in use"; sleep 5`,
+        {
+          timeoutMs: 10000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      assert.equal(err.pattern, "already in use");
+      return true;
+    },
+  );
+});
+
+test("host sandbox fatal pattern + hang timeout: yields CommandFatalError not hang timeout", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(
+        `trap '' TERM; echo "Session ID x is already in use"; sleep 5`,
+        {
+          timeoutMs: 10000,
+          hangTimeoutMs: 1000,
+          killOnStdoutPatterns: [
+            { pattern: "already in use", category: "auth" },
+          ],
+        },
+      ),
+    (err) => {
+      assert.equal(err.name, "CommandFatalStdoutError");
+      assert.equal(err.category, "auth");
+      return true;
+    },
+  );
+});
+
 test("host sandbox hang timeout ignores stderr chatter when hangResetOnStderr is false", async () => {
   const provider = new HostSandboxProvider();
   const sandbox = await provider.create();
@@ -85,6 +230,32 @@ test("host sandbox hang timeout ignores stderr chatter when hangResetOnStderr is
         { timeoutMs: 5000, hangTimeoutMs: 100, hangResetOnStderr: false },
       ),
     /Command timeout after 100ms/,
+  );
+});
+
+test("host sandbox timeout: child ignoring SIGTERM escalates to SIGKILL and settles quickly (not 15s force-settle)", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  const started = Date.now();
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(`trap '' TERM; sleep 30`, {
+        timeoutMs: 200,
+      }),
+    (err) => {
+      assert.equal(err.name, "CommandTimeoutError");
+      return true;
+    },
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(
+    elapsed < 10_000,
+    `expected SIGKILL escalation path to settle in well under 15s force-settle, got ${elapsed}ms`,
+  );
+  assert.ok(
+    elapsed >= 150,
+    `expected at least timeoutMs + overhead before rejection, got ${elapsed}ms`,
   );
 });
 

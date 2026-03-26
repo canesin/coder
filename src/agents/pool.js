@@ -37,21 +37,15 @@ class RetryFallbackWrapper extends AgentAdapter {
         this._primary[method](prompt, opts),
       );
     } catch (err) {
-      // On auth error with an active session, retry primary once without
-      // session state before falling through to the fallback agent.
-      if (
-        err.name === "CommandFatalStderrError" &&
-        err.category === "auth" &&
-        opts?.resumeId
-      ) {
-        const { resumeId: _, sessionId: _s, ...cleanOpts } = opts;
-        try {
-          return await this._callWithRetry(() =>
-            this._primary[method](prompt, cleanOpts),
-          );
-        } catch {
-          // fall through to fallback
-        }
+      // Auth errors with session: propagate so the machine can run the full fix
+      // (clearAllSessionIdsAndDisable, retry without session). The pool cannot
+      // update workflow state, so it must not retry or try fallback here.
+      const isAuthError =
+        (err.name === "CommandFatalStderrError" ||
+          err.name === "CommandFatalStdoutError") &&
+        err.category === "auth";
+      if (isAuthError && (opts?.resumeId || opts?.sessionId)) {
+        throw err;
       }
 
       if (this._fallback) {
@@ -93,7 +87,8 @@ class RetryFallbackWrapper extends AgentAdapter {
           const name = ctx.error.name;
           if (name === "CommandTimeoutError") return false;
           if (
-            name === "CommandFatalStderrError" &&
+            (name === "CommandFatalStderrError" ||
+              name === "CommandFatalStdoutError") &&
             ctx.error.category === "auth"
           )
             return false;
@@ -149,19 +144,20 @@ export class AgentPool {
    * Get an agent instance for a given role and scope.
    *
    * @param {string} role - Agent role from config (issueSelector, planner, etc.)
-   * @param {{ scope?: "workspace" | "repo", mode?: "cli" | "api" | "mcp" }} [opts]
+   * @param {Record<string, unknown> & { scope?: "workspace" | "repo", mode?: "cli" | "api" | "mcp" }} [opts]
    * @returns {{ agentName: string, agent: import("./_base.js").AgentAdapter }}
    */
-  getAgent(role, { scope = "repo", mode = "cli" } = {}) {
+  getAgent(role, opts = {}) {
+    const { scope = "repo", mode = "cli", ...rest } = opts;
     const agentName = this._roleAgentName(role);
     const cwd = scope === "workspace" ? this.workspaceDir : this.repoRoot;
 
     if (mode === "api") {
-      return this._getApiAgent(role, { scope });
+      return this._getApiAgent(role, { scope, ...rest });
     }
 
     if (mode === "mcp") {
-      return this._getMcpAgent(role, { scope });
+      return this._getMcpAgent(role, { scope, ...rest });
     }
 
     if (mode !== "cli") {
@@ -223,7 +219,7 @@ export class AgentPool {
   /**
    * Get or create an MCP agent for a given server config.
    * @param {string} role
-   * @param {{ transport?: "stdio" | "http", serverCommand?: string, serverArgs?: string[], serverUrl?: string, authHeader?: string, env?: Record<string, string>, serverName?: string }} [opts]
+   * @param {{ transport?: "stdio" | "http", serverCommand?: string, serverArgs?: string[], serverUrl?: string, authHeader?: string, apiKeyEnvVar?: string, env?: Record<string, string>, serverName?: string }} [opts]
    */
   _getMcpAgent(role, opts = {}) {
     const transport = opts.transport || "stdio";
@@ -256,6 +252,7 @@ export class AgentPool {
           serverArgs: opts.serverArgs || [],
           serverUrl,
           authHeader: opts.authHeader || "",
+          apiKeyEnvVar: opts.apiKeyEnvVar || "",
           env: opts.env || {},
           serverName,
           retries: retryCfg?.retries ?? 3,

@@ -42,6 +42,7 @@ export class McpAgent extends AgentAdapter {
    *   serverArgs?: string[],
    *   serverUrl?: string,
    *   authHeader?: string,
+   *   apiKeyEnvVar?: string,
    *   env?: Record<string, string>,
    *   serverName?: string,
    *   retries?: number,
@@ -55,6 +56,7 @@ export class McpAgent extends AgentAdapter {
     this.serverArgs = opts.serverArgs || [];
     this.serverUrl = opts.serverUrl || "";
     this.authHeader = opts.authHeader || "";
+    this.apiKeyEnvVar = opts.apiKeyEnvVar || "";
     this.env = opts.env || {};
     this.serverName = opts.serverName || "mcp-server";
     this._retries = opts.retries ?? 3;
@@ -66,6 +68,10 @@ export class McpAgent extends AgentAdapter {
     this._transport = null;
     /** @type {Map<string, object>|null} */
     this._toolsCache = null;
+    /** @type {Promise<Client>|null} */
+    this._connectPromise = null;
+    /** @type {number} Monotonic counter incremented by kill() to invalidate in-flight connects */
+    this._connectEpoch = 0;
   }
 
   _withRetry(fn, label) {
@@ -94,11 +100,19 @@ export class McpAgent extends AgentAdapter {
 
   async _ensureClient() {
     if (this._client) return this._client;
+    if (this._connectPromise) return this._connectPromise;
 
-    return this._withRetry(async () => {
-      // Reset stale state from a prior failed attempt
-      this._client = null;
-      this._transport = null;
+    const epoch = ++this._connectEpoch;
+
+    this._connectPromise = this._withRetry(async () => {
+      // If kill() was called before this retry attempt, abort early
+      if (this._connectEpoch !== epoch) {
+        throw new Error("McpAgent: initialization aborted by kill()");
+      }
+
+      // Build client/transport in local vars — don't touch shared state
+      // until we confirm this attempt is still the active one.
+      let transport;
 
       if (this.transportType === "http") {
         if (!this.serverUrl) {
@@ -110,13 +124,15 @@ export class McpAgent extends AgentAdapter {
         const requestInit = {};
 
         if (this.authHeader) {
-          const apiKey = Object.values(this.env)[0] || "";
+          const apiKey = this.apiKeyEnvVar
+            ? this.env[this.apiKeyEnvVar] || ""
+            : Object.values(this.env)[0] || "";
           if (apiKey) {
             requestInit.headers = { [this.authHeader]: apiKey };
           }
         }
 
-        this._transport = new StreamableHTTPClientTransport(url, {
+        transport = new StreamableHTTPClientTransport(url, {
           requestInit,
         });
       } else {
@@ -125,21 +141,46 @@ export class McpAgent extends AgentAdapter {
             "McpAgent: serverCommand is required for stdio transport.",
           );
         }
-        this._transport = new StdioClientTransport({
+        transport = new StdioClientTransport({
           command: this.serverCommand,
           args: this.serverArgs,
           env: { ...process.env, ...this.env },
         });
       }
 
-      this._client = new Client(
+      const client = new Client(
         { name: "coder-mcp-agent", version: "1.0.0" },
         { capabilities: {} },
       );
 
-      await this._client.connect(this._transport);
+      await client.connect(transport);
+
+      // If kill() ran while connect() was in flight, clean up local
+      // resources only — shared state belongs to the newer attempt.
+      if (this._connectEpoch !== epoch) {
+        try {
+          await client.close();
+        } catch {}
+        try {
+          await transport.close();
+        } catch {}
+        throw new Error("McpAgent: initialization aborted by kill()");
+      }
+
+      // Publish to shared state only after confirming we're still active
+      this._client = client;
+      this._transport = transport;
       return this._client;
     }, "connect");
+
+    try {
+      return await this._connectPromise;
+    } finally {
+      // Only clear if this is still the active attempt
+      if (this._connectEpoch === epoch) {
+        this._connectPromise = null;
+      }
+    }
   }
 
   /**
@@ -245,6 +286,8 @@ export class McpAgent extends AgentAdapter {
   }
 
   async kill() {
+    this._connectEpoch++;
+    this._connectPromise = null;
     if (this._client) {
       try {
         await this._client.close();

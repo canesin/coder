@@ -5,6 +5,8 @@ import { z } from "zod";
 import {
   gitCleanOrThrow,
   sanitizeIssueMarkdown,
+  sanitizeUserData,
+  spawnAsync,
   stripAgentNoise,
 } from "../../helpers.js";
 import { ScratchpadPersistence } from "../../state/persistence.js";
@@ -55,15 +57,23 @@ function formatBodyWithComments(body, comments) {
  * @param {string} localIssuesDir - Resolved path to local issues dir (for "local" source)
  * @returns {string | null}
  */
-function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
+async function fetchIssueBody(
+  source,
+  id,
+  repoRoot,
+  localIssuesDir,
+  { signal } = {},
+) {
   if (source === "github") {
     const num = id.replace(/^#/, "");
-    const res = spawnSync(
+    const res = await spawnAsync(
       "gh",
       ["issue", "view", num, "--json", "body,comments"],
-      { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+      { cwd: repoRoot, signal, timeout: 10000 },
     );
-    if (res.status !== 0 || !res.stdout) return null;
+    if (res.error?.code === "ABORT_ERR" || res.error?.code === "ETIMEDOUT")
+      throw res.error;
+    if (res.error || res.status !== 0 || !res.stdout) return null;
     try {
       const data = JSON.parse(res.stdout);
       return formatBodyWithComments(data.body, data.comments);
@@ -74,12 +84,14 @@ function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
 
   if (source === "gitlab") {
     const iid = id.replace(/^[#!]/, "");
-    const res = spawnSync("glab", ["issue", "view", iid, "--output", "json"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 10000,
-    });
-    if (res.status !== 0 || !res.stdout) return null;
+    const res = await spawnAsync(
+      "glab",
+      ["issue", "view", iid, "--output", "json"],
+      { cwd: repoRoot, signal, timeout: 10000 },
+    );
+    if (res.error?.code === "ABORT_ERR" || res.error?.code === "ETIMEDOUT")
+      throw res.error;
+    if (res.error || res.status !== 0 || !res.stdout) return null;
     try {
       const data = JSON.parse(res.stdout);
       return formatBodyWithComments(data.description, data.notes);
@@ -95,12 +107,21 @@ function fetchIssueBody(source, id, repoRoot, localIssuesDir) {
       try {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
         const entry = manifest.issues?.find((e) => e.id === id);
-        const file = entry?.file || entry?.filePath;
-        if (file) {
-          const mdPath = path.isAbsolute(file)
-            ? file
-            : path.join(localIssuesDir, file);
-          if (existsSync(mdPath)) return readFileSync(mdPath, "utf8");
+        if (entry) {
+          let mdPath;
+          if (entry.file) {
+            // file is relative to localIssuesDir
+            mdPath = path.isAbsolute(entry.file)
+              ? entry.file
+              : path.join(localIssuesDir, entry.file);
+          } else if (entry.filePath) {
+            // filePath is workspace-relative (resolve from manifest root)
+            const wsRoot = manifest.repoRoot || manifest.repoPath || repoRoot;
+            mdPath = path.isAbsolute(entry.filePath)
+              ? entry.filePath
+              : path.resolve(wsRoot, entry.filePath);
+          }
+          if (mdPath && existsSync(mdPath)) return readFileSync(mdPath, "utf8");
         }
       } catch {
         // fall through to filename heuristic
@@ -251,10 +272,20 @@ export default defineMachine({
     // Optional base branch checkout for stacked PRs
     if (state.baseBranch) {
       // Fetch the branch in case it only exists on the remote (#108)
-      spawnSync("git", ["fetch", "origin", state.baseBranch], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      });
+      const fetchRes = await spawnAsync(
+        "git",
+        ["fetch", "origin", state.baseBranch],
+        { cwd: repoRoot, signal: ctx.signal },
+      );
+      // Propagate abort/timeout, but treat other fetch failures as best-effort
+      // (offline, no remote, etc.) — the subsequent checkout will fail if needed.
+      if (
+        fetchRes.error &&
+        (fetchRes.error.code === "ABORT_ERR" ||
+          fetchRes.error.code === "ETIMEDOUT")
+      ) {
+        throw fetchRes.error;
+      }
       const baseCheckout = spawnSync("git", ["checkout", state.baseBranch], {
         cwd: repoRoot,
         encoding: "utf8",
@@ -274,9 +305,10 @@ export default defineMachine({
       }
     }
 
-    ensureBranch(repoRoot, state.branch, {
+    await ensureBranch(repoRoot, state.branch, {
       baseBranch: state.baseBranch || undefined,
       forceRecreate: input.force,
+      signal: ctx.signal,
     });
 
     // Draft ISSUE.md
@@ -293,15 +325,16 @@ export default defineMachine({
         : path.resolve(ctx.workspaceDir, rawLocalIssuesDir)
       : null;
 
-    const issueBody = fetchIssueBody(
+    const issueBody = await fetchIssueBody(
       input.issue.source,
       input.issue.id,
       repoRoot,
       resolvedLocalIssuesDir,
+      { signal: ctx.signal },
     );
 
     const issueBodySection = issueBody
-      ? `\nIssue description (from ${input.issue.source}):\n${issueBody}\n`
+      ? `\nIssue description (from ${input.issue.source}):\n<user-data field="issue.body">${sanitizeUserData(issueBody)}</user-data>\n`
       : input.issue.source === "linear"
         ? "\nFetch the full issue description via Linear MCP using the issue id above.\n"
         : "";
@@ -311,11 +344,11 @@ export default defineMachine({
 Chosen issue:
 - source: ${input.issue.source}
 - id: ${input.issue.id}
-- title: ${input.issue.title}
+- title: <user-data field="issue.title">${sanitizeUserData(input.issue.title)}</user-data>
 - repo_root: ${repoRoot}
 ${issueBodySection}
 Clarifications from user:
-${input.clarifications || "(none provided)"}
+<user-data field="clarifications">${sanitizeUserData(input.clarifications || "(none provided)")}</user-data>
 
 Scratchpad for iterative notes:
 - path: ${scratchpadPath}
@@ -326,7 +359,7 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 If you wrote ISSUE.md to disk via a tool, also output its full contents to stdout.
 
 ## Required Sections (in order)
-1. **Metadata**: Source, Issue ID, Repo Root (relative path)
+1. **Metadata**: Source, Issue ID, Repo Root (relative path), Difficulty (1-5)
 2. **Problem**: What's wrong or missing — reference specific files/functions
 3. **Requirements**: Behavioral requirements using EARS Syntax Patterns:
    - Ubiquitous: The <system> shall <behavior>.
@@ -335,8 +368,20 @@ If you wrote ISSUE.md to disk via a tool, also output its full contents to stdou
    - Unwanted Behavior: IF <trigger>, THEN the <system> shall <behavior>.
    - Optional Feature: WHERE <feature is present>, the <system> shall <behavior>.
 4. **Changes**: Exactly which files need to change and how
-5. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
-6. **Out of Scope**: What this does NOT include
+5. **Testing Strategy**: Search the codebase for existing test files/patterns, then specify:
+   - **Existing tests**: Which test files cover related behavior (paths + what they test)
+   - **Test patterns**: The repo's test framework, conventions, assertion style
+   - **New test cases**: Concrete test cases to write — inputs, expected outputs, edge cases
+   ${
+     (input.issue.difficulty ?? 3) >= 3
+       ? `- **Red/Green TDD**: This is a difficulty ${input.issue.difficulty ?? 3} issue — use Red/Green TDD.
+     List specific failing assertions the implementation agent should write BEFORE coding:
+     - Test name, assertion, and expected failure reason (missing function, wrong return value, etc.)
+     - These form the RED phase — they must fail for the right reasons before implementation begins`
+       : `- For this low-complexity issue, a lightweight test-after approach is acceptable if a failing-test-first approach isn't practical`
+   }
+6. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
+7. **Out of Scope**: What this does NOT include
 `;
 
     const res = await agent.execute(issuePrompt, {

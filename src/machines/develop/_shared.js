@@ -1,16 +1,20 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import {
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
+  spawnAsync,
+  throwIfAborted,
 } from "../../helpers.js";
 
 export const ISSUE_FILE = "ISSUE.md";
 export const PLAN_FILE = "PLAN.md";
 export const CRITIQUE_FILE = "PLANREVIEW.md";
 export const REVIEW_FINDINGS_FILE = "REVIEW_FINDINGS.md";
+export const RCA_FILE = "RCA.md";
 
 export function artifactPaths(artifactsDir) {
   return {
@@ -18,20 +22,39 @@ export function artifactPaths(artifactsDir) {
     plan: path.join(artifactsDir, PLAN_FILE),
     critique: path.join(artifactsDir, CRITIQUE_FILE),
     reviewFindings: path.join(artifactsDir, REVIEW_FINDINGS_FILE),
+    rca: path.join(artifactsDir, RCA_FILE),
   };
 }
 
-export function ensureBranch(
+/**
+ * Per-step CLI agent options: wall-clock timeout only, hang detection off.
+ * Prevents agents.retry.hangTimeoutMs (default 5m) from killing long silent
+ * planning/plan-review while workflow.timeouts.* allows much longer.
+ *
+ * @param {number} timeoutMs
+ * @returns {{ timeoutMs: number, hangTimeoutMs: number }}
+ */
+export function buildStepCliOpts(timeoutMs) {
+  return { timeoutMs, hangTimeoutMs: 0 };
+}
+
+export async function ensureBranch(
   repoRoot,
   branch,
-  { baseBranch, forceRecreate } = {},
+  { baseBranch, forceRecreate, signal } = {},
 ) {
   if (!branch) throw new Error("No branch set. Run issue-draft first.");
 
-  const current = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  const current = await spawnAsync(
+    "git",
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      signal,
+    },
+  );
+  throwIfAborted(current);
   if (current.status !== 0)
     throw new Error("Failed to determine current git branch.");
 
@@ -39,28 +62,40 @@ export function ensureBranch(
 
   // Force-recreate: delete existing branch and recreate from baseBranch or HEAD
   if (forceRecreate) {
-    const verify = spawnSync("git", ["rev-parse", "--verify", branch], {
+    const verify = await spawnAsync("git", ["rev-parse", "--verify", branch], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal,
     });
+    throwIfAborted(verify);
     if (verify.status === 0) {
       // Switch off the branch before deleting it
       if (currentBranch === branch) {
-        spawnSync("git", ["checkout", "--detach"], {
+        const detach = await spawnAsync("git", ["checkout", "--detach"], {
           cwd: repoRoot,
           encoding: "utf8",
+          signal,
         });
+        throwIfAborted(detach);
       }
-      spawnSync("git", ["branch", "-D", branch], {
+      const del = await spawnAsync("git", ["branch", "-D", branch], {
         cwd: repoRoot,
         encoding: "utf8",
+        signal,
       });
+      throwIfAborted(del);
     }
     const startPoint = baseBranch || "HEAD";
-    const create = spawnSync("git", ["checkout", "-b", branch, startPoint], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
+    const create = await spawnAsync(
+      "git",
+      ["checkout", "-b", branch, startPoint],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        signal,
+      },
+    );
+    throwIfAborted(create);
     if (create.status !== 0) {
       throw new Error(`Failed to recreate branch ${branch}: ${create.stderr}`);
     }
@@ -69,20 +104,24 @@ export function ensureBranch(
 
   if (currentBranch === branch) return;
 
-  const checkout = spawnSync("git", ["checkout", branch], {
+  const checkout = await spawnAsync("git", ["checkout", branch], {
     cwd: repoRoot,
     encoding: "utf8",
+    signal,
   });
+  throwIfAborted(checkout);
   if (checkout.status === 0) return;
 
   // Create new branch with optional baseBranch as start-point
   const createArgs = baseBranch
     ? ["checkout", "-b", branch, baseBranch]
     : ["checkout", "-b", branch];
-  const create = spawnSync("git", createArgs, {
+  const create = await spawnAsync("git", createArgs, {
     cwd: repoRoot,
     encoding: "utf8",
+    signal,
   });
+  throwIfAborted(create);
   if (create.status !== 0) {
     throw new Error(`Failed to create branch ${branch}: ${create.stderr}`);
   }
@@ -133,7 +172,20 @@ export function ensureGitignore(workspaceDir) {
 }
 
 export function resolveRepoRoot(workspaceDir, repoPath) {
-  return path.resolve(workspaceDir, repoPath || ".");
+  const resolved = path.resolve(workspaceDir, repoPath || ".");
+  try {
+    const stat = statSync(resolved);
+    if (stat.isFile()) {
+      const dir = path.dirname(resolved);
+      process.stderr.write(
+        `[coder] resolveRepoRoot: corrected file path to directory: ${resolved} → ${dir}\n`,
+      );
+      return dir;
+    }
+  } catch {
+    // Path may not exist yet; use as-is
+  }
+  return resolved;
 }
 
 export function normalizeRepoPath(workspaceDir, repoPath) {

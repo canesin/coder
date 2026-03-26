@@ -4,10 +4,28 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
+  executeWithSessionAuthRetry,
+  makeClaudeSessionId,
   supportsSession,
   withSessionResume,
-} from "../src/machines/develop/_session.js";
+} from "../src/machines/_session.js";
 import { loadState, saveState } from "../src/state/workflow-state.js";
+
+describe("makeClaudeSessionId", () => {
+  const uuidRe =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  it("returns a valid UUID (Claude requires strict UUID, not prefixed strings)", () => {
+    assert.match(makeClaudeSessionId("5ab5979b"), uuidRe);
+    assert.match(makeClaudeSessionId(""), uuidRe);
+  });
+
+  it("generates distinct ids across calls", () => {
+    const a = makeClaudeSessionId("run-a");
+    const b = makeClaudeSessionId("run-a");
+    assert.notEqual(a, b);
+  });
+});
 
 describe("supportsSession", () => {
   it("returns true for claude", () => {
@@ -155,7 +173,7 @@ describe("withSessionResume", () => {
     assert.equal(state.testAgentName, "claude");
   });
 
-  it("retries with fresh session on auth error during resume", async () => {
+  it("retries without session on auth error during resume", async () => {
     await saveState(tmp, {
       testSessionId: "existing-id",
       testAgentName: "claude",
@@ -188,22 +206,119 @@ describe("withSessionResume", () => {
 
     assert.equal(callCount, 2);
     assert.ok(capturedOpts[0].resumeId, "first call should resume");
-    assert.ok(capturedOpts[1].sessionId, "retry should create fresh session");
-    assert.notEqual(capturedOpts[1].sessionId, "existing-id");
+    assert.deepEqual(
+      capturedOpts[1],
+      {},
+      "retry should use no session (sessionsDisabled)",
+    );
+    assert.equal(state.sessionsDisabled, true);
     assert.ok(
-      logs.some((l) => l.event === "session_resume_failed"),
-      "should log session_resume_failed",
+      logs.some((l) => l.event === "session_auth_failed"),
+      "should log session_auth_failed",
     );
   });
 
-  it("does not retry auth error on fresh session (no resumeId)", async () => {
+  it("retries auth error on fresh session (sessionId) without session", async () => {
     await saveState(tmp, {});
     const state = await loadState(tmp);
 
-    const authErr = new Error("auth failed");
+    const authErr = new Error("Session ID x is already in use");
     authErr.name = "CommandFatalStderrError";
     authErr.category = "auth";
 
+    let callCount = 0;
+    const capturedOpts = [];
+    const result = await withSessionResume({
+      agentName: "claude",
+      agent: {},
+      state,
+      sessionKey: "testSessionId",
+      agentNameKey: "testAgentName",
+      workspaceDir: tmp,
+      log: () => {},
+      executeFn: (opts) => {
+        capturedOpts.push(opts);
+        callCount++;
+        if (callCount === 1) throw authErr;
+        return Promise.resolve({ stdout: "ok" });
+      },
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(result.stdout, "ok");
+    assert.equal(state.sessionsDisabled, true);
+    assert.deepEqual(
+      capturedOpts[1],
+      {},
+      "retry should use no session (sessionsDisabled)",
+    );
+  });
+
+  it("retries several consecutive session collision errors before succeeding", async () => {
+    await saveState(tmp, {});
+    const state = await loadState(tmp);
+
+    const collisionErr = new Error(
+      "Command aborted after fatal stderr match [auth]: is already in use",
+    );
+    collisionErr.name = "CommandFatalStderrError";
+    collisionErr.category = "auth";
+    collisionErr.pattern = "is already in use";
+
+    let callCount = 0;
+    const result = await withSessionResume({
+      agentName: "claude",
+      agent: {},
+      state,
+      sessionKey: "testSessionId",
+      agentNameKey: "testAgentName",
+      workspaceDir: tmp,
+      log: () => {},
+      executeFn: (_opts) => {
+        callCount++;
+        if (callCount < 4) throw collisionErr;
+        return Promise.resolve({ stdout: "ok" });
+      },
+    });
+
+    assert.equal(callCount, 4);
+    assert.equal(result.stdout, "ok");
+  });
+
+  it("executeWithSessionAuthRetry passes recoveryAttempt to executeFn", async () => {
+    await saveState(tmp, { planningSessionId: "sid-1" });
+    const state = await loadState(tmp);
+    const attempts = [];
+    const authErr = new Error("auth");
+    authErr.name = "CommandFatalStderrError";
+    authErr.category = "auth";
+
+    await executeWithSessionAuthRetry({
+      state,
+      sessionKey: "planningSessionId",
+      workspaceDir: tmp,
+      log: () => {},
+      initialSessionOpts: { sessionId: state.planningSessionId },
+      maxSessionAuthRecoveries: 2,
+      executeFn: (_so, meta) => {
+        attempts.push(meta.recoveryAttempt);
+        if (attempts.length < 2) throw authErr;
+        return Promise.resolve({ stdout: "ok" });
+      },
+    });
+
+    assert.deepEqual(attempts, [0, 1]);
+  });
+
+  it("stops after max session auth recoveries", async () => {
+    await saveState(tmp, {});
+    const state = await loadState(tmp);
+
+    const authErr = new Error("auth");
+    authErr.name = "CommandFatalStderrError";
+    authErr.category = "auth";
+
+    let callCount = 0;
     await assert.rejects(
       () =>
         withSessionResume({
@@ -214,12 +329,16 @@ describe("withSessionResume", () => {
           agentNameKey: "testAgentName",
           workspaceDir: tmp,
           log: () => {},
+          maxSessionAuthRecoveries: 2,
           executeFn: () => {
+            callCount++;
             throw authErr;
           },
         }),
       (err) => err === authErr,
     );
+
+    assert.equal(callCount, 3, "initial attempt + 2 recoveries");
   });
 
   it("propagates non-auth errors without retry", async () => {

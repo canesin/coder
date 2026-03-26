@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -74,6 +80,98 @@ test("parsePlanVerdict: takes last verdict when multiple sections exist", () => 
   assert.equal(parsePlanVerdict(md), "APPROVED");
 });
 
+test("parsePlanVerdict: narrative preamble before verdict keyword", () => {
+  const md = `## Verdict
+
+The plan addresses the core requirements adequately.
+There are no critical issues that would prevent implementation.
+
+**APPROVED**`;
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
+test("parsePlanVerdict: Gemini 'One of:' echo before actual verdict", () => {
+  const md = `## Verdict
+
+One of:
+- REJECT
+- REVISE
+- PROCEED WITH CAUTION
+- APPROVED
+
+REVISE`;
+  // Last-position-wins: REVISE appears after the echoed option list.
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: 2 categories in pass-2 uses last-position-wins", () => {
+  // Two categories (REVISE, APPROVED) — no line starts with a keyword (pass-1 misses),
+  // but last-position-wins in pass-2 picks APPROVED. With >= 3 threshold, this resolves.
+  const md = `## Verdict
+The plan does not need to be REVISEd. It is APPROVED.`;
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
+test("parsePlanVerdict: echoed template without final verdict returns UNKNOWN", () => {
+  // Truncated output that only contains the echoed prompt template —
+  // no standalone verdict, and pass 2 finds 3+ categories → UNKNOWN.
+  const md = `## Verdict
+One of:
+- REJECT (major rework needed)
+- REVISE (fix issues first)
+- PROCEED WITH CAUTION (minor)
+- APPROVED (rare)`;
+  assert.equal(parsePlanVerdict(md), "UNKNOWN");
+});
+
+test("parsePlanVerdict: verdict keyword on line after narrative, before next heading", () => {
+  const md = `## 4. Critical Issues
+None found.
+
+## 5. Verdict
+After careful review of the implementation plan, the approach is sound
+and addresses all requirements from the issue specification.
+
+REVISE
+
+## 6. Summary
+Overall good plan.`;
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: verdict with dash-separated explanation", () => {
+  const md = `## Verdict
+APPROVED - proceed with caution around rollout`;
+  // Keyword followed by separator (dash) matches pass 1.
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
+test("parsePlanVerdict: verdict keyword then prose mentioning another keyword", () => {
+  const md = `## Verdict
+REVISE
+
+Not approved until the API surface is verified.`;
+  // Line-start pass finds REVISE first (bottom-up: prose line doesn't start
+  // with a keyword, then REVISE does). "approved" in prose is not a false positive.
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: explanation starting with keyword does not override verdict", () => {
+  const md = `## Verdict
+REVISE
+
+Approved once the API surface is verified.`;
+  // "Approved once..." is a sentence, not a standalone keyword — pass 1 skips it.
+  assert.equal(parsePlanVerdict(md), "REVISE");
+});
+
+test("parsePlanVerdict: verdict embedded in prose falls back to last-position-wins", () => {
+  const md = `## Verdict
+The plan is APPROVED.`;
+  // No line starts with a keyword, so pass 2 finds APPROVED.
+  assert.equal(parsePlanVerdict(md), "APPROVED");
+});
+
 // ---------------------------------------------------------------------------
 // runPlanLoop
 // ---------------------------------------------------------------------------
@@ -113,6 +211,7 @@ test("runPlanLoop: APPROVED on round 1 runs each machine once", async () => {
     });
 
     assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, undefined);
     assert.equal(planCount, 1);
     assert.equal(reviewCount, 1);
     assert.equal(capturedCritique, "");
@@ -242,9 +341,118 @@ test("runPlanLoop: stops at maxRounds even with repeated REVISE", async () => {
       maxRounds: 3,
     });
 
+    assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
+    assert.equal(planCount, 3);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: repeated UNKNOWN proceeds with planExhausted on final round", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        return {
+          status: "ok",
+          data: { critiqueMd: "garbled", verdict: "UNKNOWN" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+      maxRounds: 2,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: repeated REJECT returns failed with planReviewExhausted on final round", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        return {
+          status: "ok",
+          data: { critiqueMd: "unsound", verdict: "REJECT" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+      maxRounds: 3,
+    });
+
     assert.equal(result.status, "failed");
     assert.equal(result.planReviewExhausted, true);
-    assert.equal(planCount, 3);
+    assert.equal(result.planExhausted, undefined);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: single-round REVISE proceeds with planExhausted", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        return {
+          status: "ok",
+          data: { critiqueMd: "bad plan", verdict: "REVISE" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+      maxRounds: 1,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.planExhausted, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -323,6 +531,50 @@ test("runPlanLoop: plan machine error aborts and returns failed", async () => {
 
     assert.equal(result.status, "failed");
     assert.match(result.error, /plan failed/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("runPlanLoop: cancelToken.cancelled before round > 0 preserves PLAN.md", async () => {
+  const tmp = makeTmp();
+  try {
+    const ctx = makeCtx(tmp);
+    const runner = makeRunner(ctx);
+
+    // Pre-create PLAN.md so we can verify it survives cancellation
+    const planPath = path.join(tmp, ".coder", "artifacts", "PLAN.md");
+    writeFileSync(planPath, "# Existing plan\n", "utf8");
+
+    const mockPlan = {
+      name: "develop.planning",
+      async run() {
+        return { status: "ok", data: { planMd: "written" }, durationMs: 0 };
+      },
+    };
+    const mockReview = {
+      name: "develop.plan_review",
+      async run() {
+        // After round 0 review, cancel the token so round 1 sees it
+        ctx.cancelToken.cancelled = true;
+        return {
+          status: "ok",
+          data: { critiqueMd: "needs work", verdict: "REVISE" },
+          durationMs: 0,
+        };
+      },
+    };
+
+    const result = await runPlanLoop(runner, ctx, {
+      planningMachine: mockPlan,
+      planReviewMachine: mockReview,
+    });
+
+    assert.equal(result.status, "cancelled");
+    assert.ok(
+      existsSync(planPath),
+      "PLAN.md must not be deleted on cancellation",
+    );
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
