@@ -128,12 +128,7 @@ async function fetchMergeRequestsViaApi(repoRoot, _log, opts = {}) {
     const parsed = JSON.parse(res.stdout);
     return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
-    if (
-      err?.code === "ABORT_ERR" ||
-      err?.name === "AbortError" ||
-      err?.code === "ETIMEDOUT"
-    )
-      throw err;
+    if (err?.code === "ABORT_ERR" || err?.name === "AbortError") throw err;
     return [];
   }
 }
@@ -287,12 +282,7 @@ export async function fetchOpenPrBranches(
     }
     return result;
   } catch (err) {
-    if (
-      err?.code === "ABORT_ERR" ||
-      err?.name === "AbortError" ||
-      err?.code === "ETIMEDOUT"
-    )
-      throw err;
+    if (err?.code === "ABORT_ERR" || err?.name === "AbortError") throw err;
     if (log) {
       log({ event: "open_prs_fetch_failed", error: err.message });
     }

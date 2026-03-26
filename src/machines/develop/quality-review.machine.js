@@ -230,7 +230,7 @@ export default defineMachine({
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
-    await ensureBranch(repoRoot, state.branch);
+    await ensureBranch(repoRoot, state.branch, { signal: ctx.signal });
     const baseBranch =
       state.baseBranch || (await detectDefaultBranch(repoRoot));
 
