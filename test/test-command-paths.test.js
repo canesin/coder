@@ -251,6 +251,23 @@ test("resolveMonorepoTestCwd uses workspace when scripts live at workspace root 
   );
 });
 
+test("resolveMonorepoTestCwd respects cd context — does not flip cwd when cd makes path reachable", () => {
+  // Scenario: repo=ws/api, command is `cd .. && bash scripts/t.sh`
+  // The `cd ..` moves to ws root where scripts/t.sh lives.
+  // resolveMonorepoTestCwd should keep repoDir as cwd (the cd handles it).
+  const ws = mkdtempSync(path.join(os.tmpdir(), "tcp-cd-ctx-"));
+  const api = path.join(ws, "api");
+  mkdirSync(api, { recursive: true });
+  mkdirSync(path.join(ws, "scripts"), { recursive: true });
+  writeFileSync(path.join(ws, "scripts", "t.sh"), "#\n");
+  // With cd .., the script is reachable from repo root — no cwd flip needed
+  assert.equal(
+    resolveMonorepoTestCwd(api, ws, ["cd .. && bash scripts/t.sh"]),
+    path.resolve(api),
+    "should stay at repo root when cd .. makes the path reachable",
+  );
+});
+
 test("assertTestCommandPathsExist passes for workspace scripts when repo_path is subdir", () => {
   const ws = mkdtempSync(path.join(os.tmpdir(), "tcp-wsmeta-"));
   const api = path.join(ws, "api");

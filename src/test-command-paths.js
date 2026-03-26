@@ -131,11 +131,7 @@ function isLikelyScriptPath(token) {
   if (!inner || inner.startsWith("-") || inner.startsWith("/")) return false;
   if (/[$`\\]/.test(inner)) return false;
   if (/["']/.test(inner)) return false;
-  if (
-    !inner.includes("/") &&
-    !inner.startsWith("./") &&
-    !SCRIPT_EXT.test(inner)
-  ) {
+  if (!inner.includes("/") && !SCRIPT_EXT.test(inner)) {
     return false;
   }
   return true;
@@ -254,11 +250,56 @@ export function splitAndChainSegmentsRespectingQuotes(cmd) {
 }
 
 /**
+ * Collect script paths from a command, respecting `cd` segments so that
+ * `cd .. && bash scripts/t.sh` yields `scripts/t.sh` resolved relative to the
+ * directory *after* the `cd`, not the original cwd.
+ *
+ * Returns `{ rel, resolvedFrom }` pairs where `resolvedFrom` is the effective
+ * cwd at the point the path was encountered.
+ * @param {string} cmd
+ * @param {string} startCwd - initial cwd for this command
+ * @returns {{ rel: string, resolvedFrom: string }[]}
+ */
+function collectPathsWithCdContext(cmd, startCwd) {
+  if (typeof cmd !== "string" || !cmd.trim()) return [];
+  const results = [];
+  const seen = new Set();
+
+  const segments = splitAndChainSegmentsRespectingQuotes(cmd);
+  let cwd = startCwd;
+  for (const segment of segments) {
+    const stripped = stripTrailingRedirects(segment);
+    const { applied, cwd: nextCwd } = applyCdSegment(stripped, cwd);
+    if (applied) {
+      cwd = nextCwd;
+      continue;
+    }
+    for (const rel of collectRelativePathsFromShellCommand(segment)) {
+      if (!rel.includes("..")) {
+        const key = `${cwd}\0${rel}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          results.push({ rel, resolvedFrom: cwd });
+        }
+      }
+    }
+    // Recurse into bash -c bodies with current cwd
+    for (const inner of extractBashCInnerStrings(segment)) {
+      results.push(...collectPathsWithCdContext(inner, cwd));
+    }
+  }
+  return results;
+}
+
+/**
  * When an issue's repo_path is a subdirectory of the workspace, test commands in
  * workspace-level coder.json often reference paths (e.g. scripts/test.sh) that
  * exist under the workspace root but not under the scoped repo root. If every
  * collected script path exists under the workspace but at least one is missing
  * under the repo root, run tests with cwd = workspace root.
+ *
+ * Respects `cd` segments: `cd .. && bash scripts/t.sh` resolves `scripts/t.sh`
+ * relative to the directory after `cd ..`, not the original cwd.
  *
  * @param {string} repoDir - Scoped repo root (repo_path)
  * @param {string | undefined} workspaceDir - Workspace directory if known
@@ -273,18 +314,21 @@ export function resolveMonorepoTestCwd(repoDir, workspaceDir, commands) {
   const relToWs = path.relative(wsAbs, repoAbs);
   if (relToWs.startsWith("..") || relToWs === "") return repoAbs;
 
-  const allRels = new Set();
+  // Collect paths with their effective cwd (after cd segments)
+  const allPaths = [];
   for (const cmd of commands) {
-    for (const rel of collectRelativePathsFromShellCommand(cmd)) {
-      if (!rel.includes("..")) allRels.add(rel);
-    }
+    allPaths.push(...collectPathsWithCdContext(cmd, repoAbs));
   }
-  if (allRels.size === 0) return repoAbs;
+  if (allPaths.length === 0) return repoAbs;
 
   let needsWorkspace = false;
-  for (const rel of allRels) {
+  for (const { rel, resolvedFrom } of allPaths) {
+    const inResolved = existsSync(path.join(resolvedFrom, rel));
+    // Re-check against both roots to decide repo vs workspace
     const inRepo = existsSync(path.join(repoAbs, rel));
     const inWs = existsSync(path.join(wsAbs, rel));
+    // If the path exists at its effective cwd, the command is fine as-is
+    if (inResolved) continue;
     if (inRepo && !inWs) return repoAbs;
     if (!inRepo && inWs) needsWorkspace = true;
   }

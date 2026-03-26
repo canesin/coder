@@ -43,7 +43,7 @@ function tryEvictStaleLock(lockPath, opts) {
     const pidGone = alive === false || alive === null;
     const shouldEvict = evictOnlyDeadPid
       ? pidGone
-      : age > staleLockMs || !isPidAlive(content.pid);
+      : age > staleLockMs || pidGone;
     if (shouldEvict) {
       try {
         unlinkSync(lockPath);

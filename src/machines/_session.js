@@ -226,6 +226,7 @@ export async function withSessionResume({
         return await executeFn({});
       }
 
+      // Message-level collision (not matched by pattern) — disable sessions entirely
       const msg = String(err.message ?? "");
       if (
         msg.includes("is already in use") &&
@@ -242,41 +243,23 @@ export async function withSessionResume({
         return await executeFn({});
       }
 
-      if (
-        err.pattern === "is already in use" &&
-        recoveryCount < maxSessionAuthRecoveries
-      ) {
-        log({
-          event: "session_auth_failed",
-          sessionId: state[sessionKey],
-          wasCreating: !!sessionOpts.sessionId,
-          recoveryAttempt: recoveryCount + 1,
-          maxRecoveries: maxSessionAuthRecoveries,
-        });
-        recoveryCount++;
-        state[sessionKey] = makeClaudeSessionId(workflowRunId);
-        await saveState(workspaceDir, state);
-        sessionOpts = { sessionId: state[sessionKey] };
+      // Retry with fresh session ID (pattern collision gets backoff)
+      if (recoveryCount >= maxSessionAuthRecoveries) throw err;
+      const isCollision = isSessionCollisionError(err);
+      log({
+        event: "session_auth_failed",
+        sessionId: state[sessionKey],
+        wasCreating: !!sessionOpts.sessionId,
+        recoveryAttempt: recoveryCount + 1,
+        maxRecoveries: maxSessionAuthRecoveries,
+      });
+      recoveryCount++;
+      state[sessionKey] = makeClaudeSessionId(workflowRunId);
+      await saveState(workspaceDir, state);
+      sessionOpts = { sessionId: state[sessionKey] };
+      if (isCollision) {
         await backoffAfterSessionCollision(recoveryCount);
-        continue;
       }
-
-      if (recoveryCount < maxSessionAuthRecoveries) {
-        log({
-          event: "session_auth_failed",
-          sessionId: state[sessionKey],
-          wasCreating: !!sessionOpts.sessionId,
-          recoveryAttempt: recoveryCount + 1,
-          maxRecoveries: maxSessionAuthRecoveries,
-        });
-        recoveryCount++;
-        state[sessionKey] = makeClaudeSessionId(workflowRunId);
-        await saveState(workspaceDir, state);
-        sessionOpts = { sessionId: state[sessionKey] };
-        continue;
-      }
-
-      throw err;
     }
   }
 }
