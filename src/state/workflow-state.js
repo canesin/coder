@@ -42,9 +42,13 @@ function setWriteChain(key, promise) {
   );
 }
 
-/** Await all pending state writes for a workspace before cleanup/exit. */
-export function drainWriteChain(key) {
-  return _writeChains.get(key) || Promise.resolve();
+/**
+ * Wait for the pending write-chain for a workspace to settle.
+ * Useful after stopping a workflow actor whose subscribe callback
+ * fires fire-and-forget saveWorkflowSnapshot() calls.
+ */
+export function drainWriteChain(workspaceDir) {
+  return getWriteChain(workspaceDir);
 }
 
 function nowIso() {

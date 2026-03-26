@@ -9,6 +9,7 @@ import {
   startWorkflowActor,
 } from "../src/mcp/tools/workflows.js";
 import {
+  drainWriteChain,
   loadLoopState,
   loadWorkflowSnapshot,
   saveLoopState,
@@ -76,6 +77,17 @@ async function runLauncherNormalCompletionFixture(result, opts = {}) {
       agentPool: mockPool,
       workflow: "develop",
     });
+
+    // Drain guard: write chain must be fully settled after normal completion.
+    // If this resolves a pending promise, it means applyLauncherNormalCompletion
+    // returned before its writes finished — a regression we want to catch.
+    const before = Date.now();
+    await drainWriteChain(ws);
+    const drainMs = Date.now() - before;
+    assert.ok(
+      drainMs < 5,
+      `write chain was not drained by applyLauncherNormalCompletion (took ${drainMs}ms to settle)`,
+    );
 
     const loop = await loadLoopState(ws);
     const snap = await loadWorkflowSnapshot(ws);
