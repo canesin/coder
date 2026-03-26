@@ -850,15 +850,6 @@ test("hard failure when git pull --ff-only fails with non-stale error", async ()
     execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
     execSync(`git remote add origin ${bareDir}`, { cwd: ws, stdio: "ignore" });
     execSync("git push -u origin main", { cwd: ws, stdio: "ignore" });
-    // Ensure tracking is explicit (some git versions don't persist -u on init'd repos)
-    execSync("git config branch.main.remote origin", {
-      cwd: ws,
-      stdio: "ignore",
-    });
-    execSync("git config branch.main.merge refs/heads/main", {
-      cwd: ws,
-      stdio: "ignore",
-    });
 
     // Push a diverging commit via a second clone
     execSync(`git clone ${bareDir} ${clone2}`, { stdio: "ignore" });
@@ -876,11 +867,14 @@ test("hard failure when git pull --ff-only fails with non-stale error", async ()
     });
     execSync("git push", { cwd: clone2, stdio: "ignore" });
 
-    // Create a local commit in ws that diverges from the remote
+    // Create a local commit in ws that diverges from the remote.
+    // Then fetch so that origin/main is up-to-date — git pull inside
+    // runDevelopLoop needs to see the diverged ref to fail with --ff-only.
     execSync("git commit --allow-empty -m 'local diverge'", {
       cwd: ws,
       stdio: "ignore",
     });
+    execSync("git fetch origin", { cwd: ws, stdio: "ignore" });
 
     const issuesDir = writeLocalManifest(ws, [
       { id: "A", title: "Issue A", difficulty: 1 },
