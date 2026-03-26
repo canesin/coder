@@ -772,9 +772,9 @@ test("glabMrListArgs: exact args per docs.gitlab.com/cli/mr/list", () => {
 // fetchOpenPrBranches: graceful fallback
 // ---------------------------------------------------------------------------
 
-test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", () => {
+test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", async () => {
   const logEvents = [];
-  const result = fetchOpenPrBranches("/nonexistent/repo", "main", (e) =>
+  const result = await fetchOpenPrBranches("/nonexistent/repo", "main", (e) =>
     logEvents.push(e),
   );
 
@@ -785,6 +785,18 @@ test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", () 
         e.event === "open_prs_fetch_failed" || e.event === "open_prs_fetched",
     ),
     "Should log fetch attempt or failure",
+  );
+});
+
+test("fetchOpenPrBranches: respects AbortSignal", async () => {
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(
+    () =>
+      fetchOpenPrBranches("/nonexistent/repo", "main", () => {}, {
+        signal: ac.signal,
+      }),
+    (err) => err.code === "ABORT_ERR" || err.name === "AbortError",
   );
 });
 

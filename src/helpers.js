@@ -48,7 +48,7 @@ export function spawnAsync(cmd, args, opts = {}) {
 }
 
 /** Throw if a spawnAsync result carries an abort or timeout error. */
-function throwIfAborted(res) {
+export function throwIfAborted(res) {
   if (
     res.error &&
     (res.error.code === "ABORT_ERR" || res.error.code === "ETIMEDOUT")

@@ -1,37 +1,53 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
-import { detectDefaultBranch, detectRemoteType } from "../helpers.js";
+import {
+  detectDefaultBranch,
+  detectRemoteType,
+  spawnAsync,
+  throwIfAborted,
+} from "../helpers.js";
 import { resolveRepoRoot } from "../machines/develop/_shared.js";
 import { backupKeyFor, clearStateAndArtifacts } from "../state/issue-backup.js";
 import { statePathFor } from "../state/workflow-state.js";
 
 /** Unstage, restore tracked files, and remove untracked files. Returns true only if all steps succeeded. */
-function discardWorktreeChanges(repoRoot) {
-  const resetRes = spawnSync("git", ["reset"], {
+async function discardWorktreeChanges(repoRoot, opts = {}) {
+  const resetRes = await spawnAsync("git", ["reset"], {
     cwd: repoRoot,
     encoding: "utf8",
+    signal: opts.signal,
   });
+  throwIfAborted(resetRes);
   if (resetRes.status !== 0) return false;
 
-  const diffRes = spawnSync("git", ["diff", "--name-only"], {
+  const diffRes = await spawnAsync("git", ["diff", "--name-only"], {
     cwd: repoRoot,
     encoding: "utf8",
+    signal: opts.signal,
   });
+  throwIfAborted(diffRes);
   if (diffRes.status !== 0) return false;
   const hasTrackedChanges = !!(diffRes.stdout || "").trim();
   if (hasTrackedChanges) {
-    const coRes = spawnSync("git", ["checkout", "--", "."], {
+    const coRes = await spawnAsync("git", ["checkout", "--", "."], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal: opts.signal,
     });
+    throwIfAborted(coRes);
     if (coRes.status !== 0) return false;
   }
 
-  const cleanRes = spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  const cleanRes = await spawnAsync(
+    "git",
+    ["clean", "-fd", "--exclude=.coder/"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      signal: opts.signal,
+    },
+  );
+  throwIfAborted(cleanRes);
   return cleanRes.status === 0;
 }
 
@@ -82,14 +98,16 @@ export function extractGitLabProjectPath(url) {
  * Supports gitlab.com and self-hosted instances.
  * @param {string} repoRoot
  * @param {(e: object) => void} [log]
- * @returns {Array<{ source_branch: string, iid: number, title: string }>}
+ * @returns {Promise<Array<{ source_branch: string, iid: number, title: string }>>}
  */
-function fetchMergeRequestsViaApi(repoRoot, _log) {
+async function fetchMergeRequestsViaApi(repoRoot, _log, opts = {}) {
   try {
-    const urlRes = spawnSync("git", ["remote", "get-url", "origin"], {
+    const urlRes = await spawnAsync("git", ["remote", "get-url", "origin"], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal: opts.signal,
     });
+    throwIfAborted(urlRes);
     if (urlRes.status !== 0) return [];
     const url = (urlRes.stdout || "").trim();
     const projectPathRaw = extractGitLabProjectPath(url);
@@ -97,18 +115,20 @@ function fetchMergeRequestsViaApi(repoRoot, _log) {
     const projectPath = encodeURIComponent(
       projectPathRaw.replace(/\.git$/, ""),
     );
-    const res = spawnSync(
+    const res = await spawnAsync(
       "glab",
       [
         "api",
         `projects/${projectPath}/merge_requests?state=opened&per_page=50`,
       ],
-      { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
+      { cwd: repoRoot, encoding: "utf8", timeout: 15000, signal: opts.signal },
     );
+    throwIfAborted(res);
     if (res.status !== 0 || !res.stdout) return [];
     const parsed = JSON.parse(res.stdout);
     return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  } catch (err) {
+    if (err?.code === "ABORT_ERR" || err?.name === "AbortError") throw err;
     return [];
   }
 }
@@ -128,10 +148,16 @@ export function isGlabMrListFormatMismatchStderr(stderr) {
  * @param {string} repoRoot
  * @param {string} defaultBranch
  * @param {(e: object) => void} log
- * @returns {Array<{ branch: string, issueId: string, title: string, diffStat: string }>}
+ * @returns {Promise<Array<{ branch: string, issueId: string, title: string, diffStat: string }>>}
  */
-export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
+export async function fetchOpenPrBranches(
+  repoRoot,
+  defaultBranch,
+  log,
+  opts = {},
+) {
   try {
+    opts.signal?.throwIfAborted();
     const platform = detectRemoteType(repoRoot);
     let prs;
 
@@ -139,11 +165,13 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
       let mrs = [];
       const argsList = [glabMrListArgs(), glabMrListArgsLegacy()];
       for (const args of argsList) {
-        const res = spawnSync("glab", args, {
+        const res = await spawnAsync("glab", args, {
           cwd: repoRoot,
           encoding: "utf8",
           timeout: 15000,
+          signal: opts.signal,
         });
+        throwIfAborted(res);
         if (res.status === 0 && res.stdout) {
           try {
             const parsed = JSON.parse(res.stdout);
@@ -164,7 +192,7 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
         }
       }
       if (mrs.length === 0) {
-        mrs = fetchMergeRequestsViaApi(repoRoot, log);
+        mrs = await fetchMergeRequestsViaApi(repoRoot, log, opts);
       }
       prs = mrs.map((mr) => ({
         branch: mr.source_branch,
@@ -173,7 +201,7 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
         fetchRef: `refs/merge-requests/${mr.iid}/head`,
       }));
     } else {
-      const res = spawnSync(
+      const res = await spawnAsync(
         "gh",
         [
           "pr",
@@ -185,8 +213,14 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
           "--limit",
           "50",
         ],
-        { cwd: repoRoot, encoding: "utf8", timeout: 15000 },
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 15000,
+          signal: opts.signal,
+        },
       );
+      throwIfAborted(res);
       if (res.status !== 0 || !res.stdout) {
         if (log)
           log({
@@ -209,17 +243,29 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
       // Use the platform-specific PR ref to fetch; this works for both
       // same-repo and fork-based PRs without needing the branch on origin.
       const localRef = `pr-fetch/${pr.id}`;
-      const fetchRes = spawnSync(
+      const fetchRes = await spawnAsync(
         "git",
         ["fetch", "origin", `${pr.fetchRef}:${localRef}`],
-        { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 10000,
+          signal: opts.signal,
+        },
       );
+      throwIfAborted(fetchRes);
       if (fetchRes.status !== 0) continue;
-      const stat = spawnSync(
+      const stat = await spawnAsync(
         "git",
         ["diff", "--stat", `${defaultBranch}...${localRef}`],
-        { cwd: repoRoot, encoding: "utf8", timeout: 10000 },
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 10000,
+          signal: opts.signal,
+        },
       );
+      throwIfAborted(stat);
       if (stat.status !== 0) continue;
       const diffStat = (stat.stdout || "").trim();
       if (!diffStat) continue;
@@ -236,6 +282,7 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
     }
     return result;
   } catch (err) {
+    if (err?.code === "ABORT_ERR" || err?.name === "AbortError") throw err;
     if (log) {
       log({ event: "open_prs_fetch_failed", error: err.message });
     }
@@ -254,7 +301,7 @@ export function fetchOpenPrBranches(repoRoot, defaultBranch, log) {
  * @param {Array} [opts.issues] - Current issue queue for backup pruning
  * @param {boolean} [opts.destructiveReset] - When true, delete state, artifacts, and all backups
  */
-export function ensureCleanLoopStart(
+export async function ensureCleanLoopStart(
   workspaceDir,
   repoRoot,
   defaultBranch,
@@ -357,10 +404,16 @@ export function ensureCleanLoopStart(
   }
 
   // 4. Ensure git is on the default branch
-  const branchRes = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  const branchRes = await spawnAsync(
+    "git",
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      signal: opts.signal,
+    },
+  );
+  throwIfAborted(branchRes);
   if (branchRes.status !== 0) {
     const err = (branchRes.stderr || "").trim().slice(0, 200);
     log({
@@ -374,28 +427,33 @@ export function ensureCleanLoopStart(
   }
   const currentBranch = (branchRes.stdout || "").trim();
   if (currentBranch && currentBranch !== defaultBranch) {
-    const wipStatus = spawnSync("git", ["status", "--porcelain"], {
+    const wipStatus = await spawnAsync("git", ["status", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal: opts.signal,
     });
+    throwIfAborted(wipStatus);
     const hasDirty = !!(wipStatus.stdout || "").trim();
 
     if (hasDirty && knownBranches.has(currentBranch)) {
       // Agent-managed branch from a prior run: preserve uncommitted WIP
-      const addRes = spawnSync("git", ["add", "-A"], {
+      const addRes = await spawnAsync("git", ["add", "-A"], {
         cwd: repoRoot,
         encoding: "utf8",
+        signal: opts.signal,
       });
+      throwIfAborted(addRes);
       if (addRes.status !== 0) {
         throw new Error(
           `Loop startup cleanup failed: git add failed: ${(addRes.stderr || "").trim().slice(0, 200)}`,
         );
       }
-      const commitRes = spawnSync(
+      const commitRes = await spawnAsync(
         "git",
         ["commit", "-m", `wip: interrupted work on ${currentBranch}`],
-        { cwd: repoRoot, encoding: "utf8" },
+        { cwd: repoRoot, encoding: "utf8", signal: opts.signal },
       );
+      throwIfAborted(commitRes);
       if (commitRes.status === 0) {
         cleaned.wipCommitted = true;
       } else {
@@ -404,7 +462,9 @@ export function ensureCleanLoopStart(
         );
       }
     } else if (hasDirty) {
-      const discardOk = discardWorktreeChanges(repoRoot);
+      const discardOk = await discardWorktreeChanges(repoRoot, {
+        signal: opts.signal,
+      });
       if (!discardOk) {
         log({
           event: "loop_startup_cleanup_failed",
@@ -417,10 +477,12 @@ export function ensureCleanLoopStart(
       }
     }
 
-    const coRes = spawnSync("git", ["checkout", defaultBranch], {
+    const coRes = await spawnAsync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal: opts.signal,
     });
+    throwIfAborted(coRes);
     if (coRes.status !== 0) {
       const err = (coRes.stderr || "").trim().slice(0, 200);
       log({
@@ -436,15 +498,17 @@ export function ensureCleanLoopStart(
   }
 
   // 4. Clean any remaining dirty files on the default branch
-  const status = spawnSync("git", ["status", "--porcelain"], {
+  const status = await spawnAsync("git", ["status", "--porcelain"], {
     cwd: repoRoot,
     encoding: "utf8",
+    signal: opts.signal,
   });
+  throwIfAborted(status);
   const dirtyLines = (status.stdout || "")
     .split("\n")
     .filter((l) => l.trim() && !l.slice(3).startsWith(".coder/"));
   if (dirtyLines.length > 0) {
-    const ok = discardWorktreeChanges(repoRoot);
+    const ok = await discardWorktreeChanges(repoRoot, { signal: opts.signal });
     if (!ok) {
       log({
         event: "loop_startup_cleanup_failed",
@@ -498,10 +562,11 @@ export async function resetForNextIssue(
   // Git cleanup
   const repoRoot = resolveRepoRoot(workspaceDir, repoPath);
   if (existsSync(repoRoot)) {
-    const preStatus = spawnSync("git", ["status", "--porcelain"], {
+    const preStatus = await spawnAsync("git", ["status", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf8",
     });
+    throwIfAborted(preStatus);
     const hasDirtyFiles = !!(preStatus.stdout || "").trim();
 
     if (
@@ -509,27 +574,29 @@ export async function resetForNextIssue(
       (issueStatus === "failed" || issueStatus === "skipped")
     ) {
       // Preserve partial work on the issue branch for failed/skipped issues.
-      const addRes = spawnSync("git", ["add", "-A"], {
+      const addRes = await spawnAsync("git", ["add", "-A"], {
         cwd: repoRoot,
         encoding: "utf8",
       });
+      throwIfAborted(addRes);
       if (addRes.status !== 0) {
         throw new Error(
           `resetForNextIssue: git add failed: ${(addRes.stderr || "").trim().slice(0, 200)}`,
         );
       }
-      const commitRes = spawnSync(
+      const commitRes = await spawnAsync(
         "git",
         ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
         { cwd: repoRoot, encoding: "utf8" },
       );
+      throwIfAborted(commitRes);
       if (commitRes.status !== 0) {
         throw new Error(
           `resetForNextIssue: could not preserve WIP (commit failed): ${(commitRes.stderr || "").trim().slice(0, 150)}`,
         );
       }
     } else if (hasDirtyFiles) {
-      if (!discardWorktreeChanges(repoRoot)) {
+      if (!(await discardWorktreeChanges(repoRoot))) {
         throw new Error(
           "resetForNextIssue: could not discard worktree changes",
         );
@@ -537,10 +604,11 @@ export async function resetForNextIssue(
     }
 
     const defaultBranch = await detectDefaultBranch(repoRoot);
-    const checkoutRes = spawnSync("git", ["checkout", defaultBranch], {
+    const checkoutRes = await spawnAsync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
     });
+    throwIfAborted(checkoutRes);
     if (checkoutRes.status !== 0) {
       throw new Error(
         `resetForNextIssue: git checkout ${defaultBranch} failed: ${(checkoutRes.stderr || "").trim().slice(0, 200)}`,
@@ -549,10 +617,15 @@ export async function resetForNextIssue(
 
     // Always remove untracked files after switching to the default branch
     // to prevent them from leaking into the next issue's workspace.
-    const cleanRes = spawnSync("git", ["clean", "-fd", "--exclude=.coder/"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
+    const cleanRes = await spawnAsync(
+      "git",
+      ["clean", "-fd", "--exclude=.coder/"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+      },
+    );
+    throwIfAborted(cleanRes);
     if (cleanRes.status !== 0) {
       throw new Error(
         `resetForNextIssue: git clean failed: ${(cleanRes.stderr || "").trim().slice(0, 200)}`,
@@ -566,17 +639,19 @@ export async function resetForNextIssue(
       // but ensures staged/worktree match HEAD when we skipped discard (no dirty files).
       // Skip when repo has no tracked files (e.g. empty initial commit) — restore
       // would fail with "pathspec '.' did not match any file(s) known to git".
-      const lsRes = spawnSync("git", ["ls-files"], {
+      const lsRes = await spawnAsync("git", ["ls-files"], {
         cwd: repoRoot,
         encoding: "utf8",
       });
+      throwIfAborted(lsRes);
       const hasTrackedFiles = !!(lsRes.stdout || "").trim();
       if (hasTrackedFiles) {
-        const restoreRes = spawnSync(
+        const restoreRes = await spawnAsync(
           "git",
           ["restore", "--staged", "--worktree", "."],
           { cwd: repoRoot, encoding: "utf8" },
         );
+        throwIfAborted(restoreRes);
         if (restoreRes.status !== 0) {
           throw new Error(
             `resetForNextIssue: git restore failed: ${(restoreRes.stderr || "").trim().slice(0, 200)}`,

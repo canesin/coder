@@ -1040,7 +1040,7 @@ export async function runDevelopLoop(opts, ctx) {
     priorQueue.map((q) => q.branch).filter(Boolean),
   );
   try {
-    ensureCleanLoopStart(
+    await ensureCleanLoopStart(
       ctx.workspaceDir,
       loopRepoRoot,
       loopDefaultBranch,
@@ -1385,7 +1385,7 @@ export async function runDevelopLoop(opts, ctx) {
     // Build active branch context for conflict detection (skipped when disabled).
     let activeBranches = [];
     if (ctx.config?.workflow?.conflictDetection !== false) {
-      const openPrBranches = fetchOpenPrBranches(
+      const openPrBranches = await fetchOpenPrBranches(
         issueRepoRoot,
         issueDefaultBranch,
         ctx.log,
