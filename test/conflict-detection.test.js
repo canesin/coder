@@ -5,8 +5,10 @@ import path from "node:path";
 import test from "node:test";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import {
+  extractGitLabProjectPath,
   fetchOpenPrBranches,
   glabMrListArgs,
+  isGlabMrListFormatMismatchStderr,
   runDevelopPipeline,
   runPlanLoop,
 } from "../src/workflows/develop.workflow.js";
@@ -711,25 +713,67 @@ test("runDevelopPipeline: detects CONFLICT_DETECTED with blank line between bull
 });
 
 // ---------------------------------------------------------------------------
-// fetchOpenPrBranches: glab args (docs.gitlab.com/cli/mr/list)
+// extractGitLabProjectPath: self-hosted GitLab URL parsing
 // ---------------------------------------------------------------------------
 
-test("glabMrListArgs: exact args per docs.gitlab.com/cli/mr/list", () => {
-  const args = glabMrListArgs();
-  assert.deepEqual(
-    args,
-    ["mr", "list", "--output", "json"],
-    "must match exact CLI form; no --state",
+test("extractGitLabProjectPath: parses gitlab.com and self-hosted URLs", () => {
+  assert.equal(
+    extractGitLabProjectPath("https://gitlab.com/group/proj"),
+    "group/proj",
   );
+  assert.equal(
+    extractGitLabProjectPath("https://gitlab.com/group/proj.git"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("https://gitlab.company.com/group/proj.git"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("https://gitlab.company.com/group/proj"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("git@gitlab.com:group/proj.git"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("git@gitlab.company.com:group/proj"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath("ssh://git@gitlab.company.com/group/proj.git"),
+    "group/proj",
+  );
+  assert.equal(
+    extractGitLabProjectPath(
+      "ssh://git@gitlab.company.com/group/subgroup/proj",
+    ),
+    "group/subgroup/proj",
+  );
+  assert.equal(extractGitLabProjectPath("https://github.com/owner/repo"), null);
+  assert.equal(extractGitLabProjectPath("invalid"), null);
+});
+
+// ---------------------------------------------------------------------------
+// fetchOpenPrBranches: glab args (docs.gitlab.com/cli/api — REST list MRs)
+// ---------------------------------------------------------------------------
+
+test("glabMrListArgs: uses glab api for JSON (compat with older glab mr list)", () => {
+  const args = glabMrListArgs();
+  assert.deepEqual(args, [
+    "api",
+    "projects/:id/merge_requests?state=opened&per_page=50",
+  ]);
 });
 
 // ---------------------------------------------------------------------------
 // fetchOpenPrBranches: graceful fallback
 // ---------------------------------------------------------------------------
 
-test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", () => {
+test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", async () => {
   const logEvents = [];
-  const result = fetchOpenPrBranches("/nonexistent/repo", "main", (e) =>
+  const result = await fetchOpenPrBranches("/nonexistent/repo", "main", (e) =>
     logEvents.push(e),
   );
 
@@ -740,6 +784,18 @@ test("fetchOpenPrBranches: returns empty array when gh/glab is unavailable", () 
         e.event === "open_prs_fetch_failed" || e.event === "open_prs_fetched",
     ),
     "Should log fetch attempt or failure",
+  );
+});
+
+test("fetchOpenPrBranches: respects AbortSignal", async () => {
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(
+    () =>
+      fetchOpenPrBranches("/nonexistent/repo", "main", () => {}, {
+        signal: ac.signal,
+      }),
+    (err) => err.code === "ABORT_ERR" || err.name === "AbortError",
   );
 });
 
@@ -1067,6 +1123,14 @@ test("runDevelopPipeline: defers on CONFLICT_DETECTED when conflictDetection is 
     WorkflowRunner.prototype.run = originalRun;
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("gitlab: glab stderr with unknown shorthand flag is a format mismatch (not fatal)", () => {
+  assert.ok(
+    isGlabMrListFormatMismatchStderr(
+      "unknown shorthand flag: 'F' in -F\n\nUsage: glab mr list [flags]",
+    ),
+  );
 });
 
 test("config schema: workflow.conflictDetection defaults to true", async () => {

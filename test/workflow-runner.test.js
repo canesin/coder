@@ -160,6 +160,35 @@ test("WorkflowRunner: calls onStageChange and onCheckpoint", async () => {
   assert.deepEqual(checkpoints[1], { i: 1, status: "ok" });
 });
 
+test("WorkflowRunner: invokes ctx.onWorkflowStage with stage and optional activeAgent", async () => {
+  const notifications = [];
+  const ctx = makeCtx({
+    onWorkflowStage: (p) => notifications.push(p),
+  });
+  const runner = new WorkflowRunner({
+    name: "test",
+    workflowContext: ctx,
+    stageActiveAgent: (m) =>
+      m === "test.add" ? "agent-a" : m === "test.double" ? "agent-b" : null,
+  });
+
+  await runner.run(
+    [
+      { machine: addMachine, inputMapper: () => ({ a: 1, b: 2 }) },
+      {
+        machine: doubleMachine,
+        inputMapper: (prev) => ({ value: prev.data.sum }),
+      },
+    ],
+    {},
+  );
+
+  assert.deepEqual(notifications, [
+    { stage: "test.add", activeAgent: "agent-a" },
+    { stage: "test.double", activeAgent: "agent-b" },
+  ]);
+});
+
 test("WorkflowRunner: runs machine_start and machine_complete hooks", async () => {
   const tmpFile = path.join(os.tmpdir(), `hook-test-${Date.now()}.txt`);
   try {

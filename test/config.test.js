@@ -10,10 +10,12 @@ import {
   deepMerge,
   HookSchema,
   loadConfig,
+  loadConfigForScopedRepo,
   resolveConfig,
   userConfigDir,
   userConfigPath,
 } from "../src/config.js";
+import { loadTestConfig } from "../src/test-runner.js";
 
 test("deepMerge: arrays replace, not concat", () => {
   const base = { items: [1, 2, 3] };
@@ -76,6 +78,37 @@ test("loadConfig: user config only merges with defaults", () => {
   }
 });
 
+test("loadConfigForScopedRepo: scoped package coder.json overrides workspace test.*", () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-scoped-ws-"));
+  const pkg = path.join(ws, "packages", "foo");
+  mkdirSync(pkg, { recursive: true });
+  const xdg = mkdtempSync(path.join(os.tmpdir(), "coder-xdg-"));
+  mkdirSync(path.join(xdg, "coder"), { recursive: true });
+  writeFileSync(
+    path.join(ws, "coder.json"),
+    JSON.stringify({
+      test: { command: "echo workspace" },
+    }),
+  );
+  writeFileSync(
+    path.join(pkg, "coder.json"),
+    JSON.stringify({
+      test: { command: "echo package" },
+    }),
+  );
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = xdg;
+  try {
+    const config = loadConfigForScopedRepo(ws, pkg);
+    assert.equal(config.test.command, "echo package");
+    const tc = loadTestConfig(pkg, undefined, ws);
+    assert.equal(tc?.test, "echo package");
+  } finally {
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+  }
+});
+
 test("loadConfig: repo config overrides user config", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
   const xdg = mkdtempSync(path.join(os.tmpdir(), "coder-xdg-"));
@@ -116,6 +149,13 @@ test("resolveConfig: deep overrides merge correctly", () => {
   const config = resolveConfig(dir, { test: { command: "npm test" } });
   assert.equal(config.test.command, "npm test");
   assert.equal(config.test.timeoutMs, 600000); // default preserved
+});
+
+test("resolveConfig: issue list hang and prompt caps default", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-config-"));
+  const config = resolveConfig(dir);
+  assert.equal(config.workflow.timeouts.issueSelectionHangMs, 0);
+  assert.equal(config.workflow.issueListPromptMaxIssues, 50);
 });
 
 test("resolveConfig: workflow agent roles can be overridden", () => {

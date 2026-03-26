@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   access,
   mkdir,
@@ -41,13 +42,27 @@ function setWriteChain(key, promise) {
   );
 }
 
+/**
+ * Return the current write-chain promise for a workspace (resolves
+ * immediately if no writes are pending).  Does NOT guarantee global
+ * quiescence — new writes appended after this call are not covered.
+ */
+export function drainWriteChain(workspaceDir) {
+  return getWriteChain(workspaceDir);
+}
+
+/** Synchronous check: true when a write-chain entry exists for `key`. */
+export function hasWriteChain(key) {
+  return _writeChains.has(key);
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
 async function atomicWriteJson(filePath, data) {
   const dir = path.dirname(filePath);
-  const tmpPath = filePath + ".tmp";
+  const tmpPath = `${filePath}.${randomUUID().slice(0, 8)}.tmp`;
   let op = "mkdir";
   try {
     await mkdir(dir, { recursive: true });
@@ -56,6 +71,9 @@ async function atomicWriteJson(filePath, data) {
     op = "rename";
     await rename(tmpPath, filePath);
   } catch (err) {
+    try {
+      await unlink(tmpPath);
+    } catch {}
     const code = err.code ? ` (${err.code})` : "";
     throw new Error(
       `Failed to write state ${filePath} [${op}]${code}: ${err.message}`,
@@ -245,16 +263,26 @@ export function createWorkflowLifecycleMachine() {
         lastHeartbeatAt: event.at || nowIso(),
       })),
       updateStage: assign(({ context, event }) => ({
-        currentStage: event.stage || context.currentStage,
-        activeAgent: event.activeAgent || context.activeAgent,
+        currentStage:
+          event.stage != null && event.stage !== ""
+            ? event.stage
+            : context.currentStage,
+        activeAgent:
+          "activeAgent" in event ? event.activeAgent : context.activeAgent,
       })),
       syncState: assign(({ context, event }) => {
         const s = event.state;
         if (!s || typeof s !== "object") return {};
         return {
-          currentStage: s.currentStage || context.currentStage || null,
-          activeAgent: s.activeAgent || context.activeAgent || null,
-          lastHeartbeatAt: s.lastHeartbeatAt || context.lastHeartbeatAt,
+          currentStage: Object.hasOwn(s, "currentStage")
+            ? s.currentStage
+            : context.currentStage,
+          activeAgent: Object.hasOwn(s, "activeAgent")
+            ? s.activeAgent
+            : context.activeAgent,
+          lastHeartbeatAt: Object.hasOwn(s, "lastHeartbeatAt")
+            ? s.lastHeartbeatAt
+            : context.lastHeartbeatAt,
         };
       }),
       markPaused: assign(({ event }) => ({
@@ -368,6 +396,7 @@ const LoopIssueResultSchema = z
     dependsOn: z.array(z.string()).default([]),
     lastFailedRunId: z.string().nullable().default(null),
     deferredReason: z.string().nullable().optional(),
+    rcaIssueUrl: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -412,6 +441,9 @@ export async function loadLoopState(workspaceDir) {
   }
 }
 
+/**
+ * @returns {Promise<boolean>} true if loop-state.json was written; false if guardRunId skipped the write (stale run)
+ */
 export async function saveLoopState(
   workspaceDir,
   loopState,
@@ -438,8 +470,54 @@ export async function saveLoopState(
     });
   setWriteChain(workspaceDir, chain);
   await chain;
-  if (guarded) return;
+  if (guarded) return false;
   if (writeErr) throw writeErr;
+  return true;
+}
+
+/**
+ * Read-modify-write loop state inside the same write chain as saveLoopState,
+ * so concurrent heartbeat + activeAgent updates cannot overwrite each other
+ * with stale snapshots.
+ *
+ * @param {string} workspaceDir
+ * @param {(ls: object) => object | null | Promise<object | null>} mutator - Return null to skip write
+ * @param {{ guardRunId?: string }} [options] - If guardRunId is omitted, uses next.runId after mutation (same as saveLoopState defaulting to ls.runId). Pass "" to skip the run guard.
+ * @returns {Promise<boolean>}
+ */
+export async function mutateLoopState(
+  workspaceDir,
+  mutator,
+  { guardRunId } = {},
+) {
+  const p = loopStatePathFor(workspaceDir);
+  let writeErr;
+  let guarded = false;
+  const chain = getWriteChain(workspaceDir)
+    .then(async () => {
+      const ls = await loadLoopState(workspaceDir);
+      const next = await mutator(ls);
+      if (next === null || next === undefined) return;
+      const gid = guardRunId !== undefined ? guardRunId : next.runId;
+      if (gid) {
+        try {
+          const existing = JSON.parse(await readFile(p, "utf8"));
+          if (existing.runId && existing.runId !== gid) {
+            guarded = true;
+            return;
+          }
+        } catch {}
+      }
+      await writeJson(p, next);
+    })
+    .catch((e) => {
+      writeErr = e;
+    });
+  setWriteChain(workspaceDir, chain);
+  await chain;
+  if (guarded) return false;
+  if (writeErr) throw writeErr;
+  return true;
 }
 
 // --- CLI control signals (file-based cancel/pause/resume) ---
@@ -545,6 +623,7 @@ const IssueStateSchema = z
     programmerFixSessionId: z.string().nullable().default(null),
     planReviewSessionId: z.string().nullable().default(null),
     reviewerSessionId: z.string().nullable().default(null),
+    sessionsDisabled: z.boolean().default(false),
     plannerAgentName: z.string().nullable().default(null),
     implementationAgentName: z.string().nullable().default(null),
     planReviewAgentName: z.string().nullable().default(null),
@@ -576,6 +655,7 @@ const DEFAULT_ISSUE_STATE = {
   programmerFixSessionId: null,
   planReviewSessionId: null,
   reviewerSessionId: null,
+  sessionsDisabled: false,
   plannerAgentName: null,
   implementationAgentName: null,
   planReviewAgentName: null,
@@ -632,4 +712,24 @@ export async function saveState(workspaceDir, state) {
   setWriteChain(workspaceDir, chain);
   await chain;
   if (writeErr) throw writeErr;
+}
+
+const SESSION_KEYS = [
+  "planningSessionId",
+  "planReviewSessionId",
+  "implementationSessionId",
+  "programmerFixSessionId",
+  "reviewerSessionId",
+];
+
+/**
+ * Clear all session IDs and set sessionsDisabled for the current issue.
+ * Call on session auth/collision to poison-proof state for same-issue resume.
+ * @param {object} state - Mutable issue state
+ */
+export function clearAllSessionIdsAndDisable(state) {
+  state.sessionsDisabled = true;
+  for (const key of SESSION_KEYS) {
+    state[key] = null;
+  }
 }

@@ -1,5 +1,28 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
+
+const LARGE_COMMAND_THRESHOLD = 80000; // 80KB — well under Linux MAX_ARG_STRLEN (128KB)
+
+/**
+ * Write a large command to a temp file and return a bash command that
+ * executes it then cleans up. Avoids kernel E2BIG on execve().
+ * Uses tmpDir to control where the file lands (important for PrivateTmp=yes).
+ * Preserves the command's exit code across the cleanup rm.
+ */
+function maybeTmpFile(command, tmpDir = "/tmp") {
+  // Compare UTF-8 byte length — Linux MAX_ARG_STRLEN is byte-based,
+  // not UTF-16 code-unit-based, so CJK/emoji-heavy prompts need this.
+  if (Buffer.byteLength(command, "utf8") <= LARGE_COMMAND_THRESHOLD)
+    return command;
+  const tmpPath = `${tmpDir}/coder-prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.sh`;
+  writeFileSync(tmpPath, command, { mode: 0o600 });
+  // Single-quote the path to prevent shell expansion of metacharacters
+  // (e.g. $(), backticks) that may appear in cwd/XDG_RUNTIME_DIR.
+  const q = tmpPath.replace(/'/g, "'\\''");
+  return `. '${q}'; __coder_rc=$?; rm -f '${q}'; exit $__coder_rc`;
+}
 
 const SYSTEMD_PROBE_TIMEOUT_MS = 2000;
 let cachedSystemdAvailability = null;
@@ -85,7 +108,15 @@ export function buildSystemdRunArgs(
     );
   }
 
-  args.push("bash", "-lc", command);
+  // PrivateTmp=yes hides /tmp from the unit. Use XDG_RUNTIME_DIR (/run/user/<uid>)
+  // which is visible to both the caller and --user units. Fall back to
+  // .coder/tmp/ under cwd to avoid polluting the repo root with temp scripts.
+  let tmpDir = process.env.XDG_RUNTIME_DIR || "/tmp";
+  if (!process.env.XDG_RUNTIME_DIR && cwd) {
+    tmpDir = path.join(cwd, ".coder", "tmp");
+    mkdirSync(tmpDir, { recursive: true });
+  }
+  args.push("bash", "-lc", maybeTmpFile(command, tmpDir));
   return args;
 }
 
@@ -93,6 +124,23 @@ export function stopSystemdUnit(unitName) {
   if (!unitName) return;
   try {
     spawnSync("systemctl", ["--user", "stop", unitName], {
+      encoding: "utf8",
+      timeout: 3000,
+    });
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Send a specific signal to the main process of a systemd unit.
+ * Unlike `stop` (which requests a graceful shutdown), this maps to
+ * `systemctl kill --signal=<sig>` for real escalation semantics.
+ */
+export function killSystemdUnit(unitName, signal = "SIGKILL") {
+  if (!unitName) return;
+  try {
+    spawnSync("systemctl", ["--user", "kill", "--signal", signal, unitName], {
       encoding: "utf8",
       timeout: 3000,
     });
@@ -143,7 +191,7 @@ export function runShellSync(
 
   const fallbackEnv = { ...(env || process.env) };
   delete fallbackEnv.CLAUDECODE;
-  const res = spawnSync("bash", ["-lc", command], {
+  const res = spawnSync("bash", ["-lc", maybeTmpFile(command)], {
     cwd,
     env: fallbackEnv,
     encoding: "utf8",

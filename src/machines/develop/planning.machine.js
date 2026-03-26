@@ -1,15 +1,65 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import path from "node:path";
 import { z } from "zod";
+import { stripAgentNoise } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
 import {
+  executeWithSessionAuthRetry,
+  makeClaudeSessionId,
+} from "./_session.js";
+import {
   artifactPaths,
+  buildStepCliOpts,
   ensureBranch,
   requireExitZero,
   resolveRepoRoot,
 } from "./_shared.js";
+
+/** CLI opts for planner — shared by normal and auth-retry execute() paths. */
+export function buildPlannerExecuteOpts(ctx) {
+  return buildStepCliOpts(ctx.config.workflow.timeouts.planning);
+}
+
+/**
+ * Gated stdout salvage: critique output is short and verdict-scoped; plans are
+ * long and often mixed with tool noise — only persist when structure matches.
+ */
+function planStdoutLooksSalvageable(text) {
+  const t = text.trim();
+  if (t.length < 800) return false;
+  const h2 = (t.match(/^##\s+\S/gm) || []).length;
+  if (h2 < 2) return false;
+  if (
+    !/\b(Approach|Summary|Files to Modify|Testing Strategy|Implementation|Phase \d+)\b/i.test(
+      t,
+    )
+  )
+    return false;
+  return true;
+}
+
+function trySalvagePlanFromStdout(res, planPath, log) {
+  if (!res || typeof res.stdout !== "string") return false;
+  const cleaned = stripAgentNoise(res.stdout, { dropLeadingOnly: true });
+  const filtered = stripAgentNoise(cleaned).trim();
+  if (!planStdoutLooksSalvageable(filtered)) return false;
+  mkdirSync(path.dirname(planPath), { recursive: true });
+  writeFileSync(planPath, `${filtered}\n`, "utf8");
+  log({
+    event: "plan_salvaged_from_stdout",
+    planPath,
+    salvagedChars: filtered.length,
+  });
+  return true;
+}
 
 export default defineMachine({
   name: "develop.planning",
@@ -44,11 +94,27 @@ export default defineMachine({
     }
 
     if (state.steps.wrotePlan && !input.priorCritique) {
-      return { status: "ok", data: { planMd: "(cached)" } };
+      // Verify artifact exists — state can be stale (clean loop, backup restore, crash)
+      if (existsSync(paths.plan)) {
+        return { status: "ok", data: { planMd: "(cached)" } };
+      }
+      // wrotePlan is true but PLAN.md missing — clear plan + critique state
+      // so the planner starts fresh (not resuming a stale session) and the
+      // plan-reviewer doesn't short-circuit on an outdated PLANREVIEW.md
+      state.steps.wrotePlan = false;
+      state.steps.wroteCritique = false;
+      state.planningSessionId = null;
+      state.plannerAgentName = null;
+      state.planReviewSessionId = null;
+      state.planReviewAgentName = null;
+      try {
+        if (existsSync(paths.critique)) unlinkSync(paths.critique);
+      } catch {}
+      await saveState(ctx.workspaceDir, state);
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
-    ensureBranch(repoRoot, state.branch);
+    await ensureBranch(repoRoot, state.branch, { signal: ctx.signal });
 
     ctx.log({ event: "step3a_create_plan" });
     // Use workspace scope so agent can access .coder/artifacts/ when repo_path is a subdir
@@ -119,8 +185,8 @@ export default defineMachine({
     );
 
     // Session strategy: the first planning call creates a named session with --session-id.
-    // All subsequent calls in this issue (REVISE rounds, implementation, fix, review) resume
-    // with --resume so the agent retains full conversation context across the workflow.
+    // REVISE rounds (within this step) resume with --resume. Implementation, fix, and review
+    // use their own step-scoped sessions — no cross-step leakage.
     const agentChanged =
       state.plannerAgentName && state.plannerAgentName !== plannerName;
     if (agentChanged) {
@@ -131,9 +197,10 @@ export default defineMachine({
         action: "creating_fresh_session",
       });
     }
-    const creatingSession = !state.planningSessionId || agentChanged;
+    const creatingSession =
+      !state.sessionsDisabled && (!state.planningSessionId || agentChanged);
     if (creatingSession) {
-      state.planningSessionId = randomUUID();
+      state.planningSessionId = makeClaudeSessionId(ctx.workflowRunId);
       state.plannerAgentName = plannerName;
       await saveState(ctx.workspaceDir, state);
     }
@@ -172,6 +239,10 @@ Structure:
    - List existing test files that validate related behavior
    - Describe specific test cases to write (inputs, expected outputs, edge cases)
    - Specify the test command to run
+   - **Red/Green TDD** (when ISSUE.md difficulty >= 3 or change is non-trivial):
+     - RED phase: List the exact test files to create/modify and the failing assertions to write BEFORE implementation. Each test should target one requirement from ISSUE.md. Describe the expected failure (e.g. "ReferenceError: parseConfig is not defined", "Expected 3 but got undefined").
+     - GREEN phase: Which files to implement and in what order to make tests pass incrementally.
+     - If ISSUE.md difficulty < 3 and the change is straightforward, note that test-after is acceptable.
 7. **Out of Scope**: Explicitly list what this change does NOT include
 
 ## Complexity Budget
@@ -223,6 +294,9 @@ if they modify different, independent sections.
 ${branchSections}`;
     }
 
+    const plannerCli = buildPlannerExecuteOpts(ctx);
+    let lastPlannerResult = null;
+
     // Allow one retry when the planner violates the no-source-edit constraint.
     // Retries resume the existing session so the agent has the violation as context.
     let constraintNote = "";
@@ -250,44 +324,47 @@ ${branchSections}`;
           `\n\nRemember: only write ${paths.plan}. Do not modify any source files.`;
       }
 
-      const sessionOpts =
-        creatingSession && attempt === 0
+      const sessionOpts = state.sessionsDisabled
+        ? {}
+        : creatingSession && attempt === 0
           ? { sessionId: state.planningSessionId }
           : { resumeId: state.planningSessionId };
+      if (Object.keys(sessionOpts).length > 0) {
+        ctx.log({
+          event: "session_opts",
+          sessionKey: "planningSessionId",
+          hadSessionBefore: !creatingSession,
+          usingCreate: !!sessionOpts.sessionId,
+          usingResume: !!sessionOpts.resumeId,
+        });
+      }
 
       let res;
       try {
-        try {
-          res = await plannerAgent.execute(prompt, {
-            ...sessionOpts,
-            timeoutMs: ctx.config.workflow.timeouts.planning,
-          });
-        } catch (err) {
-          if (
-            err.name === "CommandFatalStderrError" &&
-            err.category === "auth" &&
-            sessionOpts.resumeId
-          ) {
-            ctx.log({
-              event: "session_resume_failed",
-              sessionId: state.planningSessionId,
-            });
-            state.planningSessionId = randomUUID();
-            await saveState(ctx.workspaceDir, state);
-            // Fresh session needs full planPrompt even during REVISE/constraint rounds
-            const retryPrompt =
-              prompt === planPrompt || prompt.startsWith(planPrompt)
+        res = await executeWithSessionAuthRetry({
+          state,
+          sessionKey: "planningSessionId",
+          workspaceDir: ctx.workspaceDir,
+          log: ctx.log,
+          workflowRunId: ctx.workflowRunId,
+          initialSessionOpts: sessionOpts,
+          executeFn: (so, meta) => {
+            const recoveryAttempt = meta?.recoveryAttempt ?? 0;
+            const usePrompt =
+              recoveryAttempt === 0
                 ? prompt
-                : `${planPrompt}\n\n${prompt}`;
-            res = await plannerAgent.execute(retryPrompt, {
-              sessionId: state.planningSessionId,
+                : prompt === planPrompt || prompt.startsWith(planPrompt)
+                  ? prompt
+                  : `${planPrompt}\n\n${prompt}`;
+            return plannerAgent.execute(usePrompt, {
+              ...so,
+              ...plannerCli,
               timeoutMs: ctx.config.workflow.timeouts.planning,
             });
-          } else {
-            throw err;
-          }
-        }
+          },
+        });
         requireExitZero(plannerName, "plan generation failed", res);
+        lastPlannerResult = res;
       } catch (err) {
         state.planningSessionId = null;
         await saveState(ctx.workspaceDir, state);
@@ -348,8 +425,40 @@ ${branchSections}`;
         `Retry now: write ONLY ${paths.plan} and do not edit any source files.`;
     }
 
-    if (!existsSync(paths.plan))
-      throw new Error(`PLAN.md not found: ${paths.plan}`);
+    if (!existsSync(paths.plan)) {
+      let artifactDirEntries = [];
+      try {
+        if (existsSync(ctx.artifactsDir)) {
+          artifactDirEntries = readdirSync(ctx.artifactsDir).slice(0, 40);
+        }
+      } catch {
+        /* ignore */
+      }
+      ctx.log({
+        event: "plan_missing_after_planner",
+        planPath: paths.plan,
+        artifactsDir: ctx.artifactsDir,
+        repoPath: state.repoPath ?? null,
+        artifactDirEntries,
+      });
+      trySalvagePlanFromStdout(lastPlannerResult, paths.plan, ctx.log);
+    }
+    if (!existsSync(paths.plan)) {
+      ctx.log({
+        event: "plan_missing_final",
+        planPath: paths.plan,
+        stdoutLen: lastPlannerResult
+          ? (lastPlannerResult.stdout || "").length
+          : 0,
+        stderrLen: lastPlannerResult
+          ? (lastPlannerResult.stderr || "").length
+          : 0,
+      });
+      throw new Error(
+        `PLAN.md not found at ${paths.plan} (artifactsDir=${ctx.artifactsDir}). ` +
+          `Planner exited 0 but did not write the file. See plan_missing_after_planner and plan_missing_final logs.`,
+      );
+    }
     state.steps.wrotePlan = true;
     await saveState(ctx.workspaceDir, state);
 

@@ -243,6 +243,8 @@ test("isRateLimitError detects 429, rate limit, resource_exhausted, quota", () =
   assert.equal(isRateLimitError("rate limit exceeded"), true);
   assert.equal(isRateLimitError("RESOURCE_EXHAUSTED quota"), true);
   assert.equal(isRateLimitError("quota exceeded"), true);
+  assert.equal(isRateLimitError("You're out of extra usage"), true);
+  assert.equal(isRateLimitError("usage limit exceeded"), true);
   assert.equal(isRateLimitError("regular error"), false);
   assert.equal(isRateLimitError(""), false);
 });
@@ -293,7 +295,7 @@ test("fallback agent receives no resumeId or sessionId", async () => {
   assert.equal(fallbackOpts.timeoutMs, 5000, "other opts preserved");
 });
 
-test("primary retried without session on auth error before falling to fallback", async () => {
+test("auth error with session propagates so machine can run full fix", async () => {
   const calls = [];
 
   const config = CoderConfigSchema.parse({
@@ -304,16 +306,20 @@ test("primary retried without session on auth error before falling to fallback",
   });
   const pool = makePool(config);
 
+  const authErr = new Error("auth error");
+  authErr.name = "CommandFatalStderrError";
+  authErr.category = "auth";
+
   const primaryMock = {
     async execute(_prompt, opts) {
-      calls.push({ agent: "primary", hasResumeId: !!opts?.resumeId });
-      if (opts?.resumeId) {
-        const err = new Error("auth error");
-        err.name = "CommandFatalStderrError";
-        err.category = "auth";
-        throw err;
+      calls.push({
+        agent: "primary",
+        hasSession: !!(opts?.resumeId || opts?.sessionId),
+      });
+      if (opts?.resumeId || opts?.sessionId) {
+        throw authErr;
       }
-      return { exitCode: 0, stdout: "ok from primary retry", stderr: "" };
+      return { exitCode: 0, stdout: "ok", stderr: "" };
     },
     async executeStructured(prompt, opts) {
       return this.execute(prompt, opts);
@@ -324,9 +330,9 @@ test("primary retried without session on auth error before falling to fallback",
     async kill() {},
   };
   const fallbackMock = {
-    async execute(_prompt, opts) {
-      calls.push({ agent: "fallback", hasResumeId: !!opts?.resumeId });
-      return { exitCode: 0, stdout: "ok from fallback", stderr: "" };
+    async execute() {
+      calls.push({ agent: "fallback" });
+      return { exitCode: 0, stdout: "ok", stderr: "" };
     },
     async executeStructured(prompt, opts) {
       return this.execute(prompt, opts);
@@ -341,15 +347,17 @@ test("primary retried without session on auth error before falling to fallback",
   agent._primary = primaryMock;
   agent._fallback = fallbackMock;
 
-  const result = await agent.execute("test prompt", {
-    resumeId: "sess-123",
-    sessionId: "sid-456",
-  });
+  // Auth errors with session must propagate so the machine can clearAllSessionIdsAndDisable
+  // and retry. The pool does not retry or try fallback — it throws.
+  await assert.rejects(
+    () =>
+      agent.execute("test prompt", {
+        resumeId: "sess-123",
+        sessionId: "sid-456",
+      }),
+    (err) => err === authErr,
+  );
 
-  // Primary was called with session (shouldRetry returns false for auth → no p-retry retries),
-  // then retried once without session and succeeded.
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0], { agent: "primary", hasResumeId: true });
-  assert.deepEqual(calls[1], { agent: "primary", hasResumeId: false });
-  assert.equal(result.stdout, "ok from primary retry");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { agent: "primary", hasSession: true });
 });

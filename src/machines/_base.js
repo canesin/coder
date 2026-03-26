@@ -1,7 +1,29 @@
 import { z } from "zod";
 
+/**
+ * Tagged error for cancellation — thrown by `checkCancel()`.
+ * WorkflowRunner recognises this and converts it to `{ status: "cancelled" }`
+ * instead of `{ status: "error" }`.
+ */
+export class CancelledError extends Error {
+  constructor(message = "Run cancelled") {
+    super(message);
+    this.name = "CancelledError";
+  }
+}
+
+/**
+ * Check whether the workflow has been cancelled and throw if so.
+ * Use inside machine loops to allow prompt cancellation.
+ *
+ * @param {{ cancelToken: { cancelled: boolean } }} ctx
+ */
+export function checkCancel(ctx) {
+  if (ctx.cancelToken.cancelled) throw new CancelledError();
+}
+
 export const MachineResultSchema = z.object({
-  status: z.enum(["ok", "error", "skipped"]),
+  status: z.enum(["ok", "error", "skipped", "cancelled"]),
   data: z.any().optional(),
   error: z.string().optional(),
   durationMs: z.number().int().nonnegative(),
@@ -21,6 +43,10 @@ export const WorkflowContextSchema = z.object({
   artifactsDir: z.string(),
   scratchpadDir: z.string(),
   steeringContext: z.string().optional(),
+  /** Set by WorkflowRunner — prefixes Claude/Codex session ids so runs do not share a global session key. */
+  workflowRunId: z.string().optional(),
+  /** MCP launcher: notify workflow lifecycle actor of stage (and optional agent) changes. */
+  onWorkflowStage: z.any().optional(),
 });
 
 /**
@@ -83,6 +109,13 @@ export function defineMachine(def) {
           durationMs: result.durationMs ?? durationMs,
         };
       } catch (err) {
+        if (err instanceof CancelledError) {
+          return {
+            status: "cancelled",
+            error: err.message,
+            durationMs: Date.now() - start,
+          };
+        }
         return {
           status: "error",
           error: err.message || String(err),

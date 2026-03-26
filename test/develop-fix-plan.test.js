@@ -11,15 +11,21 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { loadLoopState, saveLoopState } from "../src/state/workflow-state.js";
+import {
+  loadLoopState,
+  saveLoopState,
+  statePathFor,
+} from "../src/state/workflow-state.js";
 import { WorkflowRunner } from "../src/workflows/_base.js";
 import { runDevelopLoop } from "../src/workflows/develop.workflow.js";
 
 function makeTmpWorkspace() {
-  const tmp = mkdtempSync(path.join(os.tmpdir(), "fix-plan-"));
+  const parent = mkdtempSync(path.join(os.tmpdir(), "fix-plan-"));
+  const tmp = path.join(parent, "ws");
+  mkdirSync(tmp);
   mkdirSync(path.join(tmp, ".coder", "artifacts"), { recursive: true });
   mkdirSync(path.join(tmp, ".coder", "logs"), { recursive: true });
-  execSync("git init", { cwd: tmp, stdio: "ignore" });
+  execSync("git init -b main", { cwd: tmp, stdio: "ignore" });
   execSync("git config user.email test@example.com", {
     cwd: tmp,
     stdio: "ignore",
@@ -29,6 +35,10 @@ function makeTmpWorkspace() {
     stdio: "ignore",
   });
   execSync("git commit --allow-empty -m init", { cwd: tmp, stdio: "ignore" });
+  const bare = path.join(parent, "bare.git");
+  execSync(`git init --bare ${bare}`, { stdio: "ignore" });
+  execSync(`git remote add origin ${bare}`, { cwd: tmp, stdio: "ignore" });
+  execSync("git push -u origin main", { cwd: tmp, stdio: "ignore" });
   return tmp;
 }
 
@@ -163,7 +173,7 @@ test("infra failure with infraDetection enabled yields deferred and run status b
     assert.match(issueA.error, /ECONNREFUSED|connection refused/);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -232,7 +242,7 @@ test("infra failure with infraDetection disabled yields failed not deferred", as
     assert.equal(issueA.deferredReason, undefined);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -323,7 +333,7 @@ test("infra/plan_blocked deferred issues are excluded from same-run retry pass",
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -371,7 +381,7 @@ test("preflight command check fails before loop processes any issue", async () =
     assert.equal(pipelineStarted, false);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -428,7 +438,7 @@ test("preflight command check passes and loop proceeds", async () => {
     assert.equal(result.completed, 1);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -476,7 +486,7 @@ test("preflight tcp check fails when port refuses", async () => {
     assert.equal(pipelineStarted, false);
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -539,7 +549,7 @@ test("preflight tcp check passes when port accepts", async () => {
   } finally {
     server.close();
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
   }
 });
 
@@ -692,6 +702,217 @@ test("start after blocked run processes deferred issues (blocked treated as term
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(path.dirname(ws), { recursive: true, force: true });
+  }
+});
+
+test("planReviewExhausted defer preserves state; next start retries and completes", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+  const processedIds = [];
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      const issueId = steps[0]?.inputMapper?.()?.issue?.id;
+      if (machineName === "develop.issue_draft") {
+        processedIds.push(issueId);
+      }
+      if (machineName === "develop.planning") {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { planMd: "plan" } }],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      if (machineName === "develop.plan_review") {
+        return {
+          status: "completed",
+          results: [
+            {
+              status: "ok",
+              data: {
+                verdict: "REJECT",
+                critiqueMd: "fundamentally unsound",
+              },
+            },
+          ],
+          runId: "run-1",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws, {
+      config: {
+        workflow: {
+          maxMachineRetries: 0,
+          retryBackoffMs: 0,
+          maxPlanRevisions: 2,
+          hooks: [],
+          issueSource: "local",
+          localIssuesDir: "",
+        },
+      },
+    });
+
+    const result1 = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result1.status, "blocked");
+    assert.equal(result1.deferred, 1);
+
+    const stateAfterDefer = await loadLoopState(ws);
+    const issueA = stateAfterDefer.issueQueue.find((q) => q.id === "A");
+    assert.equal(issueA.status, "deferred");
+    assert.equal(issueA.deferredReason, "plan_blocked");
+
+    assert.ok(
+      existsSync(statePathFor(ws)),
+      "state.json must exist after planReviewExhausted defer (no reset)",
+    );
+
+    processedIds.length = 0;
+    WorkflowRunner.prototype.run = async function runStub2(steps) {
+      const machineName = steps[0]?.machine?.name;
+      const issueId = steps[0]?.inputMapper?.()?.issue?.id;
+      if (machineName === "develop.issue_draft") {
+        processedIds.push(issueId);
+      }
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-2",
+          durationMs: 0,
+        };
+      }
+      return completedRunnerResult("run-2");
+    };
+
+    const result2 = await runDevelopLoop(
+      {
+        issueSource: "local",
+        localIssuesDir: issuesDir,
+        destructiveReset: false,
+      },
+      ctx,
+    );
+
+    assert.equal(result2.status, "completed");
+    assert.equal(result2.completed, 1);
+    assert.ok(
+      processedIds.includes("A"),
+      "plan_blocked deferred issue A should be retried and completed on next start",
+    );
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(path.dirname(ws), { recursive: true, force: true });
+  }
+});
+
+test("hard failure when git pull --ff-only fails with non-stale error", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "fix-plan-pull-fail-"));
+  const bareDir = path.join(tmp, "bare");
+  const ws = path.join(tmp, "ws");
+  const clone2 = path.join(tmp, "clone2");
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    mkdirSync(bareDir, { recursive: true });
+    mkdirSync(ws, { recursive: true });
+    mkdirSync(clone2, { recursive: true });
+    mkdirSync(path.join(ws, ".coder", "artifacts"), { recursive: true });
+    mkdirSync(path.join(ws, ".coder", "logs"), { recursive: true });
+
+    execSync("git init --bare", { cwd: bareDir, stdio: "ignore" });
+    execSync("git init -b main", { cwd: ws, stdio: "ignore" });
+    execSync("git config user.email test@example.com", {
+      cwd: ws,
+      stdio: "ignore",
+    });
+    execSync("git config user.name 'Test User'", { cwd: ws, stdio: "ignore" });
+    execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
+    execSync(`git remote add origin ${bareDir}`, { cwd: ws, stdio: "ignore" });
+    execSync("git push -u origin main", { cwd: ws, stdio: "ignore" });
+
+    // Push a diverging commit via a second clone (must track `main` so
+    // origin/main diverges from ws; otherwise an orphan clone may push to
+    // `master` and ws's pull --ff-only stays a no-op).
+    execSync(`git clone ${bareDir} ${clone2}`, { stdio: "ignore" });
+    execSync("git checkout main", { cwd: clone2, stdio: "ignore" });
+    execSync("git config user.email test@example.com", {
+      cwd: clone2,
+      stdio: "ignore",
+    });
+    execSync("git config user.name 'Test User'", {
+      cwd: clone2,
+      stdio: "ignore",
+    });
+    execSync("git commit --allow-empty -m 'remote diverge'", {
+      cwd: clone2,
+      stdio: "ignore",
+    });
+    execSync("git push", { cwd: clone2, stdio: "ignore" });
+
+    // Create a local commit in ws that diverges from the remote.
+    // Then fetch so that origin/main is up-to-date — git pull inside
+    // runDevelopLoop needs to see the diverged ref to fail with --ff-only.
+    execSync("git commit --allow-empty -m 'local diverge'", {
+      cwd: ws,
+      stdio: "ignore",
+    });
+    execSync("git fetch origin", { cwd: ws, stdio: "ignore" });
+
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+    ]);
+
+    let runCalled = false;
+    WorkflowRunner.prototype.run = async function runStub() {
+      runCalled = true;
+      return completedRunnerResult("run-1");
+    };
+
+    const ctx = makeCtx(ws);
+    await assert.rejects(
+      runDevelopLoop(
+        {
+          issueSource: "local",
+          localIssuesDir: issuesDir,
+          destructiveReset: false,
+        },
+        ctx,
+      ),
+      /Git pull failed/,
+    );
+
+    // Verify loop state is persisted as failed
+    const loopState = await loadLoopState(ws);
+    assert.equal(loopState.status, "failed");
+    assert.ok(loopState.completedAt, "loop should have completedAt timestamp");
+    assert.equal(loopState.issueQueue[0].status, "failed");
+    assert.match(loopState.issueQueue[0].error, /Git pull failed/);
+
+    // Verify planning/implementation never started
+    assert.equal(runCalled, false, "WorkflowRunner.run should not be called");
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
