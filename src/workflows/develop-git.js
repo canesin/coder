@@ -12,12 +12,13 @@ import { statePathFor } from "../state/workflow-state.js";
 
 /** Unstage, restore tracked files, and remove untracked files. Returns true only if all steps succeeded. */
 async function discardWorktreeChanges(repoRoot, opts = {}) {
+  // Cooperative cancellation: check signal before each mutating git command
+  // but let the command finish once started to avoid partial repo state.
+  opts.signal?.throwIfAborted();
   const resetRes = await spawnAsync("git", ["reset"], {
     cwd: repoRoot,
     encoding: "utf8",
-    signal: opts.signal,
   });
-  throwIfAborted(resetRes);
   if (resetRes.status !== 0) return false;
 
   const diffRes = await spawnAsync("git", ["diff", "--name-only"], {
@@ -29,25 +30,23 @@ async function discardWorktreeChanges(repoRoot, opts = {}) {
   if (diffRes.status !== 0) return false;
   const hasTrackedChanges = !!(diffRes.stdout || "").trim();
   if (hasTrackedChanges) {
+    opts.signal?.throwIfAborted();
     const coRes = await spawnAsync("git", ["checkout", "--", "."], {
       cwd: repoRoot,
       encoding: "utf8",
-      signal: opts.signal,
     });
-    throwIfAborted(coRes);
     if (coRes.status !== 0) return false;
   }
 
+  opts.signal?.throwIfAborted();
   const cleanRes = await spawnAsync(
     "git",
     ["clean", "-fd", "--exclude=.coder/"],
     {
       cwd: repoRoot,
       encoding: "utf8",
-      signal: opts.signal,
     },
   );
-  throwIfAborted(cleanRes);
   return cleanRes.status === 0;
 }
 
@@ -576,10 +575,10 @@ export async function resetForNextIssue(
       (issueStatus === "failed" || issueStatus === "skipped")
     ) {
       // Preserve partial work on the issue branch for failed/skipped issues.
+      signal?.throwIfAborted();
       const addRes = await spawnAsync("git", ["add", "-A"], {
         cwd: repoRoot,
         encoding: "utf8",
-        signal,
       });
       throwIfAborted(addRes);
       if (addRes.status !== 0) {
@@ -587,19 +586,20 @@ export async function resetForNextIssue(
           `resetForNextIssue: git add failed: ${(addRes.stderr || "").trim().slice(0, 200)}`,
         );
       }
+      signal?.throwIfAborted();
       const commitRes = await spawnAsync(
         "git",
         ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
-        { cwd: repoRoot, encoding: "utf8", signal },
+        { cwd: repoRoot, encoding: "utf8" },
       );
-      throwIfAborted(commitRes);
       if (commitRes.status !== 0) {
         throw new Error(
           `resetForNextIssue: could not preserve WIP (commit failed): ${(commitRes.stderr || "").trim().slice(0, 150)}`,
         );
       }
     } else if (hasDirtyFiles) {
-      if (!(await discardWorktreeChanges(repoRoot, { signal }))) {
+      signal?.throwIfAborted();
+      if (!(await discardWorktreeChanges(repoRoot))) {
         throw new Error(
           "resetForNextIssue: could not discard worktree changes",
         );
@@ -607,12 +607,11 @@ export async function resetForNextIssue(
     }
 
     const defaultBranch = await detectDefaultBranch(repoRoot, { signal });
+    signal?.throwIfAborted();
     const checkoutRes = await spawnAsync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
-      signal,
     });
-    throwIfAborted(checkoutRes);
     if (checkoutRes.status !== 0) {
       throw new Error(
         `resetForNextIssue: git checkout ${defaultBranch} failed: ${(checkoutRes.stderr || "").trim().slice(0, 200)}`,
@@ -621,16 +620,15 @@ export async function resetForNextIssue(
 
     // Always remove untracked files after switching to the default branch
     // to prevent them from leaking into the next issue's workspace.
+    signal?.throwIfAborted();
     const cleanRes = await spawnAsync(
       "git",
       ["clean", "-fd", "--exclude=.coder/"],
       {
         cwd: repoRoot,
         encoding: "utf8",
-        signal,
       },
     );
-    throwIfAborted(cleanRes);
     if (cleanRes.status !== 0) {
       throw new Error(
         `resetForNextIssue: git clean failed: ${(cleanRes.stderr || "").trim().slice(0, 200)}`,
@@ -652,12 +650,12 @@ export async function resetForNextIssue(
       throwIfAborted(lsRes);
       const hasTrackedFiles = !!(lsRes.stdout || "").trim();
       if (hasTrackedFiles) {
+        signal?.throwIfAborted();
         const restoreRes = await spawnAsync(
           "git",
           ["restore", "--staged", "--worktree", "."],
-          { cwd: repoRoot, encoding: "utf8", signal },
+          { cwd: repoRoot, encoding: "utf8" },
         );
-        throwIfAborted(restoreRes);
         if (restoreRes.status !== 0) {
           throw new Error(
             `resetForNextIssue: git restore failed: ${(restoreRes.stderr || "").trim().slice(0, 200)}`,
