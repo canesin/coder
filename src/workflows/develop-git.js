@@ -543,6 +543,8 @@ export async function resetForNextIssue(
   repoPath,
   { destructiveReset = false, issueStatus = "completed", signal } = {},
 ) {
+  signal?.throwIfAborted();
+
   // Delete per-issue state
   const statePath = statePathFor(workspaceDir);
   if (existsSync(statePath)) rmSync(statePath, { force: true });

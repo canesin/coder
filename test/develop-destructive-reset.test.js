@@ -510,11 +510,12 @@ test("resetForNextIssue rejects promptly with an already-aborted signal", async 
   }
 });
 
-test("resetForNextIssue aborts on dirty worktree with pre-aborted signal", async () => {
+test("resetForNextIssue early-abort preserves state files", async () => {
   const ws = makeTmpWorkspace();
   try {
-    // Make the worktree dirty so resetForNextIssue enters the discard branch.
-    writeFileSync(path.join(ws, "dirty.txt"), "wip");
+    // Write a state file that would normally be deleted by resetForNextIssue.
+    const statePath = path.join(ws, ".coder", "state.json");
+    writeFileSync(statePath, JSON.stringify({ status: "in_progress" }));
 
     const controller = new AbortController();
     controller.abort();
@@ -532,6 +533,12 @@ test("resetForNextIssue aborts on dirty worktree with pre-aborted signal", async
         );
         return true;
       },
+    );
+
+    // The early abort guard should prevent state deletion.
+    assert.ok(
+      existsSync(statePath),
+      "state file should be preserved when signal is pre-aborted",
     );
   } finally {
     rmSync(path.dirname(ws), { recursive: true, force: true });
