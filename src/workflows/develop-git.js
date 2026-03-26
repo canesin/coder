@@ -98,7 +98,7 @@ export function extractGitLabProjectPath(url) {
  * Supports gitlab.com and self-hosted instances.
  * @param {string} repoRoot
  * @param {(e: object) => void} [log]
- * @returns {Array<{ source_branch: string, iid: number, title: string }>}
+ * @returns {Promise<Array<{ source_branch: string, iid: number, title: string }>>}
  */
 async function fetchMergeRequestsViaApi(repoRoot, _log, opts = {}) {
   try {
@@ -148,7 +148,7 @@ export function isGlabMrListFormatMismatchStderr(stderr) {
  * @param {string} repoRoot
  * @param {string} defaultBranch
  * @param {(e: object) => void} log
- * @returns {Array<{ branch: string, issueId: string, title: string, diffStat: string }>}
+ * @returns {Promise<Array<{ branch: string, issueId: string, title: string, diffStat: string }>>}
  */
 export async function fetchOpenPrBranches(
   repoRoot,
