@@ -2008,10 +2008,14 @@ export async function runDevelopLoop(opts, ctx) {
             cwd: loopRepoRoot,
             encoding: "utf8",
           });
-          const stillThere = spawnSync("git", ["rev-parse", "--verify", branch], {
-            cwd: loopRepoRoot,
-            encoding: "utf8",
-          });
+          const stillThere = spawnSync(
+            "git",
+            ["rev-parse", "--verify", branch],
+            {
+              cwd: loopRepoRoot,
+              encoding: "utf8",
+            },
+          );
           if (stillThere.status !== 0) {
             deleted.push(branch);
             q.branch = null;

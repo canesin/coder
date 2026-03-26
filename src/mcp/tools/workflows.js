@@ -313,7 +313,13 @@ async function releaseActiveRunsForWorkspace(
 /**
  * @param {{ failError?: string }} [options] - For status === "failed", error text on the FAIL event (develop actor path only).
  */
-async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status, options = {}) {
+async function markRunTerminalOnDisk(
+  workspaceDir,
+  runId,
+  workflow,
+  status,
+  options = {},
+) {
   const { failError = "marked_terminal_on_disk" } = options;
   const persisted = await persistTerminalLoopState(workspaceDir, runId, status);
   if (!persisted) return false;
