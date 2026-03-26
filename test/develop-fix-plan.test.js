@@ -850,6 +850,15 @@ test("hard failure when git pull --ff-only fails with non-stale error", async ()
     execSync("git commit --allow-empty -m init", { cwd: ws, stdio: "ignore" });
     execSync(`git remote add origin ${bareDir}`, { cwd: ws, stdio: "ignore" });
     execSync("git push -u origin main", { cwd: ws, stdio: "ignore" });
+    // Ensure tracking is explicit (some git versions don't persist -u on init'd repos)
+    execSync("git config branch.main.remote origin", {
+      cwd: ws,
+      stdio: "ignore",
+    });
+    execSync("git config branch.main.merge refs/heads/main", {
+      cwd: ws,
+      stdio: "ignore",
+    });
 
     // Push a diverging commit via a second clone
     execSync(`git clone ${bareDir} ${clone2}`, { stdio: "ignore" });
