@@ -1257,7 +1257,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                 actorEntry.actor.send(ev);
               }
               if (workflow === "develop") {
-                void mutateLoopState(
+                mutateLoopState(
                   ws,
                   (ls) => {
                     if (ls.runId !== nextRunId) return null;
@@ -1272,7 +1272,9 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                     return next;
                   },
                   { guardRunId: nextRunId },
-                );
+                ).catch((err) => {
+                  log({ event: "stage_state_write_error", error: err.message });
+                });
               }
             },
           };
