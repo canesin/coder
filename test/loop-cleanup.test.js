@@ -42,7 +42,7 @@ function makeTmpRepo() {
 // ensureCleanLoopStart: stale state.json
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: removes stale state.json", () => {
+test("ensureCleanLoopStart: removes stale state.json", async () => {
   const tmp = makeTmpRepo();
   try {
     const statePath = path.join(tmp, ".coder", "state.json");
@@ -52,7 +52,7 @@ test("ensureCleanLoopStart: removes stale state.json", () => {
     );
 
     const logEvents = [];
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
+    await ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
 
     assert.ok(!existsSync(statePath), "state.json should be deleted");
     assert.equal(logEvents.length, 1);
@@ -67,7 +67,7 @@ test("ensureCleanLoopStart: removes stale state.json", () => {
 // ensureCleanLoopStart: stale artifact files
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: removes stale artifact files", () => {
+test("ensureCleanLoopStart: removes stale artifact files", async () => {
   const tmp = makeTmpRepo();
   try {
     const artifactsDir = path.join(tmp, ".coder", "artifacts");
@@ -76,7 +76,7 @@ test("ensureCleanLoopStart: removes stale artifact files", () => {
     writeFileSync(path.join(artifactsDir, "PLANREVIEW.md"), "# Old critique");
 
     const logEvents = [];
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
+    await ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
 
     assert.ok(!existsSync(path.join(artifactsDir, "ISSUE.md")));
     assert.ok(!existsSync(path.join(artifactsDir, "PLAN.md")));
@@ -92,7 +92,7 @@ test("ensureCleanLoopStart: removes stale artifact files", () => {
 // ensureCleanLoopStart: wrong branch
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: switches back to default branch from issue branch", () => {
+test("ensureCleanLoopStart: switches back to default branch from issue branch", async () => {
   const tmp = makeTmpRepo();
   try {
     execSync("git checkout -b coder/issue-42", { cwd: tmp, stdio: "ignore" });
@@ -103,7 +103,7 @@ test("ensureCleanLoopStart: switches back to default branch from issue branch", 
     });
 
     const logEvents = [];
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
+    await ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
 
     const branch = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd: tmp,
@@ -122,14 +122,14 @@ test("ensureCleanLoopStart: switches back to default branch from issue branch", 
 // ensureCleanLoopStart: dirty worktree on default branch
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: cleans dirty worktree on default branch", () => {
+test("ensureCleanLoopStart: cleans dirty worktree on default branch", async () => {
   const tmp = makeTmpRepo();
   try {
     writeFileSync(path.join(tmp, "untracked.txt"), "leftover");
     writeFileSync(path.join(tmp, "README.md"), "modified content");
 
     const logEvents = [];
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
+    await ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
 
     assert.ok(
       !existsSync(path.join(tmp, "untracked.txt")),
@@ -153,14 +153,14 @@ test("ensureCleanLoopStart: cleans dirty worktree on default branch", () => {
 // ensureCleanLoopStart: wrong branch + uncommitted changes
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: recovers from wrong branch with uncommitted changes", () => {
+test("ensureCleanLoopStart: recovers from wrong branch with uncommitted changes", async () => {
   const tmp = makeTmpRepo();
   try {
     execSync("git checkout -b coder/issue-99", { cwd: tmp, stdio: "ignore" });
     writeFileSync(path.join(tmp, "wip.js"), "// work in progress");
 
     const logEvents = [];
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
+    await ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
 
     const branch = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd: tmp,
@@ -178,11 +178,11 @@ test("ensureCleanLoopStart: recovers from wrong branch with uncommitted changes"
 // ensureCleanLoopStart: no-op when clean
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: no-op when workspace is already clean", () => {
+test("ensureCleanLoopStart: no-op when workspace is already clean", async () => {
   const tmp = makeTmpRepo();
   try {
     const logEvents = [];
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
+    await ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
 
     assert.equal(logEvents.length, 0, "should not log when nothing to clean");
   } finally {
@@ -194,7 +194,7 @@ test("ensureCleanLoopStart: no-op when workspace is already clean", () => {
 // ensureCleanLoopStart: preserves .coder/ directory
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: preserves .coder/ directory contents", () => {
+test("ensureCleanLoopStart: preserves .coder/ directory contents", async () => {
   const tmp = makeTmpRepo();
   try {
     const loopStatePath = path.join(tmp, ".coder", "loop-state.json");
@@ -206,7 +206,7 @@ test("ensureCleanLoopStart: preserves .coder/ directory contents", () => {
     writeFileSync(path.join(tmp, "untracked.txt"), "leftover");
 
     const logEvents = [];
-    ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
+    await ensureCleanLoopStart(tmp, tmp, "main", (e) => logEvents.push(e));
 
     assert.ok(existsSync(loopStatePath), "loop-state.json should be preserved");
     assert.ok(!existsSync(path.join(tmp, "untracked.txt")));
@@ -219,13 +219,13 @@ test("ensureCleanLoopStart: preserves .coder/ directory contents", () => {
 // ensureCleanLoopStart: failure paths
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: throws when checkout to default branch fails", () => {
+test("ensureCleanLoopStart: throws when checkout to default branch fails", async () => {
   const tmp = makeTmpRepo();
   try {
     execSync("git checkout -b coder/issue-1", { cwd: tmp, stdio: "ignore" });
 
     const logEvents = [];
-    assert.throws(
+    await assert.rejects(
       () =>
         ensureCleanLoopStart(tmp, tmp, "nonexistent-branch", (e) =>
           logEvents.push(e),
@@ -245,14 +245,14 @@ test("ensureCleanLoopStart: throws when checkout to default branch fails", () =>
   }
 });
 
-test("ensureCleanLoopStart: does not emit success log when checkout fails", () => {
+test("ensureCleanLoopStart: does not emit success log when checkout fails", async () => {
   const tmp = makeTmpRepo();
   try {
     execSync("git checkout -b coder/issue-2", { cwd: tmp, stdio: "ignore" });
 
     const logEvents = [];
     try {
-      ensureCleanLoopStart(tmp, tmp, "nonexistent-branch", (e) =>
+      await ensureCleanLoopStart(tmp, tmp, "nonexistent-branch", (e) =>
         logEvents.push(e),
       );
     } catch {
@@ -271,7 +271,7 @@ test("ensureCleanLoopStart: does not emit success log when checkout fails", () =
 // ensureCleanLoopStart: WIP auto-commit on known agent branches
 // ---------------------------------------------------------------------------
 
-test("ensureCleanLoopStart: auto-commits WIP on known agent branch", () => {
+test("ensureCleanLoopStart: auto-commits WIP on known agent branch", async () => {
   const tmp = makeTmpRepo();
   try {
     const branchName = "feat/add-auth_GH_42";
@@ -280,7 +280,7 @@ test("ensureCleanLoopStart: auto-commits WIP on known agent branch", () => {
 
     const logEvents = [];
     const knownBranches = new Set([branchName]);
-    ensureCleanLoopStart(
+    await ensureCleanLoopStart(
       tmp,
       tmp,
       "main",
@@ -312,7 +312,7 @@ test("ensureCleanLoopStart: auto-commits WIP on known agent branch", () => {
   }
 });
 
-test("ensureCleanLoopStart: discards dirty files on unknown branch", () => {
+test("ensureCleanLoopStart: discards dirty files on unknown branch", async () => {
   const tmp = makeTmpRepo();
   try {
     const branchName = "user/personal-branch";
@@ -321,7 +321,7 @@ test("ensureCleanLoopStart: discards dirty files on unknown branch", () => {
 
     const logEvents = [];
     const knownBranches = new Set(["feat/other-issue_GH_99"]);
-    ensureCleanLoopStart(
+    await ensureCleanLoopStart(
       tmp,
       tmp,
       "main",
@@ -351,7 +351,7 @@ test("ensureCleanLoopStart: discards dirty files on unknown branch", () => {
   }
 });
 
-test("ensureCleanLoopStart: with resume enabled preserves state and artifacts", () => {
+test("ensureCleanLoopStart: with resume enabled preserves state and artifacts", async () => {
   const tmp = makeTmpRepo();
   try {
     const statePath = path.join(tmp, ".coder", "state.json");
@@ -367,7 +367,7 @@ test("ensureCleanLoopStart: with resume enabled preserves state and artifacts", 
     const ctx = {
       config: { workflow: { resumeStepState: true } },
     };
-    ensureCleanLoopStart(
+    await ensureCleanLoopStart(
       tmp,
       tmp,
       "main",
@@ -392,7 +392,7 @@ test("ensureCleanLoopStart: with resume enabled preserves state and artifacts", 
   }
 });
 
-test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () => {
+test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", async () => {
   const tmp = makeTmpRepo();
   try {
     const orphanBackup = path.join(tmp, ".coder", "backups", "github-99-root");
@@ -409,7 +409,7 @@ test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () 
       config: { workflow: { resumeStepState: false } },
     };
 
-    ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
+    await ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
       ctx: ctxWithResume,
       issues: [{ source: "github", id: "40", repo_path: "." }],
       destructiveReset: false,
@@ -424,7 +424,7 @@ test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () 
       path.join(orphanBackup, "state.json"),
       JSON.stringify({ selected: { source: "github", id: "99" } }),
     );
-    ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
+    await ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
       ctx: ctxNoResume,
       issues: [{ source: "github", id: "40", repo_path: "." }],
       destructiveReset: false,
@@ -438,7 +438,7 @@ test("ensureCleanLoopStart: prunes orphan backups only when resume enabled", () 
   }
 });
 
-test("ensureCleanLoopStart: preserves legacy monorepo backup keys during prune", () => {
+test("ensureCleanLoopStart: preserves legacy monorepo backup keys during prune", async () => {
   const tmp = makeTmpRepo();
   try {
     const legacyBackupKey = "github-42-root";
@@ -464,7 +464,7 @@ test("ensureCleanLoopStart: preserves legacy monorepo backup keys during prune",
     const ctxWithResume = {
       config: { workflow: { resumeStepState: true } },
     };
-    ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
+    await ensureCleanLoopStart(tmp, tmp, "main", () => {}, new Set(), {
       ctx: ctxWithResume,
       issues: [{ source: "github", id: "42", repo_path: "packages/foo" }],
       destructiveReset: false,
@@ -479,7 +479,7 @@ test("ensureCleanLoopStart: preserves legacy monorepo backup keys during prune",
   }
 });
 
-test("ensureCleanLoopStart: with resumeStepState false deletes state and artifacts", () => {
+test("ensureCleanLoopStart: with resumeStepState false deletes state and artifacts", async () => {
   const tmp = makeTmpRepo();
   try {
     const statePath = path.join(tmp, ".coder", "state.json");
@@ -494,7 +494,7 @@ test("ensureCleanLoopStart: with resumeStepState false deletes state and artifac
     const ctx = {
       config: { workflow: { resumeStepState: false } },
     };
-    ensureCleanLoopStart(
+    await ensureCleanLoopStart(
       tmp,
       tmp,
       "main",
@@ -816,7 +816,7 @@ test("prepareForIssue: backs up then clears when switching to different issue", 
   }
 });
 
-test("ensureCleanLoopStart: no WIP commit when known branch is clean", () => {
+test("ensureCleanLoopStart: no WIP commit when known branch is clean", async () => {
   const tmp = makeTmpRepo();
   try {
     const branchName = "feat/clean-branch_GH_50";
@@ -825,7 +825,7 @@ test("ensureCleanLoopStart: no WIP commit when known branch is clean", () => {
 
     const logEvents = [];
     const knownBranches = new Set([branchName]);
-    ensureCleanLoopStart(
+    await ensureCleanLoopStart(
       tmp,
       tmp,
       "main",

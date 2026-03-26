@@ -6,6 +6,8 @@ import {
   extractGeminiPayloadJson,
   extractJson,
   formatCommandFailure,
+  spawnAsync,
+  throwIfAborted,
 } from "../../helpers.js";
 
 export const ISSUE_FILE = "ISSUE.md";
@@ -36,17 +38,23 @@ export function buildStepCliOpts(timeoutMs) {
   return { timeoutMs, hangTimeoutMs: 0 };
 }
 
-export function ensureBranch(
+export async function ensureBranch(
   repoRoot,
   branch,
-  { baseBranch, forceRecreate } = {},
+  { baseBranch, forceRecreate, signal } = {},
 ) {
   if (!branch) throw new Error("No branch set. Run issue-draft first.");
 
-  const current = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
+  const current = await spawnAsync(
+    "git",
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      signal,
+    },
+  );
+  throwIfAborted(current);
   if (current.status !== 0)
     throw new Error("Failed to determine current git branch.");
 
@@ -54,28 +62,40 @@ export function ensureBranch(
 
   // Force-recreate: delete existing branch and recreate from baseBranch or HEAD
   if (forceRecreate) {
-    const verify = spawnSync("git", ["rev-parse", "--verify", branch], {
+    const verify = await spawnAsync("git", ["rev-parse", "--verify", branch], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal,
     });
+    throwIfAborted(verify);
     if (verify.status === 0) {
       // Switch off the branch before deleting it
       if (currentBranch === branch) {
-        spawnSync("git", ["checkout", "--detach"], {
+        const detach = await spawnAsync("git", ["checkout", "--detach"], {
           cwd: repoRoot,
           encoding: "utf8",
+          signal,
         });
+        throwIfAborted(detach);
       }
-      spawnSync("git", ["branch", "-D", branch], {
+      const del = await spawnAsync("git", ["branch", "-D", branch], {
         cwd: repoRoot,
         encoding: "utf8",
+        signal,
       });
+      throwIfAborted(del);
     }
     const startPoint = baseBranch || "HEAD";
-    const create = spawnSync("git", ["checkout", "-b", branch, startPoint], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    });
+    const create = await spawnAsync(
+      "git",
+      ["checkout", "-b", branch, startPoint],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        signal,
+      },
+    );
+    throwIfAborted(create);
     if (create.status !== 0) {
       throw new Error(`Failed to recreate branch ${branch}: ${create.stderr}`);
     }
@@ -84,20 +104,24 @@ export function ensureBranch(
 
   if (currentBranch === branch) return;
 
-  const checkout = spawnSync("git", ["checkout", branch], {
+  const checkout = await spawnAsync("git", ["checkout", branch], {
     cwd: repoRoot,
     encoding: "utf8",
+    signal,
   });
+  throwIfAborted(checkout);
   if (checkout.status === 0) return;
 
   // Create new branch with optional baseBranch as start-point
   const createArgs = baseBranch
     ? ["checkout", "-b", branch, baseBranch]
     : ["checkout", "-b", branch];
-  const create = spawnSync("git", createArgs, {
+  const create = await spawnAsync("git", createArgs, {
     cwd: repoRoot,
     encoding: "utf8",
+    signal,
   });
+  throwIfAborted(create);
   if (create.status !== 0) {
     throw new Error(`Failed to create branch ${branch}: ${create.stderr}`);
   }

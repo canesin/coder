@@ -47,7 +47,7 @@ export default defineMachine({
     }
 
     const repoRoot = resolveRepoRoot(ctx.workspaceDir, state.repoPath);
-    ensureBranch(repoRoot, state.branch);
+    await ensureBranch(repoRoot, state.branch);
 
     ctx.log({ event: "step4_implement" });
     const { agentName: programmerName, agent: programmerAgent } =
