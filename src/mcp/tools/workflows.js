@@ -1256,22 +1256,24 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                 }
                 actorEntry.actor.send(ev);
               }
-              void mutateLoopState(
-                ws,
-                (ls) => {
-                  if (ls.runId !== nextRunId) return null;
-                  const next = {
-                    ...ls,
-                    currentStage: payload.stage,
-                    lastHeartbeatAt: at,
-                  };
-                  if ("activeAgent" in payload) {
-                    next.activeAgent = payload.activeAgent;
-                  }
-                  return next;
-                },
-                { guardRunId: nextRunId },
-              );
+              if (workflow === "develop") {
+                void mutateLoopState(
+                  ws,
+                  (ls) => {
+                    if (ls.runId !== nextRunId) return null;
+                    const next = {
+                      ...ls,
+                      currentStage: payload.stage,
+                      lastHeartbeatAt: at,
+                    };
+                    if ("activeAgent" in payload) {
+                      next.activeAgent = payload.activeAgent;
+                    }
+                    return next;
+                  },
+                  { guardRunId: nextRunId },
+                );
+              }
             },
           };
 

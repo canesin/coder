@@ -970,59 +970,60 @@ export async function runDevelopLoop(opts, ctx) {
     source: issueListSource,
   });
 
-  // Initialize loop state — merge terminal statuses from prior run.
-  // By default, only preserve "completed"; failed/skipped are retried on new start.
-  // When preserveFailedIssues is true (internal/test-only), preserve failed/skipped too.
-  const loopState = await loadLoopState(ctx.workspaceDir);
-  const priorQueue = loopState.issueQueue || [];
-  const priorById = new Map(priorQueue.map((q) => [q.id, q]));
   const terminalStatuses =
     destructiveReset || !preserveFailedIssues
       ? ["completed"]
       : ["completed", "failed", "skipped"];
-
-  // Keep original state for cleanup-failure path so we don't persist overwritten
-  // queue (which would erase branch metadata needed for WIP preservation).
-  const stateForCleanupFailure = {
-    ...loopState,
-    issueQueue: priorQueue.map((q) => ({ ...q })),
-  };
-
-  loopState.status = "running";
   const listSource = listResult.data.source || "remote";
-  loopState.issueQueue = issues.map((iss) => {
-    const prior = priorById.get(iss.id);
-    const isTerminal = prior && terminalStatuses.includes(prior.status);
-    // Defensive fallback for source: local/forced list results set it per-issue;
-    // remote agent returns per-issue source. Use listSource when missing.
-    const source =
-      iss.source ??
-      (listSource === "local"
-        ? "local"
-        : listSource === "forced"
-          ? issueSource || "github"
-          : "github");
-    return {
-      ...iss,
-      source,
-      dependsOn: iss.dependsOn || iss.depends_on || [],
-      status: isTerminal ? prior.status : "pending",
-      branch: isTerminal ? prior.branch : null,
-      prUrl: isTerminal ? prior.prUrl : null,
-      error: isTerminal ? prior.error : null,
-      baseBranch: isTerminal ? prior.baseBranch : null,
-      startedAt: isTerminal ? prior.startedAt : null,
-      completedAt: isTerminal ? prior.completedAt : null,
-      lastFailedRunId: isTerminal ? null : (prior?.lastFailedRunId ?? null),
-    };
-  });
-  loopState.currentIndex = 0;
-  loopState.startedAt = new Date().toISOString();
-  const priorRunId = loopState.runId;
-  loopState.runId = ctx.runId || randomUUID().slice(0, 8);
 
   const loopRunId = randomUUID().slice(0, 8);
   return await withDevelopPipelineLock(ctx.workspaceDir, async () => {
+    // Initialize loop state — merge terminal statuses from prior run.
+    // By default, only preserve "completed"; failed/skipped are retried on new start.
+    // When preserveFailedIssues is true (internal/test-only), preserve failed/skipped too.
+    // NOTE: state must be loaded inside the lock to prevent races with concurrent starts.
+    const loopState = await loadLoopState(ctx.workspaceDir);
+    const priorQueue = loopState.issueQueue || [];
+    const priorById = new Map(priorQueue.map((q) => [q.id, q]));
+
+    // Keep original state for cleanup-failure path so we don't persist overwritten
+    // queue (which would erase branch metadata needed for WIP preservation).
+    const stateForCleanupFailure = {
+      ...loopState,
+      issueQueue: priorQueue.map((q) => ({ ...q })),
+    };
+
+    loopState.status = "running";
+    loopState.issueQueue = issues.map((iss) => {
+      const prior = priorById.get(iss.id);
+      const isTerminal = prior && terminalStatuses.includes(prior.status);
+      // Defensive fallback for source: local/forced list results set it per-issue;
+      // remote agent returns per-issue source. Use listSource when missing.
+      const source =
+        iss.source ??
+        (listSource === "local"
+          ? "local"
+          : listSource === "forced"
+            ? issueSource || "github"
+            : "github");
+      return {
+        ...iss,
+        source,
+        dependsOn: iss.dependsOn || iss.depends_on || [],
+        status: isTerminal ? prior.status : "pending",
+        branch: isTerminal ? prior.branch : null,
+        prUrl: isTerminal ? prior.prUrl : null,
+        error: isTerminal ? prior.error : null,
+        baseBranch: isTerminal ? prior.baseBranch : null,
+        startedAt: isTerminal ? prior.startedAt : null,
+        completedAt: isTerminal ? prior.completedAt : null,
+        lastFailedRunId: isTerminal ? null : (prior?.lastFailedRunId ?? null),
+      };
+    });
+    loopState.currentIndex = 0;
+    loopState.startedAt = new Date().toISOString();
+    const priorRunId = loopState.runId;
+    loopState.runId = ctx.runId || randomUUID().slice(0, 8);
     runHooks(ctx, loopRunId, "loop_start", "", {
       status: "running",
       total: issues.length,
@@ -1999,6 +2000,11 @@ export async function runDevelopLoop(opts, ctx) {
           ["log", `${loopDefaultBranch}..${branch}`, "--oneline"],
           { cwd: loopRepoRoot, encoding: "utf8" },
         );
+        if (log.status !== 0) {
+          // git log failed — keep the branch to avoid data loss
+          kept.push(branch);
+          continue;
+        }
         const hasCommits = (log.stdout || "").trim().length > 0;
 
         if (hasCommits) {
@@ -2032,9 +2038,14 @@ export async function runDevelopLoop(opts, ctx) {
       ctx.log({ event: "smart_branch_cleanup", deleted, kept });
     }
 
-    // Settle all pending failure RCA filings
-    if (pendingRcas.length > 0 && !ctx.cancelToken.cancelled) {
-      ctx.log({ event: "failure_monitor_settling", count: pendingRcas.length });
+    // Settle all pending failure RCA filings (always drain, even on cancellation,
+    // to prevent post-finalization writes from unawaited promises)
+    if (pendingRcas.length > 0) {
+      ctx.log({
+        event: "failure_monitor_settling",
+        count: pendingRcas.length,
+        cancelled: ctx.cancelToken.cancelled,
+      });
       const rcaResults = await Promise.allSettled(pendingRcas);
       const rcaFiled = rcaResults.filter(
         (r) => r.status === "fulfilled" && r.value.issueUrl,

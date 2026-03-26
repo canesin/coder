@@ -1023,7 +1023,13 @@ export async function runHostTests(
 
     if (looksLikeRootCargoCmd()) {
       const cargoToml = path.join(resolvedRepo, "Cargo.toml");
-      if (!existsSync(cargoToml)) {
+      const workspaceCargoToml = workspaceDir
+        ? path.join(workspaceDir, "Cargo.toml")
+        : null;
+      if (
+        !existsSync(cargoToml) &&
+        !(workspaceCargoToml && existsSync(workspaceCargoToml))
+      ) {
         throw new TestInfrastructureError(
           `Test infrastructure missing: ${cargoToml} not found, but testCmd includes "cargo". ` +
             `Either ensure Cargo.toml exists on the default branch (especially with destructiveReset=true), ` +
