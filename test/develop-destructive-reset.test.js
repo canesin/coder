@@ -510,6 +510,34 @@ test("resetForNextIssue rejects promptly with an already-aborted signal", async 
   }
 });
 
+test("resetForNextIssue aborts on dirty worktree with pre-aborted signal", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    // Make the worktree dirty so resetForNextIssue enters the discard branch.
+    writeFileSync(path.join(ws, "dirty.txt"), "wip");
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      () =>
+        resetForNextIssue(ws, ".", {
+          destructiveReset: false,
+          signal: controller.signal,
+        }),
+      (err) => {
+        assert.ok(
+          err.code === "ABORT_ERR" || err.name === "AbortError",
+          `expected ABORT_ERR, got: ${err.code || err.name} — ${err.message}`,
+        );
+        return true;
+      },
+    );
+  } finally {
+    rmSync(path.dirname(ws), { recursive: true, force: true });
+  }
+});
+
 // --- ensureCleanLoopStart tests ---
 
 function makeLogCtx(workspaceDir) {

@@ -599,7 +599,7 @@ export async function resetForNextIssue(
       }
     } else if (hasDirtyFiles) {
       signal?.throwIfAborted();
-      if (!(await discardWorktreeChanges(repoRoot))) {
+      if (!(await discardWorktreeChanges(repoRoot, { signal }))) {
         throw new Error(
           "resetForNextIssue: could not discard worktree changes",
         );
