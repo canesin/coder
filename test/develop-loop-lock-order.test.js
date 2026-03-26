@@ -16,9 +16,7 @@ test("runDevelopLoop: loop path keeps ensureCleanLoopStart and saveLoopState ins
   );
   const src = readFileSync(path, "utf8");
 
-  const loopLockOpen = src.indexOf(
-    "await withDevelopPipelineLock(",
-  );
+  const loopLockOpen = src.indexOf("await withDevelopPipelineLock(");
   assert.notEqual(
     loopLockOpen,
     -1,

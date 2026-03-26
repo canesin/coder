@@ -1515,6 +1515,7 @@ export async function runDevelopLoop(opts, ctx) {
         await resetForNextIssue(ctx.workspaceDir, repoPath, {
           destructiveReset,
           issueStatus: "deferred",
+          signal: ctx.signal,
         });
 
         runHooks(
@@ -1777,6 +1778,7 @@ export async function runDevelopLoop(opts, ctx) {
       await doReset(ctx.workspaceDir, repoPath, {
         destructiveReset,
         issueStatus,
+        signal: ctx.signal,
       });
     } catch (resetErr) {
       ctx.log({

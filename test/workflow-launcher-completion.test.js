@@ -90,7 +90,7 @@ async function runLauncherNormalCompletionFixture(result, opts = {}) {
     const snap = await loadWorkflowSnapshot(ws);
     return { loop, snap };
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
@@ -214,6 +214,6 @@ test("launcher non-develop: does not sync develop loop-state into actor before t
     );
     assert.equal(snap.context?.activeAgent, "gemini");
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 3 });
   }
 });
