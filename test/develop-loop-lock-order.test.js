@@ -17,12 +17,12 @@ test("runDevelopLoop: loop path keeps ensureCleanLoopStart and saveLoopState ins
   const src = readFileSync(path, "utf8");
 
   const loopLockOpen = src.indexOf(
-    "return await withDevelopPipelineLock(ctx.workspaceDir, async () => {",
+    "await withDevelopPipelineLock(",
   );
   assert.notEqual(
     loopLockOpen,
     -1,
-    "expected runDevelopLoop to wrap the loop body in withDevelopPipelineLock",
+    "expected runDevelopLoop to use withDevelopPipelineLock for startup",
   );
 
   const ensureCall = src.indexOf("ensureCleanLoopStart(", loopLockOpen);
@@ -37,26 +37,26 @@ test("runDevelopLoop: loop path keeps ensureCleanLoopStart and saveLoopState ins
   );
 
   const saveLoopStateAfterEnsure = src.indexOf(
-    "await saveLoopState(ctx.workspaceDir, loopState,",
+    "await saveLoopState(ctx.workspaceDir, _loopState,",
     ensureCall,
   );
   assert.notEqual(
     saveLoopStateAfterEnsure,
     -1,
-    "expected saveLoopState(loopState) after ensureCleanLoopStart",
+    "expected saveLoopState(_loopState) after ensureCleanLoopStart",
   );
   assert.ok(
     saveLoopStateAfterEnsure > ensureCall,
-    "saveLoopState(loopState) must follow ensureCleanLoopStart inside the lock",
+    "saveLoopState(_loopState) must follow ensureCleanLoopStart inside the lock",
   );
 
   const secondLoopLockReturn = src.indexOf(
-    "return await withDevelopPipelineLock(ctx.workspaceDir, async () => {",
+    "await withDevelopPipelineLock(",
     loopLockOpen + 1,
   );
   assert.equal(
     secondLoopLockReturn,
     -1,
-    "only one `return await withDevelopPipelineLock(..., async () =>` pattern expected",
+    "only one withDevelopPipelineLock call expected",
   );
 });

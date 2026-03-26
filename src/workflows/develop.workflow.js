@@ -977,305 +977,357 @@ export async function runDevelopLoop(opts, ctx) {
   const listSource = listResult.data.source || "remote";
 
   const loopRunId = randomUUID().slice(0, 8);
-  return await withDevelopPipelineLock(ctx.workspaceDir, async () => {
-    // Initialize loop state — merge terminal statuses from prior run.
-    // By default, only preserve "completed"; failed/skipped are retried on new start.
-    // When preserveFailedIssues is true (internal/test-only), preserve failed/skipped too.
-    // NOTE: state must be loaded inside the lock to prevent races with concurrent starts.
-    const loopState = await loadLoopState(ctx.workspaceDir);
-    const priorQueue = loopState.issueQueue || [];
-    const priorById = new Map(priorQueue.map((q) => [q.id, q]));
 
-    // Keep original state for cleanup-failure path so we don't persist overwritten
-    // queue (which would erase branch metadata needed for WIP preservation).
-    const stateForCleanupFailure = {
-      ...loopState,
-      issueQueue: priorQueue.map((q) => ({ ...q })),
-    };
+  // Lock only the startup critical section: load state, initialize queue, clean
+  // workspace, and persist initial state. Released before per-issue processing
+  // to avoid blocking concurrent start attempts for the entire workflow duration.
+  const lockResult = await withDevelopPipelineLock(
+    ctx.workspaceDir,
+    async () => {
+      // NOTE: state must be loaded inside the lock to prevent races with concurrent starts.
+      const _loopState = await loadLoopState(ctx.workspaceDir);
+      const priorQueue = _loopState.issueQueue || [];
+      const priorById = new Map(priorQueue.map((q) => [q.id, q]));
 
-    loopState.status = "running";
-    loopState.issueQueue = issues.map((iss) => {
-      const prior = priorById.get(iss.id);
-      const isTerminal = prior && terminalStatuses.includes(prior.status);
-      // Defensive fallback for source: local/forced list results set it per-issue;
-      // remote agent returns per-issue source. Use listSource when missing.
-      const source =
-        iss.source ??
-        (listSource === "local"
-          ? "local"
-          : listSource === "forced"
-            ? issueSource || "github"
-            : "github");
-      return {
-        ...iss,
-        source,
-        dependsOn: iss.dependsOn || iss.depends_on || [],
-        status: isTerminal ? prior.status : "pending",
-        branch: isTerminal ? prior.branch : null,
-        prUrl: isTerminal ? prior.prUrl : null,
-        error: isTerminal ? prior.error : null,
-        baseBranch: isTerminal ? prior.baseBranch : null,
-        startedAt: isTerminal ? prior.startedAt : null,
-        completedAt: isTerminal ? prior.completedAt : null,
-        lastFailedRunId: isTerminal ? null : (prior?.lastFailedRunId ?? null),
+      // Keep original state for cleanup-failure path so we don't persist overwritten
+      // queue (which would erase branch metadata needed for WIP preservation).
+      const stateForCleanupFailure = {
+        ..._loopState,
+        issueQueue: priorQueue.map((q) => ({ ...q })),
       };
-    });
-    loopState.currentIndex = 0;
-    loopState.startedAt = new Date().toISOString();
-    const priorRunId = loopState.runId;
-    loopState.runId = ctx.runId || randomUUID().slice(0, 8);
-    runHooks(ctx, loopRunId, "loop_start", "", {
-      status: "running",
-      total: issues.length,
-      method: rationale.method,
-    });
 
-    // Ensure a clean workspace before processing any issues.
-    // Run before persisting overwritten queue so a crash leaves prior branches
-    // intact for WIP preservation on next startup.
-    // Recovers from prior crashed/interrupted runs without touching loop-state.json.
-    // Throws if git is broken — no point continuing if the workspace can't be cleaned.
-    const loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
-    const loopDefaultBranch = await detectDefaultBranch(loopRepoRoot);
-    const knownBranches = new Set(
-      priorQueue.map((q) => q.branch).filter(Boolean),
-    );
-    try {
-      await ensureCleanLoopStart(
-        ctx.workspaceDir,
-        loopRepoRoot,
-        loopDefaultBranch,
-        ctx.log,
-        knownBranches,
-        { ctx, issues: loopState.issueQueue, destructiveReset },
+      _loopState.status = "running";
+      _loopState.issueQueue = issues.map((iss) => {
+        const prior = priorById.get(iss.id);
+        const isTerminal = prior && terminalStatuses.includes(prior.status);
+        const source =
+          iss.source ??
+          (listSource === "local"
+            ? "local"
+            : listSource === "forced"
+              ? issueSource || "github"
+              : "github");
+        return {
+          ...iss,
+          source,
+          dependsOn: iss.dependsOn || iss.depends_on || [],
+          status: isTerminal ? prior.status : "pending",
+          branch: isTerminal ? prior.branch : null,
+          prUrl: isTerminal ? prior.prUrl : null,
+          error: isTerminal ? prior.error : null,
+          baseBranch: isTerminal ? prior.baseBranch : null,
+          startedAt: isTerminal ? prior.startedAt : null,
+          completedAt: isTerminal ? prior.completedAt : null,
+          lastFailedRunId: isTerminal ? null : (prior?.lastFailedRunId ?? null),
+        };
+      });
+      _loopState.currentIndex = 0;
+      _loopState.startedAt = new Date().toISOString();
+      const priorRunId = _loopState.runId;
+      _loopState.runId = ctx.runId || randomUUID().slice(0, 8);
+
+      const _loopRepoRoot = resolveRepoRoot(ctx.workspaceDir, ".");
+      const _loopDefaultBranch = await detectDefaultBranch(_loopRepoRoot);
+      const knownBranches = new Set(
+        priorQueue.map((q) => q.branch).filter(Boolean),
       );
-    } catch (cleanupErr) {
-      stateForCleanupFailure.status = "failed";
-      stateForCleanupFailure.error = cleanupErr.message;
-      stateForCleanupFailure.runId = loopState.runId;
-      stateForCleanupFailure.completedAt = new Date().toISOString();
-      await saveLoopState(ctx.workspaceDir, stateForCleanupFailure, {
+      try {
+        await ensureCleanLoopStart(
+          ctx.workspaceDir,
+          _loopRepoRoot,
+          _loopDefaultBranch,
+          ctx.log,
+          knownBranches,
+          { ctx, issues: _loopState.issueQueue, destructiveReset },
+        );
+      } catch (cleanupErr) {
+        stateForCleanupFailure.status = "failed";
+        stateForCleanupFailure.error = cleanupErr.message;
+        stateForCleanupFailure.runId = _loopState.runId;
+        stateForCleanupFailure.completedAt = new Date().toISOString();
+        await saveLoopState(ctx.workspaceDir, stateForCleanupFailure, {
+          guardRunId: priorRunId ?? "",
+        });
+        runHooks(ctx, loopRunId, "loop_complete", "", {
+          status: "failed",
+          completed: 0,
+          failed: 0,
+          skipped: 0,
+          error: cleanupErr.message,
+        });
+        return {
+          earlyReturn: {
+            status: "failed",
+            error: cleanupErr.message,
+            results: [],
+          },
+        };
+      }
+
+      await saveLoopState(ctx.workspaceDir, _loopState, {
         guardRunId: priorRunId ?? "",
       });
-      runHooks(ctx, loopRunId, "loop_complete", "", {
-        status: "failed",
-        completed: 0,
-        failed: 0,
-        skipped: 0,
-        error: cleanupErr.message,
-      });
+
       return {
-        status: "failed",
-        error: cleanupErr.message,
-        results: [],
+        loopState: _loopState,
+        loopRepoRoot: _loopRepoRoot,
+        loopDefaultBranch: _loopDefaultBranch,
+        priorQueue,
       };
-    }
+    },
+  );
 
-    await saveLoopState(ctx.workspaceDir, loopState, {
-      guardRunId: priorRunId ?? "",
-    });
+  // Handle early return from cleanup failure inside lock
+  if (lockResult.earlyReturn) return lockResult.earlyReturn;
+  const { loopState, loopRepoRoot, loopDefaultBranch, priorQueue } = lockResult;
 
-    /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */
-    const outcomeMap = new Map();
-    const results = [];
-    /** @type {Promise<{ issueUrl: string|null, skipped: boolean, error?: string }>[]} */
-    const pendingRcas = [];
-    let completed = 0;
-    let failed = 0;
-    let skipped = 0;
+  runHooks(ctx, loopRunId, "loop_start", "", {
+    status: "running",
+    total: issues.length,
+    method: rationale.method,
+  });
 
-    function enqueueRca(issue, error, i, extra = {}) {
-      if (!ctx.config?.workflow?.failureMonitor?.enabled) return;
-      pendingRcas.push(
-        runFailureRca(
-          { issue, error, loopRunId, loopState, issueIndex: i, ...extra },
-          ctx,
-        ),
+  /** @type {Map<string, { status: string, branch?: string, diffSummary?: string, repoPath?: string }>} */
+  const outcomeMap = new Map();
+  const results = [];
+  /** @type {Promise<{ issueUrl: string|null, skipped: boolean, error?: string }>[]} */
+  const pendingRcas = [];
+  let completed = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  function enqueueRca(issue, error, i, extra = {}) {
+    if (!ctx.config?.workflow?.failureMonitor?.enabled) return;
+    pendingRcas.push(
+      runFailureRca(
+        { issue, error, loopRunId, loopState, issueIndex: i, ...extra },
+        ctx,
+      ),
+    );
+  }
+
+  // Seed outcomeMap from terminal issues in the prior run (includes
+  // issues no longer in the active list, e.g. closed/merged).
+  // Respects destructiveReset: failed/skipped are not seeded so their
+  // dependents don't inherit stale failure outcomes.
+  // For completed branches, compute diffSummary so they can serve as
+  // fallback conflict context when open-PR fetching is unavailable.
+  for (const prior of priorQueue) {
+    if (!terminalStatuses.includes(prior.status)) continue;
+    const entry = {
+      status: prior.status,
+      branch: prior.branch || undefined,
+    };
+    if (prior.status === "completed") {
+      const priorRepoPath = normalizeRepoPath(
+        ctx.workspaceDir,
+        prior.repo_path,
       );
-    }
-
-    // Seed outcomeMap from terminal issues in the prior run (includes
-    // issues no longer in the active list, e.g. closed/merged).
-    // Respects destructiveReset: failed/skipped are not seeded so their
-    // dependents don't inherit stale failure outcomes.
-    // For completed branches, compute diffSummary so they can serve as
-    // fallback conflict context when open-PR fetching is unavailable.
-    for (const prior of priorQueue) {
-      if (!terminalStatuses.includes(prior.status)) continue;
-      const entry = {
-        status: prior.status,
-        branch: prior.branch || undefined,
-      };
-      if (prior.status === "completed") {
-        const priorRepoPath = normalizeRepoPath(
-          ctx.workspaceDir,
-          prior.repo_path,
+      entry.repoPath = priorRepoPath;
+      if (prior.branch) {
+        const priorRepoRoot = resolveRepoRoot(ctx.workspaceDir, priorRepoPath);
+        const priorDefault = await detectDefaultBranch(priorRepoRoot);
+        const stat = spawnSync(
+          "git",
+          ["diff", "--stat", `${priorDefault}...${prior.branch}`],
+          { cwd: priorRepoRoot, encoding: "utf8", timeout: 5000 },
         );
-        entry.repoPath = priorRepoPath;
-        if (prior.branch) {
-          const priorRepoRoot = resolveRepoRoot(
-            ctx.workspaceDir,
-            priorRepoPath,
-          );
-          const priorDefault = await detectDefaultBranch(priorRepoRoot);
-          const stat = spawnSync(
-            "git",
-            ["diff", "--stat", `${priorDefault}...${prior.branch}`],
-            { cwd: priorRepoRoot, encoding: "utf8", timeout: 5000 },
-          );
-          if (stat.status === 0) {
-            entry.diffSummary = (stat.stdout || "").trim() || undefined;
-          }
+        if (stat.status === 0) {
+          entry.diffSummary = (stat.stdout || "").trim() || undefined;
         }
       }
-      outcomeMap.set(prior.id, entry);
     }
-    for (const entry of loopState.issueQueue) {
-      if (entry.status === "completed") completed++;
-      else if (entry.status === "failed") failed++;
-      else if (entry.status === "skipped") skipped++;
+    outcomeMap.set(prior.id, entry);
+  }
+  for (const entry of loopState.issueQueue) {
+    if (entry.status === "completed") completed++;
+    else if (entry.status === "failed") failed++;
+    else if (entry.status === "skipped") skipped++;
+  }
+
+  // Helper: process a single issue
+  async function processIssue(issue, i, { isRetry = false } = {}) {
+    const currentStatus = loopState.issueQueue[i].status;
+    if (["completed", "failed", "skipped"].includes(currentStatus)) {
+      results.push({
+        ...issue,
+        status: currentStatus,
+        branch: loopState.issueQueue[i].branch,
+        prUrl: loopState.issueQueue[i].prUrl,
+        error: loopState.issueQueue[i].error,
+      });
+      return currentStatus;
     }
 
-    // Helper: process a single issue
-    async function processIssue(issue, i, { isRetry = false } = {}) {
-      const currentStatus = loopState.issueQueue[i].status;
-      if (["completed", "failed", "skipped"].includes(currentStatus)) {
-        results.push({
-          ...issue,
-          status: currentStatus,
-          branch: loopState.issueQueue[i].branch,
-          prUrl: loopState.issueQueue[i].prUrl,
-          error: loopState.issueQueue[i].error,
-        });
-        return currentStatus;
-      }
+    loopState.currentIndex = i;
+    loopState.currentStage = isRetry ? "retry" : "processing";
+    loopState.lastHeartbeatAt = new Date().toISOString();
+    loopState.issueQueue[i].status = "in_progress";
+    loopState.issueQueue[i].branch = buildIssueBranchName(issue);
+    loopState.issueQueue[i].startedAt = new Date().toISOString();
+    await saveLoopState(ctx.workspaceDir, loopState, {
+      guardRunId: loopState.runId,
+    });
 
-      loopState.currentIndex = i;
-      loopState.currentStage = isRetry ? "retry" : "processing";
-      loopState.lastHeartbeatAt = new Date().toISOString();
-      loopState.issueQueue[i].status = "in_progress";
-      loopState.issueQueue[i].branch = buildIssueBranchName(issue);
-      loopState.issueQueue[i].startedAt = new Date().toISOString();
+    const issueEnv = {
+      CODER_HOOK_ISSUE_ID: String(issue.id || ""),
+      CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
+    };
+    runHooks(ctx, loopRunId, "issue_start", "", {}, issueEnv);
+
+    const { baseBranch, anyDepsFailed, multipleBranches, depOutcomes } =
+      resolveDependencyBranch(issue, outcomeMap);
+
+    if (anyDepsFailed) {
+      ctx.log({
+        event: "issue_skipped",
+        issueId: issue.id,
+        reason: "dependency_failed",
+        depOutcomes,
+      });
+      loopState.issueQueue[i].status = "skipped";
+      loopState.issueQueue[i].error = "One or more dependencies failed";
+      outcomeMap.set(issue.id, { status: "skipped" });
+      skipped++;
+      results.push({
+        ...issue,
+        status: "skipped",
+        error: "One or more dependencies failed",
+      });
       await saveLoopState(ctx.workspaceDir, loopState, {
         guardRunId: loopState.runId,
       });
-
-      const issueEnv = {
-        CODER_HOOK_ISSUE_ID: String(issue.id || ""),
-        CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
-      };
-      runHooks(ctx, loopRunId, "issue_start", "", {}, issueEnv);
-
-      const { baseBranch, anyDepsFailed, multipleBranches, depOutcomes } =
-        resolveDependencyBranch(issue, outcomeMap);
-
-      if (anyDepsFailed) {
-        ctx.log({
-          event: "issue_skipped",
-          issueId: issue.id,
-          reason: "dependency_failed",
-          depOutcomes,
-        });
-        loopState.issueQueue[i].status = "skipped";
-        loopState.issueQueue[i].error = "One or more dependencies failed";
-        outcomeMap.set(issue.id, { status: "skipped" });
-        skipped++;
-        results.push({
-          ...issue,
-          status: "skipped",
-          error: "One or more dependencies failed",
-        });
-        await saveLoopState(ctx.workspaceDir, loopState, {
-          guardRunId: loopState.runId,
-        });
-        runHooks(
-          ctx,
-          loopRunId,
-          "issue_skipped",
-          "",
-          { status: "skipped", reason: "dependency_failed" },
-          issueEnv,
-        );
-        return "skipped";
-      }
-
-      // Defer if any dependency hasn't been processed yet (first pass only)
-      const hasUnresolvedDeps = Object.values(depOutcomes).some(
-        (s) => s === "pending" || s === "deferred",
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_skipped",
+        "",
+        { status: "skipped", reason: "dependency_failed" },
+        issueEnv,
       );
-      if (hasUnresolvedDeps && !isRetry) {
-        ctx.log({ event: "issue_deferred", issueId: issue.id, depOutcomes });
-        loopState.issueQueue[i].status = "deferred";
-        await saveLoopState(ctx.workspaceDir, loopState, {
-          guardRunId: loopState.runId,
-        });
-        runHooks(
-          ctx,
-          loopRunId,
-          "issue_deferred",
-          "",
-          { status: "deferred" },
-          issueEnv,
-        );
-        return "deferred";
-      }
+      return "skipped";
+    }
 
-      if (multipleBranches) {
-        ctx.log({
-          event: "issue_failed",
-          issueId: issue.id,
-          reason: "multiple_dependency_branches",
-          depOutcomes,
-        });
-        loopState.issueQueue[i].status = "failed";
-        loopState.issueQueue[i].error =
-          "Multiple dependency branches found. Please merge prerequisite branches into the default branch before proceeding.";
-        loopState.issueQueue[i].completedAt = new Date().toISOString();
-        outcomeMap.set(issue.id, { status: "failed" });
-        failed++;
-        results.push({
-          ...issue,
+    // Defer if any dependency hasn't been processed yet (first pass only)
+    const hasUnresolvedDeps = Object.values(depOutcomes).some(
+      (s) => s === "pending" || s === "deferred",
+    );
+    if (hasUnresolvedDeps && !isRetry) {
+      ctx.log({ event: "issue_deferred", issueId: issue.id, depOutcomes });
+      loopState.issueQueue[i].status = "deferred";
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_deferred",
+        "",
+        { status: "deferred" },
+        issueEnv,
+      );
+      return "deferred";
+    }
+
+    if (multipleBranches) {
+      ctx.log({
+        event: "issue_failed",
+        issueId: issue.id,
+        reason: "multiple_dependency_branches",
+        depOutcomes,
+      });
+      loopState.issueQueue[i].status = "failed";
+      loopState.issueQueue[i].error =
+        "Multiple dependency branches found. Please merge prerequisite branches into the default branch before proceeding.";
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
+      outcomeMap.set(issue.id, { status: "failed" });
+      failed++;
+      results.push({
+        ...issue,
+        status: "failed",
+        error: loopState.issueQueue[i].error,
+      });
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_failed",
+        "",
+        {
           status: "failed",
-          error: loopState.issueQueue[i].error,
-        });
-        await saveLoopState(ctx.workspaceDir, loopState, {
-          guardRunId: loopState.runId,
-        });
-        runHooks(
-          ctx,
-          loopRunId,
-          "issue_failed",
-          "",
-          {
-            status: "failed",
-            reason: "multiple_dependency_branches",
-          },
-          issueEnv,
-        );
-        return "failed";
-      }
+          reason: "multiple_dependency_branches",
+        },
+        issueEnv,
+      );
+      return "failed";
+    }
 
-      if (baseBranch) {
-        ctx.log({
-          event: "dependency_branch_resolved",
-          issueId: issue.id,
-          baseBranch,
-          depOutcomes,
-        });
-        loopState.issueQueue[i].baseBranch = baseBranch;
-      }
+    if (baseBranch) {
+      ctx.log({
+        event: "dependency_branch_resolved",
+        issueId: issue.id,
+        baseBranch,
+        depOutcomes,
+      });
+      loopState.issueQueue[i].baseBranch = baseBranch;
+    }
 
-      const repoPath = normalizeRepoPath(ctx.workspaceDir, issue.repo_path);
-      const issueRepoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
+    const repoPath = normalizeRepoPath(ctx.workspaceDir, issue.repo_path);
+    const issueRepoRoot = resolveRepoRoot(ctx.workspaceDir, repoPath);
 
-      // Resolve per-issue default branch before git ops
-      const issueDefaultBranch = await detectDefaultBranch(issueRepoRoot);
-      const trackingOk = await checkDefaultBranchTracking(
+    // Resolve per-issue default branch before git ops
+    const issueDefaultBranch = await detectDefaultBranch(issueRepoRoot);
+    const trackingOk = await checkDefaultBranchTracking(
+      issueRepoRoot,
+      issueDefaultBranch,
+      ctx.log,
+    );
+    if (!trackingOk) {
+      const remoteName = getDefaultBranchRemoteName(
         issueRepoRoot,
         issueDefaultBranch,
-        ctx.log,
       );
-      if (!trackingOk) {
+      const suggestion = `Run: git branch --set-upstream-to=${remoteName}/${issueDefaultBranch} ${issueDefaultBranch}`;
+      ctx.log({
+        event: "issue_deferred_git_tracking",
+        issueId: issue.id,
+        defaultBranch: issueDefaultBranch,
+        suggestion,
+      });
+      loopState.issueQueue[i].status = "deferred";
+      loopState.issueQueue[i].error =
+        `Default branch has no tracking config. ${suggestion}`;
+      loopState.issueQueue[i].deferredReason = "git_tracking";
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_deferred",
+        "",
+        { status: "deferred", reason: "git_tracking", suggestion },
+        issueEnv,
+      );
+      return "deferred";
+    }
+
+    // Pull latest default branch to pick up any PRs merged while
+    // earlier issues were being processed.
+    const pullResult = spawnSync("git", ["pull", "--ff-only"], {
+      cwd: issueRepoRoot,
+      encoding: "utf8",
+    });
+    if (pullResult.status !== 0) {
+      const stderr = (pullResult.stderr || "").trim();
+      ctx.log({
+        event: "git_pull_failed",
+        issueId: issue.id,
+        stderr: stderr.slice(0, 200),
+      });
+      if (isStaleUpstreamRefError(stderr)) {
         const remoteName = getDefaultBranchRemoteName(
           issueRepoRoot,
           issueDefaultBranch,
@@ -1286,10 +1338,11 @@ export async function runDevelopLoop(opts, ctx) {
           issueId: issue.id,
           defaultBranch: issueDefaultBranch,
           suggestion,
+          reason: "stale_upstream_ref",
         });
         loopState.issueQueue[i].status = "deferred";
         loopState.issueQueue[i].error =
-          `Default branch has no tracking config. ${suggestion}`;
+          `Git pull failed: upstream ref not found. ${suggestion}`;
         loopState.issueQueue[i].deferredReason = "git_tracking";
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
@@ -1304,391 +1357,235 @@ export async function runDevelopLoop(opts, ctx) {
         );
         return "deferred";
       }
-
-      // Pull latest default branch to pick up any PRs merged while
-      // earlier issues were being processed.
-      const pullResult = spawnSync("git", ["pull", "--ff-only"], {
-        cwd: issueRepoRoot,
-        encoding: "utf8",
+      const errMsg = `Git pull failed: ${stderr.slice(0, 200)}`;
+      loopState.issueQueue[i].status = "failed";
+      loopState.issueQueue[i].error = errMsg;
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
+      outcomeMap.set(issue.id, { status: "failed" });
+      failed++;
+      results.push({ ...issue, status: "failed", error: errMsg });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_failed",
+        "",
+        { status: "failed", error: errMsg },
+        issueEnv,
+      );
+      // Cancel remaining pending items — they won't be processed.
+      let cancelled = 0;
+      for (const q of loopState.issueQueue) {
+        if (q.status === "pending") {
+          q.status = "cancelled";
+          cancelled++;
+        }
+      }
+      loopState.status = "failed";
+      loopState.completedAt = new Date().toISOString();
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
       });
-      if (pullResult.status !== 0) {
-        const stderr = (pullResult.stderr || "").trim();
+      runHooks(ctx, loopRunId, "loop_complete", "", {
+        status: "failed",
+        completed,
+        failed,
+        skipped,
+        cancelled,
+        deferred: loopState.issueQueue.filter((q) => q.status === "deferred")
+          .length,
+      });
+      throw new Error(errMsg);
+    }
+
+    // Build active branch context for conflict detection (skipped when disabled).
+    let activeBranches = [];
+    if (ctx.config?.workflow?.conflictDetection !== false) {
+      const openPrBranches = await fetchOpenPrBranches(
+        issueRepoRoot,
+        issueDefaultBranch,
+        ctx.log,
+      );
+      const seenBranches = new Set(openPrBranches.map((b) => b.branch));
+
+      // Add current-run completed branches not already covered by open PRs,
+      // filtering to only those from the same repo to avoid cross-repo contamination.
+      for (const [id, outcome] of outcomeMap) {
+        if (
+          outcome.status === "completed" &&
+          outcome.branch &&
+          outcome.diffSummary &&
+          outcome.repoPath === repoPath &&
+          !seenBranches.has(outcome.branch)
+        ) {
+          const entry = loopState.issueQueue.find((q) => q.id === id);
+          openPrBranches.push({
+            branch: outcome.branch,
+            issueId: id,
+            title: entry?.title || "",
+            diffStat: outcome.diffSummary,
+          });
+          seenBranches.add(outcome.branch);
+        }
+      }
+      activeBranches = openPrBranches;
+    }
+
+    if (ctx.config?.workflow?.resumeStepState !== false) {
+      await prepareForIssue(ctx.workspaceDir, issue, ctx);
+    }
+
+    // Build clarifications — reference RCA file from prior failure if available.
+    // Read from the stable per-issue RCA path (immune to archive/clear races),
+    // falling back to the legacy artifacts location for backwards compat.
+    let clarifications = `Autonomous mode. Goal: ${goal}`;
+    const stableRcaPath = issueRcaPath(ctx.workspaceDir, issue);
+    const legacyRcaPath = artifactPaths(ctx.artifactsDir).rca;
+    const rcaPath = existsSync(stableRcaPath) ? stableRcaPath : legacyRcaPath;
+    if (isRetry && existsSync(rcaPath)) {
+      clarifications +=
+        "\n\n---\n## Prior Failure Analysis\n\n" +
+        "This issue failed on a previous attempt. A root cause analysis " +
+        `is available at \`${rcaPath}\`. Read it before starting — it ` +
+        "describes what went wrong and suggests fixes. Use this to avoid " +
+        "the same failure and fix any issues if they relate to the code " +
+        "you are developing.";
+      ctx.log({
+        event: "rca_reference_injected",
+        issueId: issue.id,
+        rcaPath,
+      });
+    }
+
+    try {
+      const pipelineResult = await runDevelopPipeline(
+        {
+          issue,
+          repoPath,
+          clarifications,
+          baseBranch: baseBranch || undefined,
+          prBase: baseBranch || "",
+          testCmd,
+          testConfigPath,
+          allowNoTests,
+          ppcommitPreset,
+          force: true,
+          activeBranches,
+          loopState,
+          issueIndex: i,
+          resumeFromRunId:
+            loopState.issueQueue[i]?.lastFailedRunId || undefined,
+        },
+        ctx,
+      );
+
+      // Pipeline-level deferral: conflict detection or plan-review gate block
+      if (pipelineResult.status === "deferred") {
+        const reason = pipelineResult.deferredReason || "conflict";
         ctx.log({
-          event: "git_pull_failed",
+          event: `issue_deferred_${reason}`,
           issueId: issue.id,
-          stderr: stderr.slice(0, 200),
+          ...(pipelineResult.conflictBranch && {
+            conflictBranch: pipelineResult.conflictBranch,
+          }),
+          error: pipelineResult.error,
         });
-        if (isStaleUpstreamRefError(stderr)) {
-          const remoteName = getDefaultBranchRemoteName(
-            issueRepoRoot,
-            issueDefaultBranch,
-          );
-          const suggestion = `Run: git branch --set-upstream-to=${remoteName}/${issueDefaultBranch} ${issueDefaultBranch}`;
-          ctx.log({
-            event: "issue_deferred_git_tracking",
-            issueId: issue.id,
-            defaultBranch: issueDefaultBranch,
-            suggestion,
-            reason: "stale_upstream_ref",
-          });
-          loopState.issueQueue[i].status = "deferred";
-          loopState.issueQueue[i].error =
-            `Git pull failed: upstream ref not found. ${suggestion}`;
-          loopState.issueQueue[i].deferredReason = "git_tracking";
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-          runHooks(
-            ctx,
-            loopRunId,
-            "issue_deferred",
-            "",
-            { status: "deferred", reason: "git_tracking", suggestion },
-            issueEnv,
-          );
-          return "deferred";
-        }
-        const errMsg = `Git pull failed: ${stderr.slice(0, 200)}`;
-        loopState.issueQueue[i].status = "failed";
-        loopState.issueQueue[i].error = errMsg;
-        loopState.issueQueue[i].completedAt = new Date().toISOString();
-        outcomeMap.set(issue.id, { status: "failed" });
-        failed++;
-        results.push({ ...issue, status: "failed", error: errMsg });
-        runHooks(
-          ctx,
-          loopRunId,
-          "issue_failed",
-          "",
-          { status: "failed", error: errMsg },
-          issueEnv,
-        );
-        // Cancel remaining pending items — they won't be processed.
-        let cancelled = 0;
-        for (const q of loopState.issueQueue) {
-          if (q.status === "pending") {
-            q.status = "cancelled";
-            cancelled++;
-          }
-        }
-        loopState.status = "failed";
-        loopState.completedAt = new Date().toISOString();
+
+        // Clear planning cache so the planner re-runs on retry with updated branches
+        const deferState = await loadState(ctx.workspaceDir);
+        deferState.steps ||= {};
+        deferState.steps.wrotePlan = false;
+        deferState.steps.wroteCritique = false;
+        deferState.planExhausted = false;
+        await saveState(ctx.workspaceDir, deferState);
+
+        const deferPaths = artifactPaths(ctx.artifactsDir);
+        if (existsSync(deferPaths.plan))
+          rmSync(deferPaths.plan, { force: true });
+        if (existsSync(deferPaths.critique))
+          rmSync(deferPaths.critique, { force: true });
+
+        loopState.issueQueue[i].status = "deferred";
+        loopState.issueQueue[i].error = pipelineResult.error;
+        loopState.issueQueue[i].deferredReason = reason;
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
-        runHooks(ctx, loopRunId, "loop_complete", "", {
-          status: "failed",
-          completed,
-          failed,
-          skipped,
-          cancelled,
-          deferred: loopState.issueQueue.filter((q) => q.status === "deferred")
-            .length,
+
+        // Phase 1+2 ran, so workspace is on the issue branch — reset it
+        await resetForNextIssue(ctx.workspaceDir, repoPath, {
+          destructiveReset,
+          issueStatus: "deferred",
         });
-        throw new Error(errMsg);
-      }
 
-      // Build active branch context for conflict detection (skipped when disabled).
-      let activeBranches = [];
-      if (ctx.config?.workflow?.conflictDetection !== false) {
-        const openPrBranches = await fetchOpenPrBranches(
-          issueRepoRoot,
-          issueDefaultBranch,
-          ctx.log,
-        );
-        const seenBranches = new Set(openPrBranches.map((b) => b.branch));
-
-        // Add current-run completed branches not already covered by open PRs,
-        // filtering to only those from the same repo to avoid cross-repo contamination.
-        for (const [id, outcome] of outcomeMap) {
-          if (
-            outcome.status === "completed" &&
-            outcome.branch &&
-            outcome.diffSummary &&
-            outcome.repoPath === repoPath &&
-            !seenBranches.has(outcome.branch)
-          ) {
-            const entry = loopState.issueQueue.find((q) => q.id === id);
-            openPrBranches.push({
-              branch: outcome.branch,
-              issueId: id,
-              title: entry?.title || "",
-              diffStat: outcome.diffSummary,
-            });
-            seenBranches.add(outcome.branch);
-          }
-        }
-        activeBranches = openPrBranches;
-      }
-
-      if (ctx.config?.workflow?.resumeStepState !== false) {
-        await prepareForIssue(ctx.workspaceDir, issue, ctx);
-      }
-
-      // Build clarifications — reference RCA file from prior failure if available.
-      // Read from the stable per-issue RCA path (immune to archive/clear races),
-      // falling back to the legacy artifacts location for backwards compat.
-      let clarifications = `Autonomous mode. Goal: ${goal}`;
-      const stableRcaPath = issueRcaPath(ctx.workspaceDir, issue);
-      const legacyRcaPath = artifactPaths(ctx.artifactsDir).rca;
-      const rcaPath = existsSync(stableRcaPath) ? stableRcaPath : legacyRcaPath;
-      if (isRetry && existsSync(rcaPath)) {
-        clarifications +=
-          "\n\n---\n## Prior Failure Analysis\n\n" +
-          "This issue failed on a previous attempt. A root cause analysis " +
-          `is available at \`${rcaPath}\`. Read it before starting — it ` +
-          "describes what went wrong and suggests fixes. Use this to avoid " +
-          "the same failure and fix any issues if they relate to the code " +
-          "you are developing.";
-        ctx.log({
-          event: "rca_reference_injected",
-          issueId: issue.id,
-          rcaPath,
-        });
-      }
-
-      try {
-        const pipelineResult = await runDevelopPipeline(
-          {
-            issue,
-            repoPath,
-            clarifications,
-            baseBranch: baseBranch || undefined,
-            prBase: baseBranch || "",
-            testCmd,
-            testConfigPath,
-            allowNoTests,
-            ppcommitPreset,
-            force: true,
-            activeBranches,
-            loopState,
-            issueIndex: i,
-            resumeFromRunId:
-              loopState.issueQueue[i]?.lastFailedRunId || undefined,
-          },
+        runHooks(
           ctx,
+          loopRunId,
+          "issue_deferred",
+          "",
+          { status: "deferred", reason },
+          issueEnv,
         );
+        return "deferred";
+      }
 
-        // Pipeline-level deferral: conflict detection or plan-review gate block
-        if (pipelineResult.status === "deferred") {
-          const reason = pipelineResult.deferredReason || "conflict";
-          ctx.log({
-            event: `issue_deferred_${reason}`,
-            issueId: issue.id,
-            ...(pipelineResult.conflictBranch && {
-              conflictBranch: pipelineResult.conflictBranch,
-            }),
-            error: pipelineResult.error,
-          });
-
-          // Clear planning cache so the planner re-runs on retry with updated branches
-          const deferState = await loadState(ctx.workspaceDir);
-          deferState.steps ||= {};
-          deferState.steps.wrotePlan = false;
-          deferState.steps.wroteCritique = false;
-          deferState.planExhausted = false;
-          await saveState(ctx.workspaceDir, deferState);
-
-          const deferPaths = artifactPaths(ctx.artifactsDir);
-          if (existsSync(deferPaths.plan))
-            rmSync(deferPaths.plan, { force: true });
-          if (existsSync(deferPaths.critique))
-            rmSync(deferPaths.critique, { force: true });
-
-          loopState.issueQueue[i].status = "deferred";
-          loopState.issueQueue[i].error = pipelineResult.error;
-          loopState.issueQueue[i].deferredReason = reason;
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-
-          // Phase 1+2 ran, so workspace is on the issue branch — reset it
-          await resetForNextIssue(ctx.workspaceDir, repoPath, {
-            destructiveReset,
-            issueStatus: "deferred",
-          });
-
-          runHooks(
-            ctx,
-            loopRunId,
-            "issue_deferred",
-            "",
-            { status: "deferred", reason },
-            issueEnv,
-          );
-          return "deferred";
-        }
-
-        if (pipelineResult.status === "completed") {
-          const prResult =
-            pipelineResult.results[pipelineResult.results.length - 1];
-          const branch = prResult?.data?.branch;
-          loopState.issueQueue[i].status = "completed";
-          loopState.issueQueue[i].branch = branch;
-          loopState.issueQueue[i].prUrl = prResult?.data?.prUrl;
-          loopState.issueQueue[i].error = null;
-          loopState.issueQueue[i].completedAt = new Date().toISOString();
-          // Record diff stats so subsequent issues can detect file overlap
-          const diffStat = spawnSync(
-            "git",
-            ["diff", "--stat", `${issueDefaultBranch}...${branch}`],
-            { cwd: issueRepoRoot, encoding: "utf8" },
-          );
-          const diffSummary = (diffStat.stdout || "").trim();
-          outcomeMap.set(issue.id, {
-            status: "completed",
-            branch,
-            diffSummary,
-            repoPath,
-          });
-          completed++;
-          results.push({
-            ...issue,
-            status: "completed",
-            prUrl: prResult?.data?.prUrl,
-            branch,
-          });
-          const backupDir = path.join(
-            ctx.workspaceDir,
-            ".coder",
-            "backups",
-            backupKeyFor(issue),
-          );
-          if (existsSync(backupDir))
-            rmSync(backupDir, { recursive: true, force: true });
-          runHooks(
-            ctx,
-            loopRunId,
-            "issue_complete",
-            "",
-            { status: "completed", prUrl: prResult?.data?.prUrl, branch },
-            issueEnv,
-          );
-        } else if (pipelineResult.status === "cancelled") {
-          loopState.issueQueue[i].status = "pending";
-          loopState.issueQueue[i].error = null;
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-          return "cancelled";
-        } else {
-          const errText = pipelineResult.error || "";
-          if (isRateLimitError(errText) && !isRetry) {
-            ctx.log({ event: "issue_rate_limited", issueId: issue.id });
-            loopState.issueQueue[i].status = "deferred";
-            loopState.issueQueue[i].error = errText;
-            loopState.issueQueue[i].deferredReason = "rate_limit";
-            await saveLoopState(ctx.workspaceDir, loopState, {
-              guardRunId: loopState.runId,
-            });
-            runHooks(
-              ctx,
-              loopRunId,
-              "issue_deferred",
-              "",
-              { status: "deferred" },
-              issueEnv,
-            );
-            return "deferred";
-          }
-          if (pipelineResult.planReviewExhausted) {
-            // Defer bucket: deferredReason plan_blocked vs pipeline error text — intentional (operator queue, not hard fail).
-            ctx.log({
-              event: "issue_deferred_plan_blocked",
-              issueId: issue.id,
-              reason: "plan_review_exhausted",
-            });
-            loopState.issueQueue[i].status = "deferred";
-            loopState.issueQueue[i].error = errText;
-            loopState.issueQueue[i].deferredReason = "plan_blocked";
-            await saveLoopState(ctx.workspaceDir, loopState, {
-              guardRunId: loopState.runId,
-            });
-            runHooks(
-              ctx,
-              loopRunId,
-              "issue_deferred",
-              "",
-              { status: "deferred", reason: "plan_blocked" },
-              issueEnv,
-            );
-            if (ctx.config?.workflow?.failureMonitor?.monitorBlockingDefers) {
-              enqueueRca(issue, errText, i, {
-                deferredReason: "plan_blocked",
-              });
-            }
-            // Archive artifacts for debugging (preserve state for resume like other defers)
-            archiveFailureArtifacts(
-              ctx.workspaceDir,
-              issue,
-              "plan_review_exhausted",
-              { stage: "plan_review" },
-            );
-            ctx.log({
-              event: "failure_archived",
-              issueId: issue.id,
-              path: ".coder/failures/",
-            });
-            return "deferred";
-          }
-          if (
-            ctx.config?.workflow?.infraDetection === true &&
-            isInfraError(errText)
-          ) {
-            ctx.log({
-              event: "issue_deferred_infra",
-              issueId: issue.id,
-              reason: "infra",
-            });
-            loopState.issueQueue[i].status = "deferred";
-            loopState.issueQueue[i].error = errText;
-            loopState.issueQueue[i].deferredReason = "infra";
-            await saveLoopState(ctx.workspaceDir, loopState, {
-              guardRunId: loopState.runId,
-            });
-            runHooks(
-              ctx,
-              loopRunId,
-              "issue_deferred",
-              "",
-              { status: "deferred", reason: "infra" },
-              issueEnv,
-            );
-            return "deferred";
-          }
-          loopState.issueQueue[i].status = "failed";
-          loopState.issueQueue[i].error = errText;
-          loopState.issueQueue[i].completedAt = new Date().toISOString();
-          outcomeMap.set(issue.id, { status: "failed" });
-          failed++;
-          results.push({
-            ...issue,
-            status: "failed",
-            error: errText,
-          });
-          runHooks(
-            ctx,
-            loopRunId,
-            "issue_failed",
-            "",
-            { status: "failed", error: errText },
-            issueEnv,
-          );
-          enqueueRca(issue, errText, i);
-        }
-      } catch (err) {
-        if (ctx.cancelToken.cancelled) {
-          loopState.issueQueue[i].status = "pending";
-          loopState.issueQueue[i].error = null;
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-          return "cancelled";
-        }
-        if (isRateLimitError(err.message) && !isRetry) {
+      if (pipelineResult.status === "completed") {
+        const prResult =
+          pipelineResult.results[pipelineResult.results.length - 1];
+        const branch = prResult?.data?.branch;
+        loopState.issueQueue[i].status = "completed";
+        loopState.issueQueue[i].branch = branch;
+        loopState.issueQueue[i].prUrl = prResult?.data?.prUrl;
+        loopState.issueQueue[i].error = null;
+        loopState.issueQueue[i].completedAt = new Date().toISOString();
+        // Record diff stats so subsequent issues can detect file overlap
+        const diffStat = spawnSync(
+          "git",
+          ["diff", "--stat", `${issueDefaultBranch}...${branch}`],
+          { cwd: issueRepoRoot, encoding: "utf8" },
+        );
+        const diffSummary = (diffStat.stdout || "").trim();
+        outcomeMap.set(issue.id, {
+          status: "completed",
+          branch,
+          diffSummary,
+          repoPath,
+        });
+        completed++;
+        results.push({
+          ...issue,
+          status: "completed",
+          prUrl: prResult?.data?.prUrl,
+          branch,
+        });
+        const backupDir = path.join(
+          ctx.workspaceDir,
+          ".coder",
+          "backups",
+          backupKeyFor(issue),
+        );
+        if (existsSync(backupDir))
+          rmSync(backupDir, { recursive: true, force: true });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_complete",
+          "",
+          { status: "completed", prUrl: prResult?.data?.prUrl, branch },
+          issueEnv,
+        );
+      } else if (pipelineResult.status === "cancelled") {
+        loopState.issueQueue[i].status = "pending";
+        loopState.issueQueue[i].error = null;
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        return "cancelled";
+      } else {
+        const errText = pipelineResult.error || "";
+        if (isRateLimitError(errText) && !isRetry) {
           ctx.log({ event: "issue_rate_limited", issueId: issue.id });
           loopState.issueQueue[i].status = "deferred";
-          loopState.issueQueue[i].error = err.message;
+          loopState.issueQueue[i].error = errText;
           loopState.issueQueue[i].deferredReason = "rate_limit";
           await saveLoopState(ctx.workspaceDir, loopState, {
             guardRunId: loopState.runId,
@@ -1703,9 +1600,49 @@ export async function runDevelopLoop(opts, ctx) {
           );
           return "deferred";
         }
+        if (pipelineResult.planReviewExhausted) {
+          // Defer bucket: deferredReason plan_blocked vs pipeline error text — intentional (operator queue, not hard fail).
+          ctx.log({
+            event: "issue_deferred_plan_blocked",
+            issueId: issue.id,
+            reason: "plan_review_exhausted",
+          });
+          loopState.issueQueue[i].status = "deferred";
+          loopState.issueQueue[i].error = errText;
+          loopState.issueQueue[i].deferredReason = "plan_blocked";
+          await saveLoopState(ctx.workspaceDir, loopState, {
+            guardRunId: loopState.runId,
+          });
+          runHooks(
+            ctx,
+            loopRunId,
+            "issue_deferred",
+            "",
+            { status: "deferred", reason: "plan_blocked" },
+            issueEnv,
+          );
+          if (ctx.config?.workflow?.failureMonitor?.monitorBlockingDefers) {
+            enqueueRca(issue, errText, i, {
+              deferredReason: "plan_blocked",
+            });
+          }
+          // Archive artifacts for debugging (preserve state for resume like other defers)
+          archiveFailureArtifacts(
+            ctx.workspaceDir,
+            issue,
+            "plan_review_exhausted",
+            { stage: "plan_review" },
+          );
+          ctx.log({
+            event: "failure_archived",
+            issueId: issue.id,
+            path: ".coder/failures/",
+          });
+          return "deferred";
+        }
         if (
           ctx.config?.workflow?.infraDetection === true &&
-          isInfraError(err.message)
+          isInfraError(errText)
         ) {
           ctx.log({
             event: "issue_deferred_infra",
@@ -1713,7 +1650,7 @@ export async function runDevelopLoop(opts, ctx) {
             reason: "infra",
           });
           loopState.issueQueue[i].status = "deferred";
-          loopState.issueQueue[i].error = err.message;
+          loopState.issueQueue[i].error = errText;
           loopState.issueQueue[i].deferredReason = "infra";
           await saveLoopState(ctx.workspaceDir, loopState, {
             guardRunId: loopState.runId,
@@ -1729,136 +1666,279 @@ export async function runDevelopLoop(opts, ctx) {
           return "deferred";
         }
         loopState.issueQueue[i].status = "failed";
-        loopState.issueQueue[i].error = err.message;
+        loopState.issueQueue[i].error = errText;
         loopState.issueQueue[i].completedAt = new Date().toISOString();
         outcomeMap.set(issue.id, { status: "failed" });
         failed++;
-        results.push({ ...issue, status: "failed", error: err.message });
+        results.push({
+          ...issue,
+          status: "failed",
+          error: errText,
+        });
         runHooks(
           ctx,
           loopRunId,
           "issue_failed",
           "",
-          { status: "failed", error: err.message },
+          { status: "failed", error: errText },
           issueEnv,
         );
-        enqueueRca(issue, err.message, i);
+        enqueueRca(issue, errText, i);
+      }
+    } catch (err) {
+      if (ctx.cancelToken.cancelled) {
+        loopState.issueQueue[i].status = "pending";
+        loopState.issueQueue[i].error = null;
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        return "cancelled";
+      }
+      if (isRateLimitError(err.message) && !isRetry) {
+        ctx.log({ event: "issue_rate_limited", issueId: issue.id });
+        loopState.issueQueue[i].status = "deferred";
+        loopState.issueQueue[i].error = err.message;
+        loopState.issueQueue[i].deferredReason = "rate_limit";
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_deferred",
+          "",
+          { status: "deferred" },
+          issueEnv,
+        );
+        return "deferred";
+      }
+      if (
+        ctx.config?.workflow?.infraDetection === true &&
+        isInfraError(err.message)
+      ) {
+        ctx.log({
+          event: "issue_deferred_infra",
+          issueId: issue.id,
+          reason: "infra",
+        });
+        loopState.issueQueue[i].status = "deferred";
+        loopState.issueQueue[i].error = err.message;
+        loopState.issueQueue[i].deferredReason = "infra";
+        await saveLoopState(ctx.workspaceDir, loopState, {
+          guardRunId: loopState.runId,
+        });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_deferred",
+          "",
+          { status: "deferred", reason: "infra" },
+          issueEnv,
+        );
+        return "deferred";
+      }
+      loopState.issueQueue[i].status = "failed";
+      loopState.issueQueue[i].error = err.message;
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
+      outcomeMap.set(issue.id, { status: "failed" });
+      failed++;
+      results.push({ ...issue, status: "failed", error: err.message });
+      runHooks(
+        ctx,
+        loopRunId,
+        "issue_failed",
+        "",
+        { status: "failed", error: err.message },
+        issueEnv,
+      );
+      enqueueRca(issue, err.message, i);
+    }
+
+    await saveLoopState(ctx.workspaceDir, loopState, {
+      guardRunId: loopState.runId,
+    });
+
+    // Reset between issues — if this fails, abort the loop because
+    // subsequent issues would run from the wrong branch/worktree.
+    const issueStatus = loopState.issueQueue[i].status;
+    if (issueStatus === "failed" || issueStatus === "skipped") {
+      archiveFailureArtifacts(ctx.workspaceDir, issue, issueStatus, {
+        stage: loopState.currentStage || undefined,
+      });
+      ctx.log({
+        event: "failure_archived",
+        issueId: issue.id,
+        reason: issueStatus,
+        path: ".coder/failures/",
+      });
+    }
+    const doReset = resetForNextIssueOverride ?? resetForNextIssue;
+    try {
+      await doReset(ctx.workspaceDir, repoPath, {
+        destructiveReset,
+        issueStatus,
+      });
+    } catch (resetErr) {
+      ctx.log({
+        event: "reset_for_next_issue_failed",
+        issueId: issue.id,
+        error: resetErr.message,
+      });
+      // Mark as failed so loop state/counters reflect the abort cause
+      loopState.issueQueue[i].status = "failed";
+      loopState.issueQueue[i].error =
+        issueStatus === "completed"
+          ? resetErr.message
+          : `${loopState.issueQueue[i].error}; reset failed: ${resetErr.message}`;
+      loopState.issueQueue[i].completedAt = new Date().toISOString();
+      outcomeMap.set(issue.id, { status: "failed" });
+      if (issueStatus === "completed") {
+        completed--;
+        failed++;
+        const lastResult = results[results.length - 1];
+        if (lastResult?.id === issue.id) {
+          results[results.length - 1] = {
+            ...issue,
+            status: "failed",
+            error: resetErr.message,
+          };
+        } else {
+          results.push({
+            ...issue,
+            status: "failed",
+            error: resetErr.message,
+          });
+        }
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_failed",
+          "",
+          {
+            status: "failed",
+            error: loopState.issueQueue[i].error,
+          },
+          {
+            CODER_HOOK_ISSUE_ID: String(issue.id || ""),
+            CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
+          },
+        );
+        enqueueRca(issue, loopState.issueQueue[i].error, i);
+      }
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      return "failed";
+    }
+    return issueStatus;
+  }
+
+  // Main pass
+  for (let i = 0; i < issues.length; i++) {
+    if (ctx.cancelToken.cancelled) break;
+    const issueStatus = await processIssue(issues[i], i);
+    if (issueStatus === "cancelled") break;
+    if (issueStatus !== "failed") continue;
+
+    // Skip only transitive dependents of the failed issue; independent issues continue.
+    const failedIssueId = issues[i]?.id;
+    ctx.log({
+      event: "loop_aborted_on_failure",
+      issueId: failedIssueId,
+      reason: "issue_failed",
+      continuingIndependentIssues: true,
+    });
+    const dependentIds = getTransitiveDependents(issues, failedIssueId);
+    if (dependentIds.size > 0) {
+      ctx.log({
+        event: "skipping_dependents",
+        issueId: failedIssueId,
+        dependents: [...dependentIds],
+      });
+
+      for (let j = 0; j < loopState.issueQueue.length; j++) {
+        const entry = loopState.issueQueue[j];
+        if (!dependentIds.has(entry.id)) continue;
+        if (entry.status !== "pending" && entry.status !== "deferred") continue;
+
+        entry.status = "skipped";
+        entry.error = `Skipped: depends on failed issue ${failedIssueId}`;
+        entry.completedAt = new Date().toISOString();
+        outcomeMap.set(entry.id, { status: "skipped" });
+        skipped++;
+
+        const issueEnv = {
+          CODER_HOOK_ISSUE_ID: String(entry.id || ""),
+          CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
+        };
+        ctx.log({
+          event: "issue_skipped",
+          issueId: entry.id,
+          reason: "depends_on_failed",
+          failedIssueId,
+        });
+        runHooks(
+          ctx,
+          loopRunId,
+          "issue_skipped",
+          "",
+          {
+            status: "skipped",
+            reason: "depends_on_failed",
+            failedIssueId,
+          },
+          issueEnv,
+        );
       }
 
       await saveLoopState(ctx.workspaceDir, loopState, {
         guardRunId: loopState.runId,
       });
-
-      // Reset between issues — if this fails, abort the loop because
-      // subsequent issues would run from the wrong branch/worktree.
-      const issueStatus = loopState.issueQueue[i].status;
-      if (issueStatus === "failed" || issueStatus === "skipped") {
-        archiveFailureArtifacts(ctx.workspaceDir, issue, issueStatus, {
-          stage: loopState.currentStage || undefined,
-        });
-        ctx.log({
-          event: "failure_archived",
-          issueId: issue.id,
-          reason: issueStatus,
-          path: ".coder/failures/",
-        });
-      }
-      const doReset = resetForNextIssueOverride ?? resetForNextIssue;
-      try {
-        await doReset(ctx.workspaceDir, repoPath, {
-          destructiveReset,
-          issueStatus,
-        });
-      } catch (resetErr) {
-        ctx.log({
-          event: "reset_for_next_issue_failed",
-          issueId: issue.id,
-          error: resetErr.message,
-        });
-        // Mark as failed so loop state/counters reflect the abort cause
-        loopState.issueQueue[i].status = "failed";
-        loopState.issueQueue[i].error =
-          issueStatus === "completed"
-            ? resetErr.message
-            : `${loopState.issueQueue[i].error}; reset failed: ${resetErr.message}`;
-        loopState.issueQueue[i].completedAt = new Date().toISOString();
-        outcomeMap.set(issue.id, { status: "failed" });
-        if (issueStatus === "completed") {
-          completed--;
-          failed++;
-          const lastResult = results[results.length - 1];
-          if (lastResult?.id === issue.id) {
-            results[results.length - 1] = {
-              ...issue,
-              status: "failed",
-              error: resetErr.message,
-            };
-          } else {
-            results.push({
-              ...issue,
-              status: "failed",
-              error: resetErr.message,
-            });
-          }
-          runHooks(
-            ctx,
-            loopRunId,
-            "issue_failed",
-            "",
-            {
-              status: "failed",
-              error: loopState.issueQueue[i].error,
-            },
-            {
-              CODER_HOOK_ISSUE_ID: String(issue.id || ""),
-              CODER_HOOK_ISSUE_TITLE: String(issue.title || ""),
-            },
-          );
-          enqueueRca(issue, loopState.issueQueue[i].error, i);
-        }
-        await saveLoopState(ctx.workspaceDir, loopState, {
-          guardRunId: loopState.runId,
-        });
-        return "failed";
-      }
-      return issueStatus;
     }
+  }
 
-    // Main pass
-    for (let i = 0; i < issues.length; i++) {
+  // Retry pass for deferred issues whose dependencies are now resolved.
+  // Exclude infra/plan_blocked — those require operator action and next start.
+  const DEFERRED_SAME_RUN_RETRY_REASONS = [
+    "conflict",
+    "rate_limit",
+    "dependency",
+  ];
+  const deferredIndices = issues
+    .map((_, i) => i)
+    .filter((i) => {
+      const entry = loopState.issueQueue[i];
+      if (entry.status !== "deferred") return false;
+      const reason = entry.deferredReason;
+      return !reason || DEFERRED_SAME_RUN_RETRY_REASONS.includes(reason);
+    });
+
+  if (deferredIndices.length > 0 && !ctx.cancelToken.cancelled) {
+    ctx.log({
+      event: "deferred_retry_pass",
+      count: deferredIndices.length,
+      ids: deferredIndices.map((i) => issues[i].id),
+    });
+
+    for (const i of deferredIndices) {
       if (ctx.cancelToken.cancelled) break;
-      const issueStatus = await processIssue(issues[i], i);
-      if (issueStatus === "cancelled") break;
-      if (issueStatus !== "failed") continue;
-
-      // Skip only transitive dependents of the failed issue; independent issues continue.
-      const failedIssueId = issues[i]?.id;
-      ctx.log({
-        event: "loop_aborted_on_failure",
-        issueId: failedIssueId,
-        reason: "issue_failed",
-        continuingIndependentIssues: true,
-      });
-      const dependentIds = getTransitiveDependents(issues, failedIssueId);
-      if (dependentIds.size > 0) {
+      const retryStatus = await processIssue(issues[i], i, { isRetry: true });
+      if (retryStatus === "failed") {
+        const failedIssueId = issues[i]?.id;
         ctx.log({
-          event: "skipping_dependents",
+          event: "loop_aborted_on_failure",
           issueId: failedIssueId,
-          dependents: [...dependentIds],
+          reason: "issue_failed",
         });
-
         for (let j = 0; j < loopState.issueQueue.length; j++) {
           const entry = loopState.issueQueue[j];
-          if (!dependentIds.has(entry.id)) continue;
           if (entry.status !== "pending" && entry.status !== "deferred")
             continue;
-
           entry.status = "skipped";
-          entry.error = `Skipped: depends on failed issue ${failedIssueId}`;
+          entry.error = "Skipped: prior issue failed";
           entry.completedAt = new Date().toISOString();
           outcomeMap.set(entry.id, { status: "skipped" });
           skipped++;
-
           const issueEnv = {
             CODER_HOOK_ISSUE_ID: String(entry.id || ""),
             CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
@@ -1866,7 +1946,7 @@ export async function runDevelopLoop(opts, ctx) {
           ctx.log({
             event: "issue_skipped",
             issueId: entry.id,
-            reason: "depends_on_failed",
+            reason: "aborted_after_failure",
             failedIssueId,
           });
           runHooks(
@@ -1876,236 +1956,159 @@ export async function runDevelopLoop(opts, ctx) {
             "",
             {
               status: "skipped",
-              reason: "depends_on_failed",
+              reason: "aborted_after_failure",
               failedIssueId,
             },
             issueEnv,
           );
+          results.push({
+            ...issues[j],
+            status: "skipped",
+            error: entry.error,
+          });
         }
-
         await saveLoopState(ctx.workspaceDir, loopState, {
           guardRunId: loopState.runId,
         });
+        break;
       }
     }
+  }
 
-    // Retry pass for deferred issues whose dependencies are now resolved.
-    // Exclude infra/plan_blocked — those require operator action and next start.
-    const DEFERRED_SAME_RUN_RETRY_REASONS = [
-      "conflict",
-      "rate_limit",
-      "dependency",
-    ];
-    const deferredIndices = issues
-      .map((_, i) => i)
-      .filter((i) => {
-        const entry = loopState.issueQueue[i];
-        if (entry.status !== "deferred") return false;
-        const reason = entry.deferredReason;
-        return !reason || DEFERRED_SAME_RUN_RETRY_REASONS.includes(reason);
+  // Coalesce pass: summary and cleanup
+  const stillDeferred = loopState.issueQueue.filter(
+    (q) => q.status === "deferred",
+  ).length;
+  ctx.log({
+    event: "loop_summary",
+    total: issues.length,
+    completed,
+    failed,
+    skipped,
+    deferred: stillDeferred,
+  });
+
+  // Smart branch cleanup: only delete branches with no commits beyond default
+  const failedOrSkipped = loopState.issueQueue.filter(
+    (q) => q.status === "failed" || q.status === "skipped",
+  );
+  if (failedOrSkipped.length > 0) {
+    const deleted = [];
+    const kept = [];
+    for (const q of failedOrSkipped) {
+      const branch = q.branch || buildIssueBranchName(q);
+      const verify = spawnSync("git", ["rev-parse", "--verify", branch], {
+        cwd: loopRepoRoot,
+        encoding: "utf8",
       });
+      if (verify.status !== 0) continue; // branch never created
 
-    if (deferredIndices.length > 0 && !ctx.cancelToken.cancelled) {
-      ctx.log({
-        event: "deferred_retry_pass",
-        count: deferredIndices.length,
-        ids: deferredIndices.map((i) => issues[i].id),
-      });
-
-      for (const i of deferredIndices) {
-        if (ctx.cancelToken.cancelled) break;
-        const retryStatus = await processIssue(issues[i], i, { isRetry: true });
-        if (retryStatus === "failed") {
-          const failedIssueId = issues[i]?.id;
-          ctx.log({
-            event: "loop_aborted_on_failure",
-            issueId: failedIssueId,
-            reason: "issue_failed",
-          });
-          for (let j = 0; j < loopState.issueQueue.length; j++) {
-            const entry = loopState.issueQueue[j];
-            if (entry.status !== "pending" && entry.status !== "deferred")
-              continue;
-            entry.status = "skipped";
-            entry.error = "Skipped: prior issue failed";
-            entry.completedAt = new Date().toISOString();
-            outcomeMap.set(entry.id, { status: "skipped" });
-            skipped++;
-            const issueEnv = {
-              CODER_HOOK_ISSUE_ID: String(entry.id || ""),
-              CODER_HOOK_ISSUE_TITLE: String(entry.title || ""),
-            };
-            ctx.log({
-              event: "issue_skipped",
-              issueId: entry.id,
-              reason: "aborted_after_failure",
-              failedIssueId,
-            });
-            runHooks(
-              ctx,
-              loopRunId,
-              "issue_skipped",
-              "",
-              {
-                status: "skipped",
-                reason: "aborted_after_failure",
-                failedIssueId,
-              },
-              issueEnv,
-            );
-            results.push({
-              ...issues[j],
-              status: "skipped",
-              error: entry.error,
-            });
-          }
-          await saveLoopState(ctx.workspaceDir, loopState, {
-            guardRunId: loopState.runId,
-          });
-          break;
-        }
+      const log = spawnSync(
+        "git",
+        ["log", `${loopDefaultBranch}..${branch}`, "--oneline"],
+        { cwd: loopRepoRoot, encoding: "utf8" },
+      );
+      if (log.status !== 0) {
+        // git log failed — keep the branch to avoid data loss
+        kept.push(branch);
+        continue;
       }
-    }
+      const hasCommits = (log.stdout || "").trim().length > 0;
 
-    // Coalesce pass: summary and cleanup
-    const stillDeferred = loopState.issueQueue.filter(
-      (q) => q.status === "deferred",
-    ).length;
-    ctx.log({
-      event: "loop_summary",
-      total: issues.length,
-      completed,
-      failed,
-      skipped,
-      deferred: stillDeferred,
-    });
-
-    // Smart branch cleanup: only delete branches with no commits beyond default
-    const failedOrSkipped = loopState.issueQueue.filter(
-      (q) => q.status === "failed" || q.status === "skipped",
-    );
-    if (failedOrSkipped.length > 0) {
-      const deleted = [];
-      const kept = [];
-      for (const q of failedOrSkipped) {
-        const branch = q.branch || buildIssueBranchName(q);
-        const verify = spawnSync("git", ["rev-parse", "--verify", branch], {
+      if (hasCommits) {
+        kept.push(branch);
+      } else {
+        const delRes = spawnSync("git", ["branch", "-D", branch], {
           cwd: loopRepoRoot,
           encoding: "utf8",
         });
-        if (verify.status !== 0) continue; // branch never created
-
-        const log = spawnSync(
-          "git",
-          ["log", `${loopDefaultBranch}..${branch}`, "--oneline"],
-          { cwd: loopRepoRoot, encoding: "utf8" },
-        );
-        if (log.status !== 0) {
-          // git log failed — keep the branch to avoid data loss
-          kept.push(branch);
-          continue;
-        }
-        const hasCommits = (log.stdout || "").trim().length > 0;
-
-        if (hasCommits) {
-          kept.push(branch);
+        const stillThere = spawnSync("git", ["rev-parse", "--verify", branch], {
+          cwd: loopRepoRoot,
+          encoding: "utf8",
+        });
+        if (stillThere.status !== 0) {
+          deleted.push(branch);
+          q.branch = null;
         } else {
-          const delRes = spawnSync("git", ["branch", "-D", branch], {
-            cwd: loopRepoRoot,
-            encoding: "utf8",
+          ctx.log({
+            event: "smart_branch_cleanup_delete_failed",
+            branch,
+            exitCode: delRes.status,
+            stderr: (delRes.stderr || "").slice(0, 200),
           });
-          const stillThere = spawnSync(
-            "git",
-            ["rev-parse", "--verify", branch],
-            {
-              cwd: loopRepoRoot,
-              encoding: "utf8",
-            },
-          );
-          if (stillThere.status !== 0) {
-            deleted.push(branch);
-            q.branch = null;
-          } else {
-            ctx.log({
-              event: "smart_branch_cleanup_delete_failed",
-              branch,
-              exitCode: delRes.status,
-              stderr: (delRes.stderr || "").slice(0, 200),
-            });
-          }
         }
       }
-      ctx.log({ event: "smart_branch_cleanup", deleted, kept });
     }
+    ctx.log({ event: "smart_branch_cleanup", deleted, kept });
+  }
 
-    // Settle all pending failure RCA filings (always drain, even on cancellation,
-    // to prevent post-finalization writes from unawaited promises)
-    if (pendingRcas.length > 0) {
-      ctx.log({
-        event: "failure_monitor_settling",
-        count: pendingRcas.length,
-        cancelled: ctx.cancelToken.cancelled,
-      });
-      const rcaResults = await Promise.allSettled(pendingRcas);
-      const rcaFiled = rcaResults.filter(
-        (r) => r.status === "fulfilled" && r.value.issueUrl,
-      ).length;
-      const rcaSkipped = rcaResults.filter(
-        (r) => r.status === "fulfilled" && r.value.skipped,
-      ).length;
-      const rcaErrored = rcaResults.filter(
-        (r) =>
-          r.status === "rejected" ||
-          (r.status === "fulfilled" && r.value.error),
-      ).length;
-      ctx.log({
-        event: "failure_monitor_complete",
-        filed: rcaFiled,
-        skipped: rcaSkipped,
-        errored: rcaErrored,
-      });
-    }
+  // Settle all pending failure RCA filings (always drain, even on cancellation,
+  // to prevent post-finalization writes from unawaited promises)
+  if (pendingRcas.length > 0) {
+    ctx.log({
+      event: "failure_monitor_settling",
+      count: pendingRcas.length,
+      cancelled: ctx.cancelToken.cancelled,
+    });
+    const rcaResults = await Promise.allSettled(pendingRcas);
+    const rcaFiled = rcaResults.filter(
+      (r) => r.status === "fulfilled" && r.value.issueUrl,
+    ).length;
+    const rcaSkipped = rcaResults.filter(
+      (r) => r.status === "fulfilled" && r.value.skipped,
+    ).length;
+    const rcaErrored = rcaResults.filter(
+      (r) =>
+        r.status === "rejected" || (r.status === "fulfilled" && r.value.error),
+    ).length;
+    ctx.log({
+      event: "failure_monitor_complete",
+      filed: rcaFiled,
+      skipped: rcaSkipped,
+      errored: rcaErrored,
+    });
+  }
 
-    // Agent-driven coalesce analysis for cross-branch integration review
-    const completedBranches = loopState.issueQueue.filter(
-      (q) => q.status === "completed" && q.branch,
-    );
-    if (completedBranches.length >= 2 && !ctx.cancelToken.cancelled) {
-      try {
-        ctx.log({
-          event: "coalesce_analysis_start",
-          branches: completedBranches.map((q) => q.branch),
+  // Agent-driven coalesce analysis for cross-branch integration review
+  const completedBranches = loopState.issueQueue.filter(
+    (q) => q.status === "completed" && q.branch,
+  );
+  if (completedBranches.length >= 2 && !ctx.cancelToken.cancelled) {
+    try {
+      ctx.log({
+        event: "coalesce_analysis_start",
+        branches: completedBranches.map((q) => q.branch),
+      });
+
+      const branchDiffs = [];
+      for (const q of completedBranches) {
+        const stat = spawnSync(
+          "git",
+          ["diff", `${loopDefaultBranch}...${q.branch}`, "--stat"],
+          { cwd: loopRepoRoot, encoding: "utf8" },
+        );
+        const diff = spawnSync(
+          "git",
+          ["diff", `${loopDefaultBranch}...${q.branch}`],
+          { cwd: loopRepoRoot, encoding: "utf8" },
+        );
+        branchDiffs.push({
+          branch: q.branch,
+          issueId: q.id,
+          title: q.title,
+          stat: (stat.stdout || "").trim(),
+          diff: (diff.stdout || "").slice(0, 8000),
         });
+      }
 
-        const branchDiffs = [];
-        for (const q of completedBranches) {
-          const stat = spawnSync(
-            "git",
-            ["diff", `${loopDefaultBranch}...${q.branch}`, "--stat"],
-            { cwd: loopRepoRoot, encoding: "utf8" },
-          );
-          const diff = spawnSync(
-            "git",
-            ["diff", `${loopDefaultBranch}...${q.branch}`],
-            { cwd: loopRepoRoot, encoding: "utf8" },
-          );
-          branchDiffs.push({
-            branch: q.branch,
-            issueId: q.id,
-            title: q.title,
-            stat: (stat.stdout || "").trim(),
-            diff: (diff.stdout || "").slice(0, 8000),
-          });
-        }
+      const diffSections = branchDiffs
+        .map(
+          (d) =>
+            `## Branch: ${d.branch} (Issue ${d.issueId}: ${d.title})\n\n### File Stats\n\`\`\`\n${d.stat}\n\`\`\`\n\n### Diff (truncated)\n\`\`\`diff\n${d.diff}\n\`\`\``,
+        )
+        .join("\n\n---\n\n");
 
-        const diffSections = branchDiffs
-          .map(
-            (d) =>
-              `## Branch: ${d.branch} (Issue ${d.issueId}: ${d.title})\n\n### File Stats\n\`\`\`\n${d.stat}\n\`\`\`\n\n### Diff (truncated)\n\`\`\`diff\n${d.diff}\n\`\`\``,
-          )
-          .join("\n\n---\n\n");
-
-        const prompt = `You are reviewing the combined changeset from ${completedBranches.length} feature branches that were implemented in parallel against the same base branch (${loopDefaultBranch}).
+      const prompt = `You are reviewing the combined changeset from ${completedBranches.length} feature branches that were implemented in parallel against the same base branch (${loopDefaultBranch}).
 
   Your task is to analyze the branches for integration issues and produce a structured report.
 
@@ -2121,85 +2124,84 @@ export async function runDevelopLoop(opts, ctx) {
 
   Be concrete: reference file paths, line ranges, and function names. If no issues exist for a section, say "None detected."`;
 
-        const { agent } = ctx.agentPool.getAgent("coalesce", {
-          scope: "repo",
-        });
-        const res = await agent.execute(prompt, {
-          timeoutMs: 1000 * 60 * 15,
-        });
+      const { agent } = ctx.agentPool.getAgent("coalesce", {
+        scope: "repo",
+      });
+      const res = await agent.execute(prompt, {
+        timeoutMs: 1000 * 60 * 15,
+      });
 
-        const artifactsDir = path.join(ctx.workspaceDir, ".coder", "artifacts");
-        mkdirSync(artifactsDir, { recursive: true });
-        writeFileSync(
-          path.join(artifactsDir, "COALESCE.md"),
-          res.stdout || res.output || String(res),
-          "utf8",
-        );
+      const artifactsDir = path.join(ctx.workspaceDir, ".coder", "artifacts");
+      mkdirSync(artifactsDir, { recursive: true });
+      writeFileSync(
+        path.join(artifactsDir, "COALESCE.md"),
+        res.stdout || res.output || String(res),
+        "utf8",
+      );
 
-        ctx.log({
-          event: "coalesce_analysis_complete",
-          branches: completedBranches.length,
-        });
-      } catch (err) {
-        ctx.log({
-          event: "coalesce_analysis_error",
-          error: err.message,
-        });
-      }
+      ctx.log({
+        event: "coalesce_analysis_complete",
+        branches: completedBranches.length,
+      });
+    } catch (err) {
+      ctx.log({
+        event: "coalesce_analysis_error",
+        error: err.message,
+      });
     }
+  }
 
-    if (loopState.status === "running") {
-      if (ctx.cancelToken.cancelled) {
-        loopState.status = "cancelled";
+  if (loopState.status === "running") {
+    if (ctx.cancelToken.cancelled) {
+      loopState.status = "cancelled";
+    } else {
+      const hasBlockedDeferrals = loopState.issueQueue.some(
+        (q) =>
+          q.status === "deferred" &&
+          ["infra", "plan_blocked", "git_tracking"].includes(
+            q.deferredReason || "",
+          ),
+      );
+      if (hasBlockedDeferrals) {
+        loopState.status = "blocked";
+      } else if (failed > 0) {
+        loopState.status = "failed";
       } else {
-        const hasBlockedDeferrals = loopState.issueQueue.some(
-          (q) =>
-            q.status === "deferred" &&
-            ["infra", "plan_blocked", "git_tracking"].includes(
-              q.deferredReason || "",
-            ),
-        );
-        if (hasBlockedDeferrals) {
-          loopState.status = "blocked";
-        } else if (failed > 0) {
-          loopState.status = "failed";
-        } else {
-          loopState.status = "completed";
-        }
+        loopState.status = "completed";
       }
     }
-    loopState.completedAt = new Date().toISOString();
-    await saveLoopState(ctx.workspaceDir, loopState, {
-      guardRunId: loopState.runId,
-    });
-    await ctx.syncLifecycleActorFromDisk?.();
-
-    runHooks(ctx, loopRunId, "loop_complete", "", {
-      status: loopState.status,
-      completed,
-      failed,
-      skipped,
-      deferred: stillDeferred,
-    });
-
-    const firstFailedIssueError = loopState.issueQueue.find(
-      (q) => q.status === "failed" && q.error,
-    )?.error;
-
-    return {
-      status: loopState.status,
-      results,
-      completed,
-      failed,
-      skipped,
-      deferred: stillDeferred,
-      ...(loopState.status === "failed" && {
-        error:
-          firstFailedIssueError ||
-          (failed > 0 ? `${failed} issue(s) failed` : "Workflow failed"),
-      }),
-    };
+  }
+  loopState.completedAt = new Date().toISOString();
+  await saveLoopState(ctx.workspaceDir, loopState, {
+    guardRunId: loopState.runId,
   });
+  await ctx.syncLifecycleActorFromDisk?.();
+
+  runHooks(ctx, loopRunId, "loop_complete", "", {
+    status: loopState.status,
+    completed,
+    failed,
+    skipped,
+    deferred: stillDeferred,
+  });
+
+  const firstFailedIssueError = loopState.issueQueue.find(
+    (q) => q.status === "failed" && q.error,
+  )?.error;
+
+  return {
+    status: loopState.status,
+    results,
+    completed,
+    failed,
+    skipped,
+    deferred: stillDeferred,
+    ...(loopState.status === "failed" && {
+      error:
+        firstFailedIssueError ||
+        (failed > 0 ? `${failed} issue(s) failed` : "Workflow failed"),
+    }),
+  };
 }
 
 /**
