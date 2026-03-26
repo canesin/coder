@@ -51,7 +51,7 @@ export function drainWriteChain(workspaceDir) {
   return getWriteChain(workspaceDir);
 }
 
-/** Synchronous check: true when a write chain is still pending for `key`. */
+/** Synchronous check: true when a write-chain entry exists for `key`. */
 export function hasWriteChain(key) {
   return _writeChains.has(key);
 }
