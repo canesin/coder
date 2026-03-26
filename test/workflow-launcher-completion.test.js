@@ -86,7 +86,7 @@ async function runLauncherNormalCompletionFixture(result, opts = {}) {
     const snap = await loadWorkflowSnapshot(ws);
     return { loop, snap };
   } finally {
-    rmSync(ws, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 }
 
