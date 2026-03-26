@@ -793,7 +793,9 @@ function setupParsers() {
   }
 }
 
-function getParserForFile(filePath) {
+export function getParserForFile(filePath) {
+  // Regex-only mode for CI / hosts where tree-sitter native addons SIGSEGV (see npm test script).
+  if (process.env.CODER_PPCOMMIT_NO_AST === "1") return null;
   setupParsers();
   const ext = path.extname(filePath).toLowerCase();
   return PARSERS.get(ext) || null;

@@ -82,6 +82,7 @@ export class WorkflowRunner {
    *   name: string,
    *   workflowContext: import("../machines/_base.js").WorkflowContext,
    *   onStageChange?: (stage: string, agentName?: string) => void,
+   *   stageActiveAgent?: (machineName: string) => string | null | undefined,
    *   onHeartbeat?: () => void,
    *   onCheckpoint?: (machineIndex: number, result: any, machineName: string) => void,
    *   onResumeSkipped?: (runId: string) => Promise<void> | void,
@@ -91,6 +92,7 @@ export class WorkflowRunner {
     this.name = opts.name;
     this.ctx = opts.workflowContext;
     this.onStageChange = opts.onStageChange || (() => {});
+    this.stageActiveAgent = opts.stageActiveAgent;
     this.onHeartbeat = opts.onHeartbeat || (() => {});
     this.onCheckpoint = opts.onCheckpoint || (() => {});
     this.onResumeSkipped = opts.onResumeSkipped || null;
@@ -169,6 +171,8 @@ export class WorkflowRunner {
       this.results = [];
     }
 
+    this.ctx.workflowRunId = this.runId;
+
     this._heartbeatInterval = setInterval(() => {
       this.onHeartbeat();
       pollControlSignal(
@@ -215,6 +219,15 @@ export class WorkflowRunner {
         const machineName = step.machine.name;
 
         this.onStageChange(machineName);
+        if (typeof this.ctx.onWorkflowStage === "function") {
+          /** @type {{ stage: string, activeAgent?: string }} */
+          const payload = { stage: machineName };
+          if (typeof this.stageActiveAgent === "function") {
+            const agent = this.stageActiveAgent(machineName);
+            if (agent != null && agent !== "") payload.activeAgent = agent;
+          }
+          this.ctx.onWorkflowStage(payload);
+        }
         this.ctx.log({
           event: "machine_start",
           workflow: this.name,
@@ -357,6 +370,7 @@ export class WorkflowRunner {
       });
       throw err;
     } finally {
+      delete this.ctx.workflowRunId;
       if (this._heartbeatInterval) {
         clearInterval(this._heartbeatInterval);
         this._heartbeatInterval = null;

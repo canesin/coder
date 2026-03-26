@@ -295,6 +295,8 @@ class HostSandboxInstance extends EventEmitter {
       let forceSettleTimer = null;
       /** When set, defer settle until child exits (avoids retry starting while process still alive). */
       let pendingFatalError = null;
+      /** Same as pendingFatalError for timeout/hang kills — do not resolve until `close` (or force-settle). */
+      let pendingTimeoutError = null;
       /** Timestamp when fatal pattern first matched (for elapsed-ms in close log). */
       let fatalMatchTs = null;
       const terminateChild = (signal = "SIGTERM", reason = "unknown") => {
@@ -366,13 +368,33 @@ class HostSandboxInstance extends EventEmitter {
                 scheduleForceSettle(pendingFatalError);
                 return;
               }
+              if (pendingTimeoutError) return;
+              if (hangTimer) {
+                clearTimeout(hangTimer);
+                hangTimer = null;
+              }
               terminateChild("SIGTERM", "timeout");
-              settle(new CommandTimeoutError(command, timeoutMs));
+              pendingTimeoutError = new CommandTimeoutError(command, timeoutMs);
+              if (escalationTimer) clearTimeout(escalationTimer);
+              escalationTimer = setTimeout(() => {
+                if (pendingTimeoutError) {
+                  if (log) {
+                    log({
+                      event: "sandbox_timeout_escalate_sigkill",
+                      pid: child.pid,
+                      timeoutMs,
+                    });
+                  }
+                  terminateChild("SIGKILL", "timeout_escalate");
+                  scheduleForceSettle(pendingTimeoutError);
+                }
+              }, FATAL_ESCALATION_MS);
             }, timeoutMs)
           : null;
 
       // Hang detection: kill if no output for hangTimeoutMs
       const resetHangTimer = () => {
+        if (pendingFatalError || pendingTimeoutError) return;
         if (hangTimeoutMs > 0) {
           if (hangTimer) clearTimeout(hangTimer);
           hangTimer = setTimeout(() => {
@@ -381,8 +403,30 @@ class HostSandboxInstance extends EventEmitter {
               scheduleForceSettle(pendingFatalError);
               return;
             }
+            if (pendingTimeoutError) return;
+            if (killTimer) {
+              clearTimeout(killTimer);
+              killTimer = null;
+            }
             terminateChild("SIGTERM", "hang");
-            settle(new CommandTimeoutError(command, hangTimeoutMs));
+            pendingTimeoutError = new CommandTimeoutError(
+              command,
+              hangTimeoutMs,
+            );
+            if (escalationTimer) clearTimeout(escalationTimer);
+            escalationTimer = setTimeout(() => {
+              if (pendingTimeoutError) {
+                if (log) {
+                  log({
+                    event: "sandbox_hang_escalate_sigkill",
+                    pid: child.pid,
+                    hangTimeoutMs,
+                  });
+                }
+                terminateChild("SIGKILL", "hang_escalate");
+                scheduleForceSettle(pendingTimeoutError);
+              }
+            }, FATAL_ESCALATION_MS);
           }, hangTimeoutMs);
         }
       };
@@ -395,6 +439,7 @@ class HostSandboxInstance extends EventEmitter {
         ErrorClass,
       ) => {
         if (patterns.length === 0) return;
+        if (pendingFatalError || pendingTimeoutError) return;
         const lower = accumulatedOutput.toLowerCase();
         const hit = patterns.find((p) =>
           lower.includes(p.pattern.toLowerCase()),
@@ -488,6 +533,12 @@ class HostSandboxInstance extends EventEmitter {
         }
         if (pendingFatalError) {
           settle(pendingFatalError);
+          return;
+        }
+        if (pendingTimeoutError) {
+          pendingTimeoutError.stdout = stdout;
+          pendingTimeoutError.stderr = stderr;
+          settle(pendingTimeoutError);
           return;
         }
         const exitCode = code ?? 0;

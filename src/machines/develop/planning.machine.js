@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -10,12 +9,12 @@ import {
 import path from "node:path";
 import { z } from "zod";
 import { stripAgentNoise } from "../../helpers.js";
-import {
-  clearAllSessionIdsAndDisable,
-  loadState,
-  saveState,
-} from "../../state/workflow-state.js";
+import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import {
+  executeWithSessionAuthRetry,
+  makeClaudeSessionId,
+} from "./_session.js";
 import {
   artifactPaths,
   buildStepCliOpts,
@@ -201,7 +200,7 @@ export default defineMachine({
     const creatingSession =
       !state.sessionsDisabled && (!state.planningSessionId || agentChanged);
     if (creatingSession) {
-      state.planningSessionId = randomUUID();
+      state.planningSessionId = makeClaudeSessionId(ctx.workflowRunId);
       state.plannerAgentName = plannerName;
       await saveState(ctx.workspaceDir, state);
     }
@@ -342,63 +341,28 @@ ${branchSections}`;
 
       let res;
       try {
-        try {
-          res = await plannerAgent.execute(prompt, {
-            ...sessionOpts,
-            ...plannerCli,
-          });
-        } catch (err) {
-          const isAuthError =
-            (err.name === "CommandFatalStderrError" ||
-              err.name === "CommandFatalStdoutError") &&
-            err.category === "auth";
-          const hadSessionOpts = sessionOpts.resumeId || sessionOpts.sessionId;
-          const canRetryWithFreshSession = isAuthError && hadSessionOpts;
-          ctx.log({
-            event: "planning_auth_catch",
-            isAuthError,
-            hadSessionOpts,
-            errName: err.name,
-            errCategory: err?.category,
-          });
-          if (canRetryWithFreshSession) {
-            ctx.log({
-              event: "session_auth_failed",
-              sessionId: state.planningSessionId,
-              wasCreating: !!sessionOpts.sessionId,
-            });
-            clearAllSessionIdsAndDisable(state);
-            await saveState(ctx.workspaceDir, state);
-            const retryOpts = {
-              ...plannerCli,
-              sessionId: undefined,
-              resumeId: undefined,
-              killOnStderrPatterns: [],
-              killOnStdoutPatterns: [],
-            };
-            ctx.log({
-              event: "session_retry_no_session",
-              step: "planning",
-              retryOptsKeys: Object.keys(retryOpts),
-              hasSessionInRetry:
-                retryOpts.sessionId != null || retryOpts.resumeId != null,
-            });
-            // Full planPrompt needed when retrying without session.
-            const retryPrompt =
-              prompt === planPrompt || prompt.startsWith(planPrompt)
+        res = await executeWithSessionAuthRetry({
+          state,
+          sessionKey: "planningSessionId",
+          workspaceDir: ctx.workspaceDir,
+          log: ctx.log,
+          workflowRunId: ctx.workflowRunId,
+          initialSessionOpts: sessionOpts,
+          executeFn: (so, meta) => {
+            const recoveryAttempt = meta?.recoveryAttempt ?? 0;
+            const usePrompt =
+              recoveryAttempt === 0
                 ? prompt
-                : `${planPrompt}\n\n${prompt}`;
-            res = await plannerAgent.execute(retryPrompt, retryOpts);
-            ctx.log({
-              event: "session_retry_done",
-              step: "planning",
-              exitCode: res?.exitCode,
-              ok: res?.exitCode === 0,
+                : prompt === planPrompt || prompt.startsWith(planPrompt)
+                  ? prompt
+                  : `${planPrompt}\n\n${prompt}`;
+            return plannerAgent.execute(usePrompt, {
+              ...so,
+              ...plannerCli,
+              timeoutMs: ctx.config.workflow.timeouts.planning,
             });
-          } else {
-            throw err;
-          }
-        }
+          },
+        });
         requireExitZero(plannerName, "plan generation failed", res);
         lastPlannerResult = res;
       } catch (err) {

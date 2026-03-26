@@ -62,7 +62,12 @@ export const PpcommitConfigSchema = z.object({
 });
 
 export const TestSectionSchema = z.object({
-  setup: z.array(z.string()).default([]),
+  setup: z
+    .array(z.string())
+    .default([])
+    .describe(
+      "cwd = repo root (repo_path) for this workflow; relative scripts must exist under that root.",
+    ),
   healthCheck: z
     .object({
       url: z.string(),
@@ -71,8 +76,16 @@ export const TestSectionSchema = z.object({
     })
     .nullable()
     .default(null),
-  command: z.string().default(""),
-  teardown: z.array(z.string()).default([]),
+  command: z
+    .string()
+    .default("")
+    .describe(
+      "Test shell command with cwd = repo root; use cd … && when scripts are outside repo_path.",
+    ),
+  teardown: z
+    .array(z.string())
+    .default([])
+    .describe("cwd = repo root; relative paths are under that root."),
   timeoutMs: z.number().int().positive().default(600000),
   allowNoTests: z.boolean().default(false),
 });
@@ -473,6 +486,47 @@ export function loadConfig(workspaceDir) {
         formatZodError(
           err,
           `${userConfigPath()} + ${repoConfigPath(workspaceDir)}`,
+        ),
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Merge user + repo coder.json for test/config resolution when an issue's repo_path
+ * is a subdirectory of the workspace: workspace root coder.json is the base, and
+ * the scoped directory's coder.json overrides (deep merge) so per-package settings win.
+ *
+ * When repoDir is not under workspaceDir, behaves like loadConfig(repoDir).
+ */
+export function loadConfigForScopedRepo(workspaceDir, repoDir) {
+  const userRaw = readJson(userConfigPath());
+  const wa = path.resolve(workspaceDir);
+  const ra = path.resolve(repoDir);
+  const wsRepo = readJson(repoConfigPath(workspaceDir));
+  /** @type {Record<string, unknown>} */
+  let repoMerged;
+  if (ra === wa) {
+    repoMerged = wsRepo;
+  } else {
+    const rel = path.relative(wa, ra);
+    if (!rel.startsWith("..") && rel !== "") {
+      const scopedRepo = readJson(repoConfigPath(repoDir));
+      repoMerged = deepMerge(wsRepo, scopedRepo);
+    } else {
+      repoMerged = readJson(repoConfigPath(repoDir));
+    }
+  }
+  const merged = deepMerge(userRaw, repoMerged);
+  try {
+    return CoderConfigSchema.parse(migrateConfig(merged));
+  } catch (err) {
+    if (err.issues) {
+      throw new Error(
+        formatZodError(
+          err,
+          `${userConfigPath()} + scoped repo merge (${repoConfigPath(workspaceDir)} + ${repoConfigPath(repoDir)})`,
         ),
       );
     }

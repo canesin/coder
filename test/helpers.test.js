@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -22,6 +28,7 @@ import {
   shellEscape,
   spawnAsync,
   stripAgentNoise,
+  TestCommandPathError,
   TestInfrastructureError,
 } from "../src/helpers.js";
 
@@ -501,6 +508,182 @@ test("runHostTests preserves exit code 5 when allowNoTests is false", async () =
     allowNoTests: false,
   });
   assert.equal(res.exitCode, 5);
+});
+
+test("runHostTests throws TestCommandPathError when bash script missing under repo root", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tests-path-"));
+  await assert.rejects(
+    async () => runHostTests(dir, { testCmd: "bash scripts/nope.sh" }),
+    (err) => {
+      assert.equal(err instanceof TestCommandPathError, true);
+      assert.match(err.message, /does not exist under the effective directory/);
+      return true;
+    },
+  );
+});
+
+test("runHostTests runs bash script when path exists under repo root", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tests-path-"));
+  mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(dir, "scripts", "t.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const res = await runHostTests(dir, { testCmd: "bash scripts/t.sh" });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests subdir repo root: script under subdir passes", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-host-ws-"));
+  const api = path.join(ws, "api");
+  mkdirSync(path.join(api, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(api, "scripts", "t.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const res = await runHostTests(api, { testCmd: "bash scripts/t.sh" });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests monorepo: script at workspace root, scoped repo_path subdir", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-host-mono-"));
+  const api = path.join(ws, "lib", "rotmeter_web", "live");
+  mkdirSync(api, { recursive: true });
+  mkdirSync(path.join(ws, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(ws, "scripts", "test.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const res = await runHostTests(api, {
+    testCmd: "bash scripts/test.sh",
+    workspaceDir: ws,
+    repoPath: "lib/rotmeter_web/live",
+  });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests allows cd .. && bash script when script lives in parent of repo root", async () => {
+  const parent = mkdtempSync(path.join(os.tmpdir(), "coder-host-cdup-"));
+  const api = path.join(parent, "api");
+  mkdirSync(api, { recursive: true });
+  mkdirSync(path.join(parent, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(parent, "scripts", "t.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const res = await runHostTests(api, {
+    testCmd: "cd .. && bash scripts/t.sh",
+  });
+  assert.equal(res.exitCode, 0);
+});
+
+test("runHostTests throws TestCommandPathError for bash -c when inner script missing", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-bashc-"));
+  await assert.rejects(
+    async () =>
+      runHostTests(dir, { testCmd: 'bash -c "bash scripts/missing.sh"' }),
+    (err) => err instanceof TestCommandPathError,
+  );
+});
+
+test("runHostTests testConfigPath validates setup script before run", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-tc-"));
+  writeFileSync(
+    path.join(dir, "tc.json"),
+    JSON.stringify({
+      setup: ["bash scripts/missing-setup.sh"],
+      test: "true",
+      teardown: [],
+      timeoutMs: 5000,
+    }),
+  );
+  await assert.rejects(
+    async () => runHostTests(dir, { testConfigPath: "tc.json" }),
+    (err) => {
+      assert.equal(err instanceof TestCommandPathError, true);
+      assert.match(err.message, /missing-setup\.sh/);
+      return true;
+    },
+  );
+});
+
+test("runHostTests testConfigPath coder.json throws when merge has no test.command and no package file", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-host-merge-null-"));
+  const pkg = path.join(ws, "packages", "x");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(
+    path.join(ws, "coder.json"),
+    JSON.stringify({ verbose: true }),
+    "utf8",
+  );
+  await assert.rejects(
+    async () =>
+      runHostTests(pkg, {
+        testConfigPath: "coder.json",
+        workspaceDir: ws,
+      }),
+    (err) => {
+      assert.match(err.message, /Test config invalid or empty/i);
+      assert.match(err.message, /no test\.command/i);
+      return true;
+    },
+  );
+});
+
+test("runHostTests testConfigPath validates teardown script before any run", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-teardown-"));
+  mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(dir, "scripts", "ok.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  writeFileSync(
+    path.join(dir, "tc.json"),
+    JSON.stringify({
+      setup: [],
+      test: "bash scripts/ok.sh",
+      teardown: ["bash scripts/bad-teardown.sh"],
+      timeoutMs: 5000,
+    }),
+  );
+  await assert.rejects(
+    async () => runHostTests(dir, { testConfigPath: "tc.json" }),
+    (err) => {
+      assert.equal(err instanceof TestCommandPathError, true);
+      assert.match(err.message, /bad-teardown\.sh/);
+      return true;
+    },
+  );
+});
+
+test("runHostTests emits run_host_tests_start with branch and cwd", async () => {
+  const events = [];
+  const dir = mkdtempSync(path.join(os.tmpdir(), "coder-host-log-"));
+  mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  writeFileSync(
+    path.join(dir, "scripts", "t.sh"),
+    "#!/usr/bin/env bash\ntrue\n",
+  );
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-host-ws2-"));
+  await runHostTests(dir, {
+    testCmd: "bash scripts/t.sh",
+    log: (o) => events.push(o),
+    workspaceDir: ws,
+    repoPath: ".",
+  });
+  assert.equal(events.length >= 1, true);
+  assert.equal(events[0].event, "run_host_tests_start");
+  assert.equal(events[0].branch, "explicit_test_cmd");
+  assert.equal(events[0].cwd, path.resolve(dir));
+  assert.equal(events[0].workspaceDir, path.resolve(ws));
+  assert.equal(
+    events[0].scriptsTestShExistsUnderRepoRoot,
+    existsSync(path.join(dir, "scripts", "test.sh")),
+  );
+  assert.equal(
+    events[0].scriptsTestShExistsUnderWorkspaceDir,
+    existsSync(path.join(ws, "scripts", "test.sh")),
+  );
 });
 
 test("shellEscape wraps plain string in single quotes", () => {

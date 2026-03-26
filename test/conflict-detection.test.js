@@ -756,16 +756,15 @@ test("extractGitLabProjectPath: parses gitlab.com and self-hosted URLs", () => {
 });
 
 // ---------------------------------------------------------------------------
-// fetchOpenPrBranches: glab args (docs.gitlab.com/cli/mr/list)
+// fetchOpenPrBranches: glab args (docs.gitlab.com/cli/api — REST list MRs)
 // ---------------------------------------------------------------------------
 
-test("glabMrListArgs: exact args per docs.gitlab.com/cli/mr/list", () => {
+test("glabMrListArgs: uses glab api for JSON (compat with older glab mr list)", () => {
   const args = glabMrListArgs();
-  assert.deepEqual(
-    args,
-    ["mr", "list", "--output", "json"],
-    "must match exact CLI form; no --state",
-  );
+  assert.deepEqual(args, [
+    "api",
+    "projects/:id/merge_requests?state=opened&per_page=50",
+  ]);
 });
 
 // ---------------------------------------------------------------------------

@@ -52,13 +52,14 @@ async function discardWorktreeChanges(repoRoot, opts = {}) {
 }
 
 /**
- * Build args for glab mr list. Exported for testing.
- * Per docs.gitlab.com/cli/mr/list: default is open MRs; --state is not a valid flag.
- * Uses --output json (or -F json fallback for older glab that lacks --output).
+ * Build argv for listing open MRs via the GitLab REST API (`glab api`).
+ * Uses `glab api` instead of `glab mr list --output json` so older glab builds
+ * that lack `-F`/`--output` on `mr list` still work. See docs.gitlab.com/cli/api.
+ * Exported for testing.
  * @returns {string[]}
  */
 export function glabMrListArgs() {
-  return ["mr", "list", "--output", "json"];
+  return ["api", "projects/:id/merge_requests?state=opened&per_page=50"];
 }
 
 /** Fallback args for older glab that lacks --output (uses -F json). */

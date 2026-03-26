@@ -41,11 +41,11 @@
   "scripts": {
     "coder": "node ./bin/coder.js",
     "mcp": "node ./bin/coder-mcp.js",
-    "lint": "biome check ./bin ./src ./test package.json",
-    "lint:fix": "biome check --write ./bin ./src ./test package.json",
-    "format": "biome format --write ./bin ./src ./test package.json",
-    "format:check": "biome format ./bin ./src ./test package.json",
-    "test": "NODE_ENV=test node --test test/*.test.js",
+    "lint": "biome check ./bin ./scripts ./src ./test package.json",
+    "lint:fix": "biome check --write ./bin ./scripts ./src ./test package.json",
+    "format": "biome format --write ./bin ./scripts ./src ./test package.json",
+    "format:check": "biome format ./bin ./scripts ./src ./test package.json",
+    "test": "node ./scripts/run-tests.mjs",
     "prepublishOnly": "npm run lint && npm test"
   },
   "engines": {

@@ -20,13 +20,16 @@ const GEMINI_AUTH_FAILURE_PATTERNS = [
 ];
 /** @internal Exported for testing */
 export const CLAUDE_RESUME_FAILURE_PATTERNS = [
+  // Quota / usage (match before generic "is already in use" if both appear)
+  { pattern: "out of extra usage", category: "rate_limit" },
   { pattern: "No conversation found with session ID", category: "auth" },
   { pattern: "Conversation not found", category: "auth" },
   { pattern: "Session not found", category: "auth" },
   { pattern: "Invalid session ID", category: "auth" },
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
-  { pattern: "is already in use", category: "auth" }, // "Session ID X is already in use", --resume variants (claude-code #5524)
+  // "Session ID X is already in use", --resume variants (claude-code #5524); rare on current Claude but still matched for concurrency / overlapping runs.
+  { pattern: "is already in use", category: "auth" },
 ];
 const CODEX_RESUME_FAILURE_PATTERNS = [
   { pattern: "session not found", category: "auth" },
@@ -421,7 +424,7 @@ export class CliAgent extends AgentAdapter {
           if (
             (err.name === "CommandFatalStderrError" ||
               err.name === "CommandFatalStdoutError") &&
-            err.category === "auth"
+            (err.category === "auth" || err.category === "rate_limit")
           )
             return false;
           if (err.name === "McpStartupError") return false;

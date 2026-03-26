@@ -7,7 +7,13 @@ import { DEFAULT_PASS_ENV } from "./pass-env.js";
 import { runPpcommitBranch, runPpcommitNative } from "./ppcommit.js";
 import { runShellSync } from "./systemd-run.js";
 import {
+  assertTestCommandPathsExist,
+  resolveMonorepoTestCwd,
+} from "./test-command-paths.js";
+import {
   detectTestCommand,
+  isUnifiedCoderJsonTestConfigPath,
+  isWorkspaceScopedRepo,
   loadTestConfig,
   runTestCommand,
   runTestConfig,
@@ -304,6 +310,8 @@ export class TestInfrastructureError extends Error {
   }
 }
 
+export { TestCommandPathError } from "./test-command-paths.js";
+
 export function requireEnvOneOf(names) {
   const resolved = buildSecretsWithFallback(names);
   for (const n of names) {
@@ -543,7 +551,11 @@ export function shellEscape(arg) {
 }
 
 export function isRateLimitError(text) {
-  return /rate limit|429|resource_exhausted|quota/i.test(String(text || ""));
+  const s = String(text || "");
+  return (
+    /rate limit|429|resource_exhausted|quota/i.test(s) ||
+    /out\s+of\s+extra\s+usage|usage\s+limit/i.test(s)
+  );
 }
 
 export function geminiJsonPipeWithModel(prompt, model) {
@@ -894,29 +906,99 @@ export function isPidAlive(pid) {
   }
 }
 
+/** @typedef {"test_config_path"|"repo_coder_json"|"explicit_test_cmd"|"auto_detect"|"allow_no_tests"} RunHostTestsBranch */
+
+/**
+ * @param {((o: object) => void) | undefined} log
+ * @param {RunHostTestsBranch} branch
+ * @param {string} repoDirAbs
+ * @param {object} opts
+ */
+function emitRunHostTestsGate(log, branch, repoDirAbs, opts) {
+  if (typeof log !== "function") return;
+  const ws = opts.workspaceDir;
+  const resolvedWs = ws ? path.resolve(ws) : null;
+  const scriptRepo = path.join(repoDirAbs, "scripts", "test.sh");
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    event: "run_host_tests_start",
+    branch,
+    cwd: repoDirAbs,
+    repoRoot: repoDirAbs,
+    workspaceDir: resolvedWs,
+    repoPath: opts.repoPath ?? null,
+    testCmd: opts.testCmd || null,
+    testConfigPath: opts.testConfigPath || null,
+    scriptsTestShExistsUnderRepoRoot: existsSync(scriptRepo),
+  };
+  if (resolvedWs != null && resolvedWs !== repoDirAbs) {
+    payload.scriptsTestShExistsUnderWorkspaceDir = existsSync(
+      path.join(resolvedWs, "scripts", "test.sh"),
+    );
+  }
+  log(payload);
+}
+
 export async function runHostTests(
   repoDir,
-  { testCmd, testConfigPath, allowNoTests } = {},
+  { testCmd, testConfigPath, allowNoTests, log, workspaceDir, repoPath } = {},
 ) {
+  const resolvedRepo = path.resolve(repoDir);
+  /** @type {Record<string, string | undefined>} */
+  const pathMeta = {};
+  if (testConfigPath) pathMeta.testConfigPath = testConfigPath;
+  if (repoPath != null && repoPath !== "") pathMeta.repoPath = repoPath;
+  if (workspaceDir) pathMeta.workspaceDir = workspaceDir;
+
+  const gateOpts = {
+    workspaceDir,
+    repoPath: repoPath ?? null,
+    testCmd: testCmd || "",
+    testConfigPath: testConfigPath || "",
+  };
+
   // Priority 1: explicit config path, then coder.json test section
   if (testConfigPath) {
-    const abs = path.resolve(repoDir, testConfigPath);
-    if (!existsSync(abs)) {
+    emitRunHostTestsGate(log, "test_config_path", resolvedRepo, gateOpts);
+    const abs = path.resolve(resolvedRepo, testConfigPath);
+    const mergedCoderJson =
+      workspaceDir &&
+      isUnifiedCoderJsonTestConfigPath(testConfigPath) &&
+      isWorkspaceScopedRepo(resolvedRepo, workspaceDir);
+    if (!mergedCoderJson && !existsSync(abs)) {
       throw new Error(`Test config not found: ${abs}`);
     }
-    const config = loadTestConfig(repoDir, testConfigPath);
-    const effectiveAllowNoTests = allowNoTests ?? config?.allowNoTests ?? false;
-    return await runTestConfig(repoDir, config, effectiveAllowNoTests);
+    const config = loadTestConfig(resolvedRepo, testConfigPath, workspaceDir);
+    if (!config) {
+      throw new Error(
+        `Test config invalid or empty: ${testConfigPath} (resolved: ${abs}). ` +
+          "No test.command in merged workspace config and no usable config file.",
+      );
+    }
+    const effectiveAllowNoTests = allowNoTests ?? config.allowNoTests ?? false;
+    return await runTestConfig(
+      resolvedRepo,
+      config,
+      effectiveAllowNoTests,
+      pathMeta,
+    );
   }
-  const configured = loadTestConfig(repoDir);
+  const configured = loadTestConfig(resolvedRepo, undefined, workspaceDir);
   if (configured) {
+    emitRunHostTestsGate(log, "repo_coder_json", resolvedRepo, gateOpts);
     const effectiveAllowNoTests =
       allowNoTests ?? configured.allowNoTests ?? false;
-    return await runTestConfig(repoDir, configured, effectiveAllowNoTests);
+    return await runTestConfig(
+      resolvedRepo,
+      configured,
+      effectiveAllowNoTests,
+      pathMeta,
+    );
   }
 
   // Priority 2: explicit test command
   if (testCmd) {
+    emitRunHostTestsGate(log, "explicit_test_cmd", resolvedRepo, gateOpts);
     const rawCmd = String(testCmd);
     // Avoid cascading failures in auto-mode when a repo is reset to a branch
     // that doesn't actually contain the Rust project files required by `cargo`.
@@ -940,7 +1022,7 @@ export async function runHostTests(
     };
 
     if (looksLikeRootCargoCmd()) {
-      const cargoToml = path.join(repoDir, "Cargo.toml");
+      const cargoToml = path.join(resolvedRepo, "Cargo.toml");
       if (!existsSync(cargoToml)) {
         throw new TestInfrastructureError(
           `Test infrastructure missing: ${cargoToml} not found, but testCmd includes "cargo". ` +
@@ -950,7 +1032,11 @@ export async function runHostTests(
         );
       }
     }
-    const res = runShellSync(testCmd, { cwd: repoDir });
+    assertTestCommandPathsExist(resolvedRepo, [rawCmd], pathMeta);
+    const testCwd = resolveMonorepoTestCwd(resolvedRepo, workspaceDir, [
+      rawCmd,
+    ]);
+    const res = runShellSync(testCmd, { cwd: testCwd });
     // pytest exits 5 when no tests collected; treat as success when allowNoTests
     const exitCode = allowNoTests && res.exitCode === 5 ? 0 : res.exitCode;
     return {
@@ -962,9 +1048,10 @@ export async function runHostTests(
   }
 
   // Priority 3: auto-detected test command
-  const detected = detectTestCommand(repoDir);
+  const detected = detectTestCommand(resolvedRepo);
   if (detected) {
-    const res = runTestCommand(repoDir, detected);
+    emitRunHostTestsGate(log, "auto_detect", resolvedRepo, gateOpts);
+    const res = runTestCommand(resolvedRepo, detected);
     const exitCode = allowNoTests && res.exitCode === 5 ? 0 : res.exitCode;
     return {
       cmd: detected,
@@ -975,9 +1062,12 @@ export async function runHostTests(
   }
 
   // Fallback
-  if (allowNoTests) return { cmd: null, exitCode: 0, stdout: "", stderr: "" };
+  if (allowNoTests) {
+    emitRunHostTestsGate(log, "allow_no_tests", resolvedRepo, gateOpts);
+    return { cmd: null, exitCode: 0, stdout: "", stderr: "" };
+  }
   throw new Error(
-    `No tests detected for repo ${repoDir}. Pass --test-cmd "..." or --allow-no-tests.`,
+    `No tests detected for repo ${resolvedRepo}. Pass --test-cmd "..." or --allow-no-tests.`,
   );
 }
 

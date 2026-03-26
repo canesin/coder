@@ -43,6 +43,10 @@ export const WorkflowContextSchema = z.object({
   artifactsDir: z.string(),
   scratchpadDir: z.string(),
   steeringContext: z.string().optional(),
+  /** Set by WorkflowRunner — prefixes Claude/Codex session ids so runs do not share a global session key. */
+  workflowRunId: z.string().optional(),
+  /** MCP launcher: notify workflow lifecycle actor of stage (and optional agent) changes. */
+  onWorkflowStage: z.any().optional(),
 });
 
 /**

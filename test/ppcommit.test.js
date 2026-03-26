@@ -13,6 +13,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  getParserForFile,
   runPpcommitAll,
   runPpcommitBranch,
   runPpcommitNative,
@@ -43,6 +44,17 @@ function makeRepo() {
   run("git", ["config", "user.name", "Test User"], dir);
   return dir;
 }
+
+test("getParserForFile: CODER_PPCOMMIT_NO_AST=1 skips tree-sitter", () => {
+  const prev = process.env.CODER_PPCOMMIT_NO_AST;
+  process.env.CODER_PPCOMMIT_NO_AST = "1";
+  try {
+    assert.equal(getParserForFile("/tmp/x.js"), null);
+  } finally {
+    if (prev === undefined) delete process.env.CODER_PPCOMMIT_NO_AST;
+    else process.env.CODER_PPCOMMIT_NO_AST = prev;
+  }
+});
 
 test("ppcommit: skip via config", async () => {
   const repo = makeRepo();

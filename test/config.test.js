@@ -10,10 +10,12 @@ import {
   deepMerge,
   HookSchema,
   loadConfig,
+  loadConfigForScopedRepo,
   resolveConfig,
   userConfigDir,
   userConfigPath,
 } from "../src/config.js";
+import { loadTestConfig } from "../src/test-runner.js";
 
 test("deepMerge: arrays replace, not concat", () => {
   const base = { items: [1, 2, 3] };
@@ -70,6 +72,37 @@ test("loadConfig: user config only merges with defaults", () => {
     assert.equal(config.verbose, true);
     assert.equal(config.models.claude.model, "claude-sonnet-4-5-20250929");
     assert.equal(config.models.gemini.model, "gemini-3-flash-preview"); // default preserved
+  } finally {
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+  }
+});
+
+test("loadConfigForScopedRepo: scoped package coder.json overrides workspace test.*", () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-scoped-ws-"));
+  const pkg = path.join(ws, "packages", "foo");
+  mkdirSync(pkg, { recursive: true });
+  const xdg = mkdtempSync(path.join(os.tmpdir(), "coder-xdg-"));
+  mkdirSync(path.join(xdg, "coder"), { recursive: true });
+  writeFileSync(
+    path.join(ws, "coder.json"),
+    JSON.stringify({
+      test: { command: "echo workspace" },
+    }),
+  );
+  writeFileSync(
+    path.join(pkg, "coder.json"),
+    JSON.stringify({
+      test: { command: "echo package" },
+    }),
+  );
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = xdg;
+  try {
+    const config = loadConfigForScopedRepo(ws, pkg);
+    assert.equal(config.test.command, "echo package");
+    const tc = loadTestConfig(pkg, undefined, ws);
+    assert.equal(tc?.test, "echo package");
   } finally {
     if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = origXdg;

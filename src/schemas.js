@@ -64,7 +64,12 @@ export const SpecManifestSchema = z.object({
 });
 
 export const TestConfigSchema = z.object({
-  setup: z.array(z.string()).default([]),
+  setup: z
+    .array(z.string())
+    .default([])
+    .describe(
+      "Shell commands with cwd = repo root for this issue (repo_path); relative script paths must exist under that root.",
+    ),
   healthCheck: z
     .object({
       url: z.string(),
@@ -72,7 +77,17 @@ export const TestConfigSchema = z.object({
       intervalMs: z.number().int().positive().default(2000),
     })
     .optional(),
-  test: z.string().min(1),
-  teardown: z.array(z.string()).default([]),
+  test: z
+    .string()
+    .min(1)
+    .describe(
+      "Shell test command with cwd = repo root; use cd … && if scripts live outside that root.",
+    ),
+  teardown: z
+    .array(z.string())
+    .default([])
+    .describe(
+      "Shell commands with cwd = repo root after tests; relative paths are under that root.",
+    ),
   timeoutMs: z.number().int().positive().default(600000),
 });

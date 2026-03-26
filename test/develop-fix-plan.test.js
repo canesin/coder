@@ -851,8 +851,11 @@ test("hard failure when git pull --ff-only fails with non-stale error", async ()
     execSync(`git remote add origin ${bareDir}`, { cwd: ws, stdio: "ignore" });
     execSync("git push -u origin main", { cwd: ws, stdio: "ignore" });
 
-    // Push a diverging commit via a second clone
+    // Push a diverging commit via a second clone (must track `main` so
+    // origin/main diverges from ws; otherwise an orphan clone may push to
+    // `master` and ws's pull --ff-only stays a no-op).
     execSync(`git clone ${bareDir} ${clone2}`, { stdio: "ignore" });
+    execSync("git checkout main", { cwd: clone2, stdio: "ignore" });
     execSync("git config user.email test@example.com", {
       cwd: clone2,
       stdio: "ignore",

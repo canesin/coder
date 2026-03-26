@@ -263,16 +263,26 @@ export function createWorkflowLifecycleMachine() {
         lastHeartbeatAt: event.at || nowIso(),
       })),
       updateStage: assign(({ context, event }) => ({
-        currentStage: event.stage || context.currentStage,
-        activeAgent: event.activeAgent || context.activeAgent,
+        currentStage:
+          event.stage != null && event.stage !== ""
+            ? event.stage
+            : context.currentStage,
+        activeAgent:
+          "activeAgent" in event ? event.activeAgent : context.activeAgent,
       })),
       syncState: assign(({ context, event }) => {
         const s = event.state;
         if (!s || typeof s !== "object") return {};
         return {
-          currentStage: s.currentStage || context.currentStage || null,
-          activeAgent: s.activeAgent || context.activeAgent || null,
-          lastHeartbeatAt: s.lastHeartbeatAt || context.lastHeartbeatAt,
+          currentStage: Object.hasOwn(s, "currentStage")
+            ? s.currentStage
+            : context.currentStage,
+          activeAgent: Object.hasOwn(s, "activeAgent")
+            ? s.activeAgent
+            : context.activeAgent,
+          lastHeartbeatAt: Object.hasOwn(s, "lastHeartbeatAt")
+            ? s.lastHeartbeatAt
+            : context.lastHeartbeatAt,
         };
       }),
       markPaused: assign(({ event }) => ({
@@ -454,6 +464,51 @@ export async function saveLoopState(
         } catch {}
       }
       await writeJson(p, loopState);
+    })
+    .catch((e) => {
+      writeErr = e;
+    });
+  setWriteChain(workspaceDir, chain);
+  await chain;
+  if (guarded) return false;
+  if (writeErr) throw writeErr;
+  return true;
+}
+
+/**
+ * Read-modify-write loop state inside the same write chain as saveLoopState,
+ * so concurrent heartbeat + activeAgent updates cannot overwrite each other
+ * with stale snapshots.
+ *
+ * @param {string} workspaceDir
+ * @param {(ls: object) => object | null | Promise<object | null>} mutator - Return null to skip write
+ * @param {{ guardRunId?: string }} [options] - If guardRunId is omitted, uses next.runId after mutation (same as saveLoopState defaulting to ls.runId). Pass "" to skip the run guard.
+ * @returns {Promise<boolean>}
+ */
+export async function mutateLoopState(
+  workspaceDir,
+  mutator,
+  { guardRunId } = {},
+) {
+  const p = loopStatePathFor(workspaceDir);
+  let writeErr;
+  let guarded = false;
+  const chain = getWriteChain(workspaceDir)
+    .then(async () => {
+      const ls = await loadLoopState(workspaceDir);
+      const next = await mutator(ls);
+      if (next === null || next === undefined) return;
+      const gid = guardRunId !== undefined ? guardRunId : next.runId;
+      if (gid) {
+        try {
+          const existing = JSON.parse(await readFile(p, "utf8"));
+          if (existing.runId && existing.runId !== gid) {
+            guarded = true;
+            return;
+          }
+        } catch {}
+      }
+      await writeJson(p, next);
     })
     .catch((e) => {
       writeErr = e;

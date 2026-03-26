@@ -233,6 +233,32 @@ test("host sandbox hang timeout ignores stderr chatter when hangResetOnStderr is
   );
 });
 
+test("host sandbox timeout: child ignoring SIGTERM escalates to SIGKILL and settles quickly (not 15s force-settle)", async () => {
+  const provider = new HostSandboxProvider();
+  const sandbox = await provider.create();
+
+  const started = Date.now();
+  await assert.rejects(
+    async () =>
+      sandbox.commands.run(`trap '' TERM; sleep 30`, {
+        timeoutMs: 200,
+      }),
+    (err) => {
+      assert.equal(err.name, "CommandTimeoutError");
+      return true;
+    },
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(
+    elapsed < 10_000,
+    `expected SIGKILL escalation path to settle in well under 15s force-settle, got ${elapsed}ms`,
+  );
+  assert.ok(
+    elapsed >= 150,
+    `expected at least timeoutMs + overhead before rejection, got ${elapsed}ms`,
+  );
+});
+
 test("host sandbox throwOnNonZero includes exit metadata", async () => {
   const provider = new HostSandboxProvider();
   const sandbox = await provider.create();

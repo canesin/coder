@@ -103,6 +103,8 @@ test("launcher normal path: completed aligns loop-state and workflow snapshot", 
   assert.ok(snap);
   assert.equal(snap.value, "completed");
   assert.equal(snap.runId, "e2eRun01");
+  assert.equal(snap.context?.currentStage, null);
+  assert.equal(snap.context?.activeAgent, null);
 });
 
 test("launcher normal path: failed aligns loop-state and workflow snapshot", async () => {
@@ -114,6 +116,8 @@ test("launcher normal path: failed aligns loop-state and workflow snapshot", asy
   assert.ok(snap);
   assert.equal(snap.value, "failed");
   assert.equal(snap.context?.error, "issue list blew up");
+  assert.equal(snap.context?.currentStage, null);
+  assert.equal(snap.context?.activeAgent, null);
 });
 
 test("launcher normal path: blocked aligns loop-state and workflow snapshot", async () => {
@@ -123,6 +127,8 @@ test("launcher normal path: blocked aligns loop-state and workflow snapshot", as
   assert.equal(loop.status, "blocked");
   assert.ok(snap);
   assert.equal(snap.value, "blocked");
+  assert.equal(snap.context?.currentStage, null);
+  assert.equal(snap.context?.activeAgent, null);
 });
 
 test("launcher normal path: cancelled aligns loop-state and workflow snapshot (with actor)", async () => {
@@ -134,6 +140,8 @@ test("launcher normal path: cancelled aligns loop-state and workflow snapshot (w
   assert.ok(snap);
   assert.equal(snap.value, "cancelled");
   assert.equal(snap.runId, "e2eRun01");
+  assert.equal(snap.context?.currentStage, null);
+  assert.equal(snap.context?.activeAgent, null);
 });
 
 test("launcher normal path: cancelled aligns loop-state and workflow snapshot (no actor)", async () => {
@@ -146,4 +154,66 @@ test("launcher normal path: cancelled aligns loop-state and workflow snapshot (n
   assert.ok(snap);
   assert.equal(snap.value, "cancelled");
   assert.equal(snap.runId, "e2eRun01");
+});
+
+test("launcher non-develop: does not sync develop loop-state into actor before terminal", async () => {
+  const ws = makeWs();
+  const runId = "researchRun1";
+  try {
+    await saveLoopState(ws, {
+      version: 1,
+      runId,
+      goal: "g",
+      status: "running",
+      projectFilter: null,
+      maxIssues: null,
+      issueQueue: [],
+      currentIndex: 0,
+      currentStage: "develop_starting",
+      currentStageStartedAt: new Date().toISOString(),
+      activeAgent: "claude",
+      lastHeartbeatAt: new Date().toISOString(),
+      runnerPid: process.pid,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    });
+
+    startWorkflowActor({
+      workflow: "research",
+      workspaceDir: ws,
+      runId,
+      goal: "g",
+      initialAgent: "gemini",
+      currentStage: "research.synthesis",
+    });
+
+    const mockPool = { killAll: async () => {} };
+    activeRuns.set(runId, {
+      cancelToken: { cancelled: false, paused: false },
+      agentPool: mockPool,
+      workspace: ws,
+      promise: Promise.resolve(),
+      startedAt: new Date().toISOString(),
+    });
+
+    await applyLauncherNormalCompletion({
+      workspaceDir: ws,
+      runId,
+      result: { status: "completed" },
+      agentPool: mockPool,
+      workflow: "research",
+    });
+
+    const snap = await loadWorkflowSnapshot(ws);
+    assert.ok(snap);
+    assert.equal(snap.workflow, "research");
+    assert.equal(
+      snap.context?.currentStage,
+      "research.synthesis",
+      "must not clear stage from unrelated develop loop-state on disk",
+    );
+    assert.equal(snap.context?.activeAgent, "gemini");
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
 });

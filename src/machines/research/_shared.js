@@ -231,6 +231,7 @@ export async function runStructuredStep({
       sessionKey,
       agentNameKey: `${sessionKey}_agent`,
       workspaceDir: ctx.workspaceDir,
+      workflowRunId: ctx.workflowRunId,
       executeFn: (sessionOpts) =>
         agent.execute(prompt, { timeoutMs, ...sessionOpts }),
       log: ctx.log,

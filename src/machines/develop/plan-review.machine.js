@@ -310,6 +310,7 @@ Constraints:
             agentNameKey: "planReviewAgentName",
             workspaceDir: ctx.workspaceDir,
             log: ctx.log,
+            workflowRunId: ctx.workflowRunId,
             executeFn: (sessionOpts) =>
               planReviewerAgent.execute(prompt, {
                 ...sessionOpts,

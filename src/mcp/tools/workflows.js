@@ -15,6 +15,7 @@ import {
   drainWriteChain,
   loadLoopState,
   loadWorkflowSnapshot,
+  mutateLoopState,
   saveLoopState,
   saveWorkflowSnapshot,
   saveWorkflowTerminalState,
@@ -29,7 +30,7 @@ import { runSpecBuildPipeline } from "../../workflows/spec-build.workflow.js";
 
 const HEARTBEAT_STALE_MS = 900_000;
 
-/** @type {Map<string, { actor: ReturnType<typeof createActor>, workspace: string, sqlitePath: string }>} */
+/** @type {Map<string, { actor: ReturnType<typeof createActor>, workspace: string, sqlitePath: string, workflow: string }>} */
 const workflowActors = new Map();
 /** @type {Map<string, { cancelToken: { cancelled: boolean, paused: boolean }, agentPool?: import("../../agents/pool.js").AgentPool, workspace: string, promise: Promise, startedAt: string }>} */
 export const activeRuns = new Map();
@@ -79,7 +80,12 @@ export function startWorkflowActor({
     currentStage,
     at: new Date().toISOString(),
   });
-  workflowActors.set(runId, { actor, workspace: workspaceDir, sqlitePath });
+  workflowActors.set(runId, {
+    actor,
+    workspace: workspaceDir,
+    sqlitePath,
+    workflow,
+  });
   return actor;
 }
 
@@ -166,6 +172,26 @@ export async function persistTerminalLoopState(workspaceDir, runId, status) {
 }
 
 /**
+ * Align the in-memory lifecycle actor with loop-state.json after terminal persistence.
+ * Only for develop: loop-state.json is the develop-loop snapshot; other workflows must
+ * not be cleared from unrelated disk state (see applyLauncherNormalCompletion).
+ *
+ * @param {import("xstate").Actor} actor
+ * @param {object} diskState - from loadLoopState after persistTerminalLoopState
+ * @param {string} at - fallback ISO time for lastHeartbeatAt
+ */
+function syncDevelopLifecycleActorFromLoopState(actor, diskState, at) {
+  actor.send({
+    type: "SYNC",
+    state: {
+      currentStage: diskState.currentStage ?? null,
+      activeAgent: diskState.activeAgent ?? null,
+      lastHeartbeatAt: diskState.lastHeartbeatAt ?? at,
+    },
+  });
+}
+
+/**
  * Normal MCP launcher path after develop / research / design resolves without throw.
  * Persists loop-state (before activeRuns release), lifecycle actor terminal event, cleanup.
  * When no in-memory workflow actor exists, persists workflow-state.json via
@@ -199,6 +225,12 @@ export async function applyLauncherNormalCompletion({
   const diskState = await loadLoopState(workspaceDir);
   const actorEntry = workflowActors.get(runId);
   if (actorEntry) {
+    // loop-state.json is the develop loop snapshot only. Syncing it into the lifecycle
+    // actor is correct for develop; for research/design it would clear stage/agent from
+    // unrelated or stale develop-loop disk state.
+    if (workflow === "develop") {
+      syncDevelopLifecycleActorFromLoopState(actorEntry.actor, diskState, at);
+    }
     if (finalStatus === "completed")
       actorEntry.actor.send({ type: "COMPLETE", at });
     else if (finalStatus === "blocked")
@@ -242,9 +274,16 @@ export async function applyLauncherNormalCompletion({
 
 /**
  * Cancel in-memory runs for a workspace so a new start is not blocked after disk reconcile.
+ * Prefer calling {@link markRunTerminalOnDisk} first (persist → SYNC → FAIL) when possible.
+ * Any lifecycle actor still registered for this workspace afterward is terminalized here
+ * (retry mark, or last-resort FAIL if disk persist cannot run).
+ *
+ * @param {string} [failError] - FAIL event message when a fallback path runs
  */
-async function releaseActiveRunsForWorkspace(workspaceDir, errorDetail) {
-  const at = new Date().toISOString();
+async function releaseActiveRunsForWorkspace(
+  workspaceDir,
+  failError = "reconciled_stale_run",
+) {
   for (const [id, run] of [...activeRuns.entries()]) {
     if (run.workspace !== workspaceDir) continue;
     run.cancelToken.cancelled = true;
@@ -254,13 +293,16 @@ async function releaseActiveRunsForWorkspace(workspaceDir, errorDetail) {
       /* best-effort */
     }
     activeRuns.delete(id);
-    const ae = workflowActors.get(id);
-    if (ae?.workspace === workspaceDir) {
-      ae.actor.send({
-        type: "FAIL",
-        at,
-        error: errorDetail,
-      });
+  }
+  for (const [id, ae] of [...workflowActors.entries()]) {
+    if (ae.workspace !== workspaceDir) continue;
+    const wfName = ae.workflow ?? "develop";
+    const ok = await markRunTerminalOnDisk(workspaceDir, id, wfName, "failed", {
+      failError,
+    });
+    if (!ok) {
+      const at = new Date().toISOString();
+      ae.actor.send({ type: "FAIL", at, error: failError });
       ae.actor.stop();
       await drainWriteChain(workspaceDir);
       workflowActors.delete(id);
@@ -268,20 +310,28 @@ async function releaseActiveRunsForWorkspace(workspaceDir, errorDetail) {
   }
 }
 
-async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
+/**
+ * @param {{ failError?: string }} [options] - For status === "failed", error text on the FAIL event (develop actor path only).
+ */
+async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status, options = {}) {
+  const { failError = "marked_terminal_on_disk" } = options;
   const persisted = await persistTerminalLoopState(workspaceDir, runId, status);
   if (!persisted) return false;
 
   const actorEntry = workflowActors.get(runId);
   if (actorEntry?.workspace === workspaceDir) {
     const at = persisted.completedAt;
+    if (workflow === "develop") {
+      const diskState = await loadLoopState(workspaceDir);
+      syncDevelopLifecycleActorFromLoopState(actorEntry.actor, diskState, at);
+    }
     if (status === "cancelled")
       actorEntry.actor.send({ type: "CANCELLED", at });
     else if (status === "failed")
       actorEntry.actor.send({
         type: "FAIL",
         at,
-        error: "marked_terminal_on_disk",
+        error: failError,
       });
     else if (status === "completed")
       actorEntry.actor.send({ type: "COMPLETE", at });
@@ -893,13 +943,16 @@ export function registerWorkflowTools(server, resolveWorkspace) {
               ],
             };
           }
-          await releaseActiveRunsForWorkspace(ws, "reconciled_stale_run");
+          const snapshot = await loadWorkflowSnapshot(ws);
+          const wfName = snapshot?.workflow ?? workflow ?? "develop";
           const written = await markRunTerminalOnDisk(
             ws,
             loop.runId,
-            workflow,
+            wfName,
             "failed",
+            { failError: "reconciled_stale_run" },
           );
+          await releaseActiveRunsForWorkspace(ws, "reconciled_stale_run");
           return {
             content: [
               {
@@ -1182,6 +1235,38 @@ export function registerWorkflowTools(server, resolveWorkspace) {
             artifactsDir,
             scratchpadDir,
             steeringContext,
+            onWorkflowStage: (payload) => {
+              const at = new Date().toISOString();
+              const actorEntry = workflowActors.get(nextRunId);
+              if (actorEntry?.actor) {
+                /** @type {{ type: string, stage: string, at: string, activeAgent?: string | null }} */
+                const ev = {
+                  type: "STAGE",
+                  stage: payload.stage,
+                  at,
+                };
+                if ("activeAgent" in payload) {
+                  ev.activeAgent = payload.activeAgent;
+                }
+                actorEntry.actor.send(ev);
+              }
+              void mutateLoopState(
+                ws,
+                (ls) => {
+                  if (ls.runId !== nextRunId) return null;
+                  const next = {
+                    ...ls,
+                    currentStage: payload.stage,
+                    lastHeartbeatAt: at,
+                  };
+                  if ("activeAgent" in payload) {
+                    next.activeAgent = payload.activeAgent;
+                  }
+                  return next;
+                },
+                { guardRunId: nextRunId },
+              );
+            },
           };
 
           if (workflow === "develop") {

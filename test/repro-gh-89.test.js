@@ -108,6 +108,7 @@ test("All expected Claude resume failure patterns are present", async () => {
   await agent.execute("test prompt", { resumeId: "fake-uuid" });
 
   const expected = [
+    "out of extra usage",
     "No conversation found with session ID",
     "Conversation not found",
     "Session not found",

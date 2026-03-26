@@ -243,6 +243,8 @@ test("isRateLimitError detects 429, rate limit, resource_exhausted, quota", () =
   assert.equal(isRateLimitError("rate limit exceeded"), true);
   assert.equal(isRateLimitError("RESOURCE_EXHAUSTED quota"), true);
   assert.equal(isRateLimitError("quota exceeded"), true);
+  assert.equal(isRateLimitError("You're out of extra usage"), true);
+  assert.equal(isRateLimitError("usage limit exceeded"), true);
   assert.equal(isRateLimitError("regular error"), false);
   assert.equal(isRateLimitError(""), false);
 });

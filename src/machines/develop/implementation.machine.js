@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { discoverCodexSessionId } from "../../agents/codex-session-discovery.js";
 import {
@@ -8,6 +7,7 @@ import {
   saveState,
 } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { makeClaudeSessionId } from "./_session.js";
 import {
   artifactPaths,
   ensureBranch,
@@ -72,12 +72,12 @@ export default defineMachine({
     if (!state.sessionsDisabled && !state[sessionKey]) {
       if (programmerName === "codex") {
         if (codexUsesSession) {
-          state[sessionKey] = randomUUID();
+          state[sessionKey] = makeClaudeSessionId(ctx.workflowRunId);
           state.implementationAgentName = programmerName;
           await saveState(ctx.workspaceDir, state);
         }
       } else if (programmerName === "claude") {
-        state[sessionKey] = randomUUID();
+        state[sessionKey] = makeClaudeSessionId(ctx.workflowRunId);
         state.implementationAgentName = programmerName;
         await saveState(ctx.workspaceDir, state);
       }
