@@ -308,6 +308,7 @@ export default defineMachine({
     await ensureBranch(repoRoot, state.branch, {
       baseBranch: state.baseBranch || undefined,
       forceRecreate: input.force,
+      signal: ctx.signal,
     });
 
     // Draft ISSUE.md

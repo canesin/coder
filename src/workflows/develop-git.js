@@ -420,6 +420,7 @@ export async function ensureCleanLoopStart(
     {
       cwd: repoRoot,
       encoding: "utf8",
+      signal: opts.signal,
     },
   );
   throwIfAborted(branchRes);
@@ -439,6 +440,7 @@ export async function ensureCleanLoopStart(
     const wipStatus = await spawnAsync("git", ["status", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal: opts.signal,
     });
     throwIfAborted(wipStatus);
     const hasDirty = !!(wipStatus.stdout || "").trim();
@@ -448,6 +450,7 @@ export async function ensureCleanLoopStart(
       const addRes = await spawnAsync("git", ["add", "-A"], {
         cwd: repoRoot,
         encoding: "utf8",
+        signal: opts.signal,
       });
       throwIfAborted(addRes);
       if (addRes.status !== 0) {
@@ -458,7 +461,7 @@ export async function ensureCleanLoopStart(
       const commitRes = await spawnAsync(
         "git",
         ["commit", "-m", `wip: interrupted work on ${currentBranch}`],
-        { cwd: repoRoot, encoding: "utf8" },
+        { cwd: repoRoot, encoding: "utf8", signal: opts.signal },
       );
       throwIfAborted(commitRes);
       if (commitRes.status === 0) {
@@ -469,7 +472,9 @@ export async function ensureCleanLoopStart(
         );
       }
     } else if (hasDirty) {
-      const discardOk = await discardWorktreeChanges(repoRoot);
+      const discardOk = await discardWorktreeChanges(repoRoot, {
+        signal: opts.signal,
+      });
       if (!discardOk) {
         log({
           event: "loop_startup_cleanup_failed",
@@ -485,6 +490,7 @@ export async function ensureCleanLoopStart(
     const coRes = await spawnAsync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal: opts.signal,
     });
     throwIfAborted(coRes);
     if (coRes.status !== 0) {
@@ -505,13 +511,14 @@ export async function ensureCleanLoopStart(
   const status = await spawnAsync("git", ["status", "--porcelain"], {
     cwd: repoRoot,
     encoding: "utf8",
+    signal: opts.signal,
   });
   throwIfAborted(status);
   const dirtyLines = (status.stdout || "")
     .split("\n")
     .filter((l) => l.trim() && !l.slice(3).startsWith(".coder/"));
   if (dirtyLines.length > 0) {
-    const ok = await discardWorktreeChanges(repoRoot);
+    const ok = await discardWorktreeChanges(repoRoot, { signal: opts.signal });
     if (!ok) {
       log({
         event: "loop_startup_cleanup_failed",
