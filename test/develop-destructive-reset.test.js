@@ -485,6 +485,66 @@ test("resetForNextIssue skips git restore on empty-commit repo", async () => {
   }
 });
 
+test("resetForNextIssue rejects promptly with an already-aborted signal", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      () =>
+        resetForNextIssue(ws, ".", {
+          destructiveReset: false,
+          signal: controller.signal,
+        }),
+      (err) => {
+        assert.ok(
+          err.code === "ABORT_ERR" || err.name === "AbortError",
+          `expected ABORT_ERR, got: ${err.code || err.name} — ${err.message}`,
+        );
+        return true;
+      },
+    );
+  } finally {
+    rmSync(path.dirname(ws), { recursive: true, force: true });
+  }
+});
+
+test("resetForNextIssue early-abort preserves state files", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    // Write a state file that would normally be deleted by resetForNextIssue.
+    const statePath = path.join(ws, ".coder", "state.json");
+    writeFileSync(statePath, JSON.stringify({ status: "in_progress" }));
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      () =>
+        resetForNextIssue(ws, ".", {
+          destructiveReset: false,
+          signal: controller.signal,
+        }),
+      (err) => {
+        assert.ok(
+          err.code === "ABORT_ERR" || err.name === "AbortError",
+          `expected ABORT_ERR, got: ${err.code || err.name} — ${err.message}`,
+        );
+        return true;
+      },
+    );
+
+    // The early abort guard should prevent state deletion.
+    assert.ok(
+      existsSync(statePath),
+      "state file should be preserved when signal is pre-aborted",
+    );
+  } finally {
+    rmSync(path.dirname(ws), { recursive: true, force: true });
+  }
+});
+
 // --- ensureCleanLoopStart tests ---
 
 function makeLogCtx(workspaceDir) {
