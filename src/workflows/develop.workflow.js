@@ -1997,10 +1997,11 @@ export async function runDevelopLoop(opts, ctx) {
     const kept = [];
     for (const q of failedOrSkipped) {
       const branch = q.branch || buildIssueBranchName(q);
-      const verify = spawnSync("git", ["rev-parse", "--verify", branch], {
-        cwd: loopRepoRoot,
-        encoding: "utf8",
-      });
+      const verify = spawnSync(
+        "git",
+        ["rev-parse", "--verify", `refs/heads/${branch}`],
+        { cwd: loopRepoRoot, encoding: "utf8" },
+      );
       if (verify.status !== 0) continue; // branch never created
 
       const log = spawnSync(
@@ -2022,10 +2023,11 @@ export async function runDevelopLoop(opts, ctx) {
           cwd: loopRepoRoot,
           encoding: "utf8",
         });
-        const stillThere = spawnSync("git", ["rev-parse", "--verify", branch], {
-          cwd: loopRepoRoot,
-          encoding: "utf8",
-        });
+        const stillThere = spawnSync(
+          "git",
+          ["rev-parse", "--verify", `refs/heads/${branch}`],
+          { cwd: loopRepoRoot, encoding: "utf8" },
+        );
         if (stillThere.status !== 0) {
           deleted.push(branch);
           q.branch = null;
