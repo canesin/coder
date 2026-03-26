@@ -12,6 +12,7 @@ import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
 import { withStartLock } from "../../state/start-lock.js";
 import {
   createWorkflowLifecycleMachine,
+  drainWriteChain,
   loadLoopState,
   loadWorkflowSnapshot,
   saveLoopState,
@@ -211,6 +212,7 @@ export async function applyLauncherNormalCompletion({
         error: result.error || "unknown",
       });
     actorEntry.actor.stop();
+    await drainWriteChain(workspaceDir);
     workflowActors.delete(runId);
   } else {
     let workflowState = finalStatus;
@@ -260,6 +262,7 @@ async function releaseActiveRunsForWorkspace(workspaceDir, errorDetail) {
         error: errorDetail,
       });
       ae.actor.stop();
+      await drainWriteChain(workspaceDir);
       workflowActors.delete(id);
     }
   }
@@ -285,6 +288,7 @@ async function markRunTerminalOnDisk(workspaceDir, runId, workflow, status) {
     else if (status === "blocked")
       actorEntry.actor.send({ type: "BLOCKED", at });
     actorEntry.actor.stop();
+    await drainWriteChain(workspaceDir);
     workflowActors.delete(runId);
   } else {
     let workflowState = status;
@@ -1277,6 +1281,7 @@ export function registerWorkflowTools(server, resolveWorkspace) {
                   error: err.message,
                 });
                 actorEntry.actor.stop();
+                await drainWriteChain(ws);
                 workflowActors.delete(nextRunId);
               }
               await markRunTerminalOnDisk(ws, nextRunId, workflow, "failed");

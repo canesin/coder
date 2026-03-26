@@ -42,6 +42,11 @@ function setWriteChain(key, promise) {
   );
 }
 
+/** Await all pending state writes for a workspace before cleanup/exit. */
+export function drainWriteChain(key) {
+  return _writeChains.get(key) || Promise.resolve();
+}
+
 function nowIso() {
   return new Date().toISOString();
 }

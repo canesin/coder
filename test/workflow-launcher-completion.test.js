@@ -20,10 +20,6 @@ function makeWs() {
   return dir;
 }
 
-async function sleep(ms) {
-  await new Promise((r) => setTimeout(r, ms));
-}
-
 /**
  * Simulates MCP launcher: loop-state running + optional lifecycle actor + activeRuns entry,
  * then runs the same normal completion path as after runDevelopLoop() resolves.
@@ -81,12 +77,11 @@ async function runLauncherNormalCompletionFixture(result, opts = {}) {
       workflow: "develop",
     });
 
-    await sleep(withActor ? 40 : 0);
     const loop = await loadLoopState(ws);
     const snap = await loadWorkflowSnapshot(ws);
     return { loop, snap };
   } finally {
-    rmSync(ws, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    rmSync(ws, { recursive: true, force: true });
   }
 }
 
