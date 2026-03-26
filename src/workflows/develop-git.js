@@ -542,7 +542,7 @@ export async function ensureCleanLoopStart(
 export async function resetForNextIssue(
   workspaceDir,
   repoPath,
-  { destructiveReset = false, issueStatus = "completed" } = {},
+  { destructiveReset = false, issueStatus = "completed", signal } = {},
 ) {
   // Delete per-issue state
   const statePath = statePathFor(workspaceDir);
@@ -566,6 +566,7 @@ export async function resetForNextIssue(
     const preStatus = await spawnAsync("git", ["status", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal,
     });
     throwIfAborted(preStatus);
     const hasDirtyFiles = !!(preStatus.stdout || "").trim();
@@ -578,6 +579,7 @@ export async function resetForNextIssue(
       const addRes = await spawnAsync("git", ["add", "-A"], {
         cwd: repoRoot,
         encoding: "utf8",
+        signal,
       });
       throwIfAborted(addRes);
       if (addRes.status !== 0) {
@@ -588,7 +590,7 @@ export async function resetForNextIssue(
       const commitRes = await spawnAsync(
         "git",
         ["commit", "-m", `wip: partial work (issue ${issueStatus})`],
-        { cwd: repoRoot, encoding: "utf8" },
+        { cwd: repoRoot, encoding: "utf8", signal },
       );
       throwIfAborted(commitRes);
       if (commitRes.status !== 0) {
@@ -597,17 +599,18 @@ export async function resetForNextIssue(
         );
       }
     } else if (hasDirtyFiles) {
-      if (!(await discardWorktreeChanges(repoRoot))) {
+      if (!(await discardWorktreeChanges(repoRoot, { signal }))) {
         throw new Error(
           "resetForNextIssue: could not discard worktree changes",
         );
       }
     }
 
-    const defaultBranch = await detectDefaultBranch(repoRoot);
+    const defaultBranch = await detectDefaultBranch(repoRoot, { signal });
     const checkoutRes = await spawnAsync("git", ["checkout", defaultBranch], {
       cwd: repoRoot,
       encoding: "utf8",
+      signal,
     });
     throwIfAborted(checkoutRes);
     if (checkoutRes.status !== 0) {
@@ -624,6 +627,7 @@ export async function resetForNextIssue(
       {
         cwd: repoRoot,
         encoding: "utf8",
+        signal,
       },
     );
     throwIfAborted(cleanRes);
@@ -643,6 +647,7 @@ export async function resetForNextIssue(
       const lsRes = await spawnAsync("git", ["ls-files"], {
         cwd: repoRoot,
         encoding: "utf8",
+        signal,
       });
       throwIfAborted(lsRes);
       const hasTrackedFiles = !!(lsRes.stdout || "").trim();
@@ -650,7 +655,7 @@ export async function resetForNextIssue(
         const restoreRes = await spawnAsync(
           "git",
           ["restore", "--staged", "--worktree", "."],
-          { cwd: repoRoot, encoding: "utf8" },
+          { cwd: repoRoot, encoding: "utf8", signal },
         );
         throwIfAborted(restoreRes);
         if (restoreRes.status !== 0) {

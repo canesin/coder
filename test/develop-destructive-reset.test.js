@@ -485,6 +485,31 @@ test("resetForNextIssue skips git restore on empty-commit repo", async () => {
   }
 });
 
+test("resetForNextIssue rejects promptly with an already-aborted signal", async () => {
+  const ws = makeTmpWorkspace();
+  try {
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      () =>
+        resetForNextIssue(ws, ".", {
+          destructiveReset: false,
+          signal: controller.signal,
+        }),
+      (err) => {
+        assert.ok(
+          err.code === "ABORT_ERR" || err.name === "AbortError",
+          `expected ABORT_ERR, got: ${err.code || err.name} — ${err.message}`,
+        );
+        return true;
+      },
+    );
+  } finally {
+    rmSync(path.dirname(ws), { recursive: true, force: true });
+  }
+});
+
 // --- ensureCleanLoopStart tests ---
 
 function makeLogCtx(workspaceDir) {
