@@ -6,13 +6,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import {
-  extractGeminiPayloadJson,
-  extractJson,
-  formatCommandFailure,
-} from "../../helpers.js";
+import { formatCommandFailure } from "../../helpers.js";
 import { CancelledError } from "../_base.js";
 import { withSessionResume } from "../_session.js";
+
+export {
+  parseAgentPayload,
+  requireExitZero,
+} from "../../core/agent-payload.js";
 
 /**
  * Load session state from the run directory.
@@ -77,17 +78,6 @@ export function chunkPointers(text, { maxChars = 24000 } = {}) {
 }
 
 export { sanitizeFilenameSegment } from "../../core/sanitize.js";
-
-/**
- * Parse structured JSON from agent output.
- * @param {string} agentName
- * @param {string} stdout
- */
-export function parseAgentPayload(agentName, stdout) {
-  return agentName === "gemini"
-    ? extractGeminiPayloadJson(stdout)
-    : extractJson(stdout);
-}
 
 /**
  * Validate that a step payload contains required fields with expected types.
@@ -155,18 +145,6 @@ export function normalizeVerdict(raw, allowed, fallback) {
     if (upper.includes(v.toUpperCase())) return v;
   }
   return fallback;
-}
-
-/**
- * Ensure an agent result has exit code 0, throw otherwise.
- * @param {string} agentName
- * @param {string} label
- * @param {{ exitCode: number, stdout?: string, stderr?: string }} res
- */
-export function requireExitZero(agentName, label, res) {
-  if (res.exitCode !== 0) {
-    throw new Error(formatCommandFailure(`${agentName} ${label}`, res));
-  }
 }
 
 /**

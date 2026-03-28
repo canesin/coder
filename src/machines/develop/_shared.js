@@ -2,13 +2,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import {
-  extractGeminiPayloadJson,
-  extractJson,
-  formatCommandFailure,
-  spawnAsync,
-  throwIfAborted,
-} from "../../helpers.js";
+import { spawnAsync, throwIfAborted } from "../../helpers.js";
+
+export {
+  parseAgentPayload,
+  requireExitZero,
+} from "../../core/agent-payload.js";
 
 export const ISSUE_FILE = "ISSUE.md";
 export const PLAN_FILE = "PLAN.md";
@@ -197,12 +196,6 @@ export function normalizeRepoPath(workspaceDir, repoPath) {
   return rel || ".";
 }
 
-export function parseAgentPayload(agentName, stdout) {
-  return agentName === "gemini"
-    ? extractGeminiPayloadJson(stdout)
-    : extractJson(stdout);
-}
-
 export function checkArtifactCollisions(artifactsDir, { force = false } = {}) {
   if (force) return;
   const paths = artifactPaths(artifactsDir);
@@ -214,12 +207,6 @@ export function checkArtifactCollisions(artifactsDir, { force = false } = {}) {
       `Artifact collision: ${existing.join(", ")} already exist in ${artifactsDir}. ` +
         `Remove them or pass force=true to overwrite.`,
     );
-  }
-}
-
-export function requireExitZero(agentName, label, res) {
-  if (res.exitCode !== 0) {
-    throw new Error(formatCommandFailure(`${agentName} ${label}`, res));
   }
 }
 
