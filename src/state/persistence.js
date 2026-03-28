@@ -7,6 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { sanitizeFilenameSegment } from "../core/sanitize.js";
 import { runSqliteAsync, sqlEscape, sqliteAvailable } from "../sqlite.js";
 
 /**
@@ -170,16 +171,10 @@ ON CONFLICT(file_path) DO UPDATE SET
 
   issueScratchpadPath(issue) {
     if (!issue) return path.join(this.scratchpadDir, "scratchpad.md");
-    const sanitize = (v, fallback = "item") => {
-      const normalized = String(v || "")
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "");
-      return normalized || fallback;
-    };
-    const source = sanitize(issue.source, "issue");
-    const id = sanitize(issue.id, "id");
+    const source = sanitizeFilenameSegment(issue.source, {
+      fallback: "issue",
+    });
+    const id = sanitizeFilenameSegment(issue.id, { fallback: "id" });
     return path.join(this.scratchpadDir, `${source}-${id}.md`);
   }
 }
