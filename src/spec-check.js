@@ -38,14 +38,24 @@ export function checkSpec(specDir) {
     } else {
       const manifest = result.data;
 
-      // Check domain docPaths exist
+      // Check domain docPaths exist + cross-validate content
       for (const d of manifest.domains) {
         if (!existsSync(path.resolve(docBase, d.docPath))) {
           add("error", "manifest.json", `Domain docPath missing: ${d.docPath}`);
+        } else {
+          const fileName = path.basename(d.docPath);
+          const pd = parsed.parsedDomains.find((e) => e.file === fileName);
+          if (pd?.name && pd.name !== d.name) {
+            add(
+              "warning",
+              "manifest.json",
+              `Domain "${d.name}" docPath content has domain: "${pd.name}"`,
+            );
+          }
         }
       }
 
-      // Check decision docPaths exist
+      // Check decision docPaths exist + cross-validate content
       for (const d of manifest.decisions) {
         if (!existsSync(path.resolve(docBase, d.docPath))) {
           add(
@@ -53,13 +63,33 @@ export function checkSpec(specDir) {
             "manifest.json",
             `Decision docPath missing: ${d.docPath}`,
           );
+        } else {
+          const fileName = path.basename(d.docPath);
+          const pd = parsed.parsedDecisions.find((e) => e.file === fileName);
+          if (pd && pd.status !== d.status) {
+            add(
+              "warning",
+              "manifest.json",
+              `Decision "${d.id}" manifest status "${d.status}" differs from file: "${pd.status}"`,
+            );
+          }
         }
       }
 
-      // Check phase docPaths exist
+      // Check phase docPaths exist + cross-validate content
       for (const p of manifest.phases) {
         if (!existsSync(path.resolve(docBase, p.docPath))) {
           add("error", "manifest.json", `Phase docPath missing: ${p.docPath}`);
+        } else {
+          const fileName = path.basename(p.docPath);
+          const pp = parsed.parsedPhases.find((e) => e.file === fileName);
+          if (pp && pp.title !== p.title) {
+            add(
+              "warning",
+              "manifest.json",
+              `Phase "${p.id}" manifest title "${p.title}" differs from file: "${pp.title}"`,
+            );
+          }
         }
       }
 

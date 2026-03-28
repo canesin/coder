@@ -148,6 +148,122 @@ test("warns when issueManifestPath does not exist", () => {
   }
 });
 
+// --- Manifest cross-validation ---
+
+test("warns on domain name mismatch between manifest and file", () => {
+  const base = tmpDir();
+  const specDir = path.join(base, "spec");
+  mkdirSync(specDir, { recursive: true });
+  writeFile(
+    specDir,
+    "03-AUTH.md",
+    "<!-- spec-meta\nversion: 1\ndomain: identity\n-->\n# Identity",
+  );
+  writeFile(
+    specDir,
+    "manifest.json",
+    JSON.stringify({
+      specId: "test",
+      version: 1,
+      repoPath: ".",
+      domains: [{ name: "auth", docPath: "spec/03-AUTH.md" }],
+      createdAt: "2026-01-01T00:00:00Z",
+    }),
+  );
+  try {
+    const result = checkSpec(specDir);
+    const mismatch = result.issues.filter(
+      (i) => i.message.includes("domain") && i.message.includes("identity"),
+    );
+    assert.equal(mismatch.length, 1);
+    assert.equal(mismatch[0].level, "warning");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("warns on decision status mismatch between manifest and file", () => {
+  const base = tmpDir();
+  const specDir = path.join(base, "spec");
+  mkdirSync(specDir, { recursive: true });
+  writeFile(
+    specDir,
+    "decisions/ADR-001-use-jwt.md",
+    "<!-- adr-meta\nstatus: deprecated\n-->\n# Use JWT",
+  );
+  writeFile(
+    specDir,
+    "manifest.json",
+    JSON.stringify({
+      specId: "test",
+      version: 1,
+      repoPath: ".",
+      domains: [],
+      decisions: [
+        {
+          id: "ADR-001",
+          title: "Use JWT",
+          status: "accepted",
+          docPath: "spec/decisions/ADR-001-use-jwt.md",
+        },
+      ],
+      createdAt: "2026-01-01T00:00:00Z",
+    }),
+  );
+  try {
+    const result = checkSpec(specDir);
+    const mismatch = result.issues.filter(
+      (i) =>
+        i.message.includes("status") &&
+        i.message.includes("accepted") &&
+        i.message.includes("deprecated"),
+    );
+    assert.equal(mismatch.length, 1);
+    assert.equal(mismatch[0].level, "warning");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("warns on phase title mismatch between manifest and file", () => {
+  const base = tmpDir();
+  const specDir = path.join(base, "spec");
+  mkdirSync(specDir, { recursive: true });
+  writeFile(specDir, "phases/PHASE-01-foundation.md", "# Setup\n\nDetails.");
+  writeFile(
+    specDir,
+    "manifest.json",
+    JSON.stringify({
+      specId: "test",
+      version: 1,
+      repoPath: ".",
+      domains: [],
+      phases: [
+        {
+          id: "phase-1",
+          title: "Foundation",
+          issueIds: [],
+          docPath: "spec/phases/PHASE-01-foundation.md",
+        },
+      ],
+      createdAt: "2026-01-01T00:00:00Z",
+    }),
+  );
+  try {
+    const result = checkSpec(specDir);
+    const mismatch = result.issues.filter(
+      (i) =>
+        i.message.includes("title") &&
+        i.message.includes("Foundation") &&
+        i.message.includes("Setup"),
+    );
+    assert.equal(mismatch.length, 1);
+    assert.equal(mismatch[0].level, "warning");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 // --- Domain doc validation ---
 
 test("warns on domain .md missing spec-meta block", () => {
