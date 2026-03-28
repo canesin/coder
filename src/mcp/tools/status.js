@@ -1,7 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { resolveConfig } from "../../config.js";
+import { CoderPaths } from "../../core/coder-paths.js";
+import { readJsonSafe } from "../../core/json-io.js";
 import {
   loadLoopState,
   loadState,
@@ -9,23 +11,11 @@ import {
 } from "../../state/workflow-state.js";
 
 function readActivityFile(workspaceDir) {
-  const p = path.join(workspaceDir, ".coder", "activity.json");
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
+  return readJsonSafe(new CoderPaths(workspaceDir).activityFile());
 }
 
 function readMcpHealth(workspaceDir) {
-  const p = path.join(workspaceDir, ".coder", "mcp-health.json");
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
+  return readJsonSafe(new CoderPaths(workspaceDir).mcpHealthFile());
 }
 
 function inferWorkflowFromSnapshotStage(currentStage) {
@@ -75,31 +65,15 @@ async function readWorkflowRunState(workspaceDir) {
 }
 
 function readResearchState(workspaceDir) {
-  const statePath = path.join(workspaceDir, ".coder", "research-state.json");
-  if (!existsSync(statePath)) return null;
-  try {
-    const state = JSON.parse(readFileSync(statePath, "utf8"));
-    const runId = state.runId;
-    if (!runId) return { runId: null, pipeline: null };
-    const pipelinePath = path.join(
-      workspaceDir,
-      ".coder",
-      "scratchpad",
-      runId,
-      "pipeline.json",
-    );
-    let pipeline = null;
-    if (existsSync(pipelinePath)) {
-      try {
-        pipeline = JSON.parse(readFileSync(pipelinePath, "utf8"));
-      } catch {
-        // ignore corrupt pipeline
-      }
-    }
-    return { runId, pipeline };
-  } catch {
-    return null;
-  }
+  const paths = new CoderPaths(workspaceDir);
+  const state = readJsonSafe(paths.researchStateFile());
+  if (!state) return null;
+  const runId = state.runId;
+  if (!runId) return { runId: null, pipeline: null };
+  const pipeline = readJsonSafe(
+    path.join(paths.scratchpad, runId, "pipeline.json"),
+  );
+  return { runId, pipeline };
 }
 
 /**
@@ -132,8 +106,9 @@ export function deriveDevelopArtifactPhase(state, artifacts) {
 export async function getStatus(workspaceDir) {
   const config = resolveConfig(workspaceDir);
   const state = await loadState(workspaceDir);
-  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  const scratchpadDir = path.join(workspaceDir, ".coder", "scratchpad");
+  const cp = new CoderPaths(workspaceDir);
+  const artifactsDir = cp.artifacts;
+  const scratchpadDir = cp.scratchpad;
 
   const scratchpadPath = state.scratchpadPath
     ? path.resolve(workspaceDir, state.scratchpadPath)

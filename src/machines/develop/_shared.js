@@ -1,20 +1,22 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import {
-  extractGeminiPayloadJson,
-  extractJson,
-  formatCommandFailure,
-  spawnAsync,
-  throwIfAborted,
-} from "../../helpers.js";
+import { spawnGitAsync, spawnGitSync } from "../../core/git.js";
 
-export const ISSUE_FILE = "ISSUE.md";
-export const PLAN_FILE = "PLAN.md";
-export const CRITIQUE_FILE = "PLANREVIEW.md";
-export const REVIEW_FINDINGS_FILE = "REVIEW_FINDINGS.md";
-export const RCA_FILE = "RCA.md";
+export {
+  parseAgentPayload,
+  requireExitZero,
+} from "../../core/agent-payload.js";
+
+import {
+  CRITIQUE_FILE,
+  ISSUE_FILE,
+  PLAN_FILE,
+  RCA_FILE,
+  REVIEW_FINDINGS_FILE,
+} from "../../core/coder-paths.js";
+
+export { CRITIQUE_FILE, ISSUE_FILE, PLAN_FILE, RCA_FILE, REVIEW_FINDINGS_FILE };
 
 export function artifactPaths(artifactsDir) {
   return {
@@ -45,16 +47,10 @@ export async function ensureBranch(
 ) {
   if (!branch) throw new Error("No branch set. Run issue-draft first.");
 
-  const current = await spawnAsync(
-    "git",
-    ["rev-parse", "--abbrev-ref", "HEAD"],
-    {
-      cwd: repoRoot,
-      encoding: "utf8",
-      signal,
-    },
-  );
-  throwIfAborted(current);
+  const current = await spawnGitAsync(["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: repoRoot,
+    signal,
+  });
   if (current.status !== 0)
     throw new Error("Failed to determine current git branch.");
 
@@ -62,40 +58,25 @@ export async function ensureBranch(
 
   // Force-recreate: delete existing branch and recreate from baseBranch or HEAD
   if (forceRecreate) {
-    const verify = await spawnAsync("git", ["rev-parse", "--verify", branch], {
+    const verify = await spawnGitAsync(["rev-parse", "--verify", branch], {
       cwd: repoRoot,
-      encoding: "utf8",
       signal,
     });
-    throwIfAborted(verify);
     if (verify.status === 0) {
       // Switch off the branch before deleting it
       if (currentBranch === branch) {
-        const detach = await spawnAsync("git", ["checkout", "--detach"], {
+        await spawnGitAsync(["checkout", "--detach"], {
           cwd: repoRoot,
-          encoding: "utf8",
           signal,
         });
-        throwIfAborted(detach);
       }
-      const del = await spawnAsync("git", ["branch", "-D", branch], {
-        cwd: repoRoot,
-        encoding: "utf8",
-        signal,
-      });
-      throwIfAborted(del);
+      await spawnGitAsync(["branch", "-D", branch], { cwd: repoRoot, signal });
     }
     const startPoint = baseBranch || "HEAD";
-    const create = await spawnAsync(
-      "git",
-      ["checkout", "-b", branch, startPoint],
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-        signal,
-      },
-    );
-    throwIfAborted(create);
+    const create = await spawnGitAsync(["checkout", "-b", branch, startPoint], {
+      cwd: repoRoot,
+      signal,
+    });
     if (create.status !== 0) {
       throw new Error(`Failed to recreate branch ${branch}: ${create.stderr}`);
     }
@@ -104,24 +85,17 @@ export async function ensureBranch(
 
   if (currentBranch === branch) return;
 
-  const checkout = await spawnAsync("git", ["checkout", branch], {
+  const checkout = await spawnGitAsync(["checkout", branch], {
     cwd: repoRoot,
-    encoding: "utf8",
     signal,
   });
-  throwIfAborted(checkout);
   if (checkout.status === 0) return;
 
   // Create new branch with optional baseBranch as start-point
   const createArgs = baseBranch
     ? ["checkout", "-b", branch, baseBranch]
     : ["checkout", "-b", branch];
-  const create = await spawnAsync("git", createArgs, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    signal,
-  });
-  throwIfAborted(create);
+  const create = await spawnGitAsync(createArgs, { cwd: repoRoot, signal });
   if (create.status !== 0) {
     throw new Error(`Failed to create branch ${branch}: ${create.stderr}`);
   }
@@ -197,12 +171,6 @@ export function normalizeRepoPath(workspaceDir, repoPath) {
   return rel || ".";
 }
 
-export function parseAgentPayload(agentName, stdout) {
-  return agentName === "gemini"
-    ? extractGeminiPayloadJson(stdout)
-    : extractJson(stdout);
-}
-
 export function checkArtifactCollisions(artifactsDir, { force = false } = {}) {
   if (force) return;
   const paths = artifactPaths(artifactsDir);
@@ -217,12 +185,6 @@ export function checkArtifactCollisions(artifactsDir, { force = false } = {}) {
   }
 }
 
-export function requireExitZero(agentName, label, res) {
-  if (res.exitCode !== 0) {
-    throw new Error(formatCommandFailure(`${agentName} ${label}`, res));
-  }
-}
-
 export function maybeCheckpointWip(repoRoot, branch, wipConfig, log) {
   if (!wipConfig?.push) return;
   if (!branch || !repoRoot) return;
@@ -232,8 +194,7 @@ export function maybeCheckpointWip(repoRoot, branch, wipConfig, log) {
   const includeUntracked = wipConfig.includeUntracked === true;
   const failOnError = wipConfig.failOnError === true;
 
-  const runGit = (args) =>
-    spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
+  const runGit = (args) => spawnGitSync(args, { cwd: repoRoot });
 
   try {
     const remoteCheck = runGit(["remote", "get-url", remote]);
