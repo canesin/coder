@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { z } from "zod";
+import { deepCleanAgentOutput } from "../../core/text-cleaning.js";
 import {
   formatCommandFailure,
   runPlanreview,
@@ -80,18 +81,12 @@ function logCritiqueMissingAfterReview(ctx, opts) {
 }
 
 function critiqueStdoutStrippedEmpty(reviewRes) {
-  const cleaned = stripAgentNoise(reviewRes.stdout || "", {
-    dropLeadingOnly: true,
-  });
-  return stripAgentNoise(cleaned).trim().length === 0;
+  return deepCleanAgentOutput(reviewRes.stdout || "").length === 0;
 }
 
 function tryWriteCritiqueFromStdout(reviewRes, critiquePath) {
   if (existsSync(critiquePath)) return;
-  const cleaned = stripAgentNoise(reviewRes.stdout || "", {
-    dropLeadingOnly: true,
-  });
-  const filtered = stripAgentNoise(cleaned).trim();
+  const filtered = deepCleanAgentOutput(reviewRes.stdout || "");
   if (!filtered) return;
   writeFileSync(critiquePath, `${filtered}\n`, "utf8");
 }
