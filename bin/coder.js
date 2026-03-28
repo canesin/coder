@@ -68,7 +68,7 @@ Subcommands:
 
   coder spec check <specDir> [--workspace <path>] [--json]
         Validate a spec directory structure and content.
-        Reports errors (will break ingest) and warnings (may produce unexpected results).
+        Reports errors (structural problems) and warnings (may produce unexpected ingest results).
         Exit code 0 = no errors, 1 = errors found.
 
   coder ppcommit [--base <branch>]
