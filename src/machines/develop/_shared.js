@@ -9,11 +9,15 @@ export {
   requireExitZero,
 } from "../../core/agent-payload.js";
 
-export const ISSUE_FILE = "ISSUE.md";
-export const PLAN_FILE = "PLAN.md";
-export const CRITIQUE_FILE = "PLANREVIEW.md";
-export const REVIEW_FINDINGS_FILE = "REVIEW_FINDINGS.md";
-export const RCA_FILE = "RCA.md";
+import {
+  CRITIQUE_FILE,
+  ISSUE_FILE,
+  PLAN_FILE,
+  RCA_FILE,
+  REVIEW_FINDINGS_FILE,
+} from "../../core/coder-paths.js";
+
+export { CRITIQUE_FILE, ISSUE_FILE, PLAN_FILE, RCA_FILE, REVIEW_FINDINGS_FILE };
 
 export function artifactPaths(artifactsDir) {
   return {
