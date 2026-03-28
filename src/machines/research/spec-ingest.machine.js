@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { parseAdrStatus, parseSpecGaps, parseSpecMeta } from "../../helpers.js";
+import { parseSpecDirectory } from "../../spec-parse.js";
 import { defineMachine } from "../_base.js";
 import {
   appendScratchpad,
@@ -45,17 +45,25 @@ export default defineMachine({
         throw new Error(`existingSpecDir does not exist: ${specDir}`);
       }
 
-      // Try to recover repoPath from the spec's own manifest (monorepo support).
-      // The manifest stores a relative path so specs remain portable across checkouts.
-      const specManifestPath = path.join(specDir, "manifest.json");
-      let specManifest = null;
-      if (existsSync(specManifestPath)) {
-        try {
-          specManifest = JSON.parse(readFileSync(specManifestPath, "utf8"));
-        } catch {
-          /* best effort */
-        }
+      // Parse the spec directory using shared logic (same code as spec-check)
+      const parsed = parseSpecDirectory(specDir);
+
+      // Log any parsing issues as warnings (ingest is best-effort)
+      for (const issue of parsed.issues) {
+        ctx.log({
+          event: "spec_ingest_parse_issue",
+          level: issue.level === "error" ? "warn" : "info",
+          file: issue.file,
+          message: issue.message,
+        });
       }
+
+      // Filter domains that have no name (missing spec-meta entirely)
+      const parsedDomains = parsed.parsedDomains.filter((d) => d.name);
+      const { parsedDecisions, parsedGaps, parsedPhases } = parsed;
+      const specManifest = parsed.manifest;
+
+      // Recover repoPath from the spec's own manifest (monorepo support).
       const effectiveRepoPath =
         specManifest?.repoPath && specManifest.repoPath !== "."
           ? specManifest.repoPath
@@ -64,87 +72,6 @@ export default defineMachine({
         ctx.workspaceDir,
         effectiveRepoPath,
       );
-
-      const mdFiles = readdirSync(specDir)
-        .filter((f) => f.endsWith(".md"))
-        .map((f) => ({
-          name: f,
-          content: readFileSync(path.join(specDir, f), "utf8"),
-        }));
-
-      const decisionsDir = path.join(specDir, "decisions");
-      const decisionFiles = existsSync(decisionsDir)
-        ? readdirSync(decisionsDir)
-            .filter((f) => f.endsWith(".md"))
-            .map((f) => ({
-              name: f,
-              content: readFileSync(path.join(decisionsDir, f), "utf8"),
-            }))
-        : [];
-
-      // Filter out synthetic domains emitted by build mode (overview, architecture)
-      const SYNTHETIC_DOMAINS = new Set(["overview", "architecture"]);
-      const parsedDomains = mdFiles
-        .map((f) => {
-          const meta = parseSpecMeta(f.content);
-          if (!meta.domain || SYNTHETIC_DOMAINS.has(meta.domain)) return null;
-          return {
-            name: meta.domain,
-            version: meta.version || "1",
-            file: f.name,
-          };
-        })
-        .filter(Boolean);
-
-      const parsedDecisions = decisionFiles
-        .map((f) => {
-          const status = parseAdrStatus(f.content);
-          if (!status) return null;
-          // Extract clean ADR ID prefix (e.g. "ADR-001") from filenames
-          // like "ADR-001-use-jwt.md" rather than using the full slug.
-          const adrMatch = f.name.match(/^(ADR-\d+)/i);
-          const id = adrMatch ? adrMatch[1] : f.name.replace(/\.md$/, "");
-          return { id, status, file: f.name };
-        })
-        .filter(Boolean);
-
-      // Skip synthetic docs (overview, architecture) to avoid duplicate gaps —
-      // architecture doc repeats every domain gap; only parse per-domain docs.
-      const parsedGaps = mdFiles
-        .filter((f) => {
-          const meta = parseSpecMeta(f.content);
-          return !meta.domain || !SYNTHETIC_DOMAINS.has(meta.domain);
-        })
-        .flatMap((f) => parseSpecGaps(f.content));
-
-      // Parse existing phase docs so spec_architect can preserve rollout ordering.
-      // Recover original phase IDs from the spec manifest when available, since
-      // build mode persists ph.id verbatim. Fall back to index-based IDs only
-      // when no manifest entry matches.
-      const manifestPhases = specManifest?.phases || [];
-      const phasesDir = path.join(specDir, "phases");
-      const parsedPhases = existsSync(phasesDir)
-        ? readdirSync(phasesDir)
-            .filter((f) => f.endsWith(".md"))
-            .sort()
-            .map((f, i) => {
-              const content = readFileSync(path.join(phasesDir, f), "utf8");
-              const titleMatch = content.match(/^#\s+(.+)/m);
-              const title = titleMatch
-                ? titleMatch[1].trim()
-                : f.replace(/\.md$/, "");
-              // Match against manifest by docPath suffix or title to recover
-              // the original phase id (e.g. "phase-1") instead of renumbering.
-              const manifestEntry = manifestPhases.find(
-                (mp) => mp.docPath?.endsWith(f) || mp.title === title,
-              );
-              return {
-                id: manifestEntry?.id || `phase-${i + 1}`,
-                title,
-                file: f,
-              };
-            })
-        : [];
 
       endPipelineStep(
         pipeline,

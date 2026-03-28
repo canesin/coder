@@ -66,6 +66,11 @@ Subcommands:
         Show env vars that agent subprocesses (claude, gemini, etc.) receive.
         Use to verify API keys and OpenRouter vars are passed correctly.
 
+  coder spec check <specDir> [--workspace <path>] [--json]
+        Validate a spec directory structure and content.
+        Reports errors (will break ingest) and warnings (may produce unexpected results).
+        Exit code 0 = no errors, 1 = errors found.
+
   coder ppcommit [--base <branch>]
         Run ppcommit checks on the repository.
 
@@ -862,6 +867,82 @@ function runServeCli() {
   process.exit(result.status ?? 1);
 }
 
+// --- coder spec check ---
+
+function formatSpecCheckHuman(result) {
+  const lines = [];
+  lines.push(`Spec Check: ${result.specDir}`);
+  lines.push("=".repeat(40));
+
+  const { summary } = result;
+  lines.push(
+    `Files: ${summary.files} md | ${summary.domains} domains | ${summary.decisions} decisions | ${summary.phases} phases | ${summary.gaps} gaps`,
+  );
+
+  if (result.issues.length === 0) {
+    lines.push("\nNo issues found.");
+    return lines.join("\n");
+  }
+
+  const errors = result.issues.filter((i) => i.level === "error");
+  const warnings = result.issues.filter((i) => i.level === "warning");
+
+  if (errors.length > 0) {
+    lines.push(`\nErrors (${errors.length}):`);
+    for (const e of errors) {
+      lines.push(`  [ERR] ${e.file}: ${e.message}`);
+    }
+  }
+
+  if (warnings.length > 0) {
+    lines.push(`\nWarnings (${warnings.length}):`);
+    for (const w of warnings) {
+      lines.push(`  [WARN] ${w.file}: ${w.message}`);
+    }
+  }
+
+  lines.push(
+    `\nResult: ${summary.errors} error(s), ${summary.warnings} warning(s)`,
+  );
+  return lines.join("\n");
+}
+
+async function runSpecCheckCli() {
+  const args = process.argv.slice(3);
+  const { values, positionals } = nodeParseArgs({
+    args,
+    strict: false,
+    allowPositionals: true,
+    options: {
+      workspace: { type: "string", default: "." },
+      json: { type: "boolean", default: false },
+    },
+  });
+
+  if (positionals.length < 2 || positionals[0] !== "check") {
+    process.stderr.write(
+      "Usage: coder spec check <specDir> [--workspace <path>] [--json]\n",
+    );
+    process.exit(1);
+  }
+
+  const workspaceDir = path.resolve(values.workspace);
+  const specDir = path.resolve(workspaceDir, positionals[1]);
+
+  const { checkSpec } = await import("../src/spec-check.js");
+  const result = checkSpec(specDir);
+
+  if (values.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${formatSpecCheckHuman(result)}\n`);
+  }
+
+  if (result.summary.errors > 0) {
+    process.exitCode = 1;
+  }
+}
+
 // --- Subcommand dispatch ---
 
 const subcommand = process.argv[2];
@@ -926,6 +1007,12 @@ switch (subcommand) {
       process.stderr.write("Usage: coder debug env [--workspace <path>]\n");
       process.exit(1);
     }
+    break;
+  case "spec":
+    runSpecCheckCli().catch((err) => {
+      process.stderr.write(`ERROR: ${err?.message ?? String(err)}\n`);
+      process.exitCode = 1;
+    });
     break;
   case "ppcommit":
     runPpcommitCli().catch((err) => {
