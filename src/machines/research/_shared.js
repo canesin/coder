@@ -1,11 +1,6 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { readJsonSafe, writeJsonPretty } from "../../core/json-io.js";
 import { formatCommandFailure } from "../../helpers.js";
 import { CancelledError } from "../_base.js";
 import { withSessionResume } from "../_session.js";
@@ -21,13 +16,7 @@ export {
  * @returns {object}
  */
 export function loadSessionState(runDir) {
-  const p = path.join(runDir, "session-state.json");
-  if (!existsSync(p)) return {};
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return {};
-  }
+  return readJsonSafe(path.join(runDir, "session-state.json"), {});
 }
 
 /**
@@ -36,10 +25,7 @@ export function loadSessionState(runDir) {
  * @param {object} state
  */
 export function saveSessionState(runDir, state) {
-  writeFileSync(
-    path.join(runDir, "session-state.json"),
-    `${JSON.stringify(state, null, 2)}\n`,
-  );
+  writeJsonPretty(path.join(runDir, "session-state.json"), state);
 }
 
 /**
@@ -225,7 +211,7 @@ export async function runStructuredStep({
     stepsDir,
     `${sanitizeFilenameSegment(artifactName || stepName, { fallback: "step" })}.json`,
   );
-  writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+  writeJsonPretty(outputPath, payload);
   const relOutputPath = path.relative(ctx.workspaceDir, outputPath);
   endPipelineStep(
     pipeline,
@@ -261,7 +247,7 @@ export function ensureArtifactOnDisk(stepsDir, artifactName, data) {
     typeof data === "object" &&
     Object.keys(data).length > 0
   ) {
-    writeFileSync(p, `${JSON.stringify(data, null, 2)}\n`);
+    writeJsonPretty(p, data);
   }
   return p;
 }
@@ -277,12 +263,7 @@ export function loadStepArtifact(stepsDir, artifactName) {
     stepsDir,
     `${sanitizeFilenameSegment(artifactName, { fallback: "step" })}.json`,
   );
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
+  return readJsonSafe(p);
 }
 
 /**
@@ -357,7 +338,7 @@ export function initPipeline(runId, pipelinePath) {
     history: [],
     steps: {},
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  writeJsonPretty(pipelinePath, pipeline);
   return pipeline;
 }
 
@@ -365,12 +346,7 @@ export function initPipeline(runId, pipelinePath) {
  * Load pipeline state from disk.
  */
 export function loadPipeline(pipelinePath) {
-  if (!existsSync(pipelinePath)) return null;
-  try {
-    return JSON.parse(readFileSync(pipelinePath, "utf8"));
-  } catch {
-    return null;
-  }
+  return readJsonSafe(pipelinePath);
 }
 
 /**
@@ -395,7 +371,7 @@ export function beginPipelineStep(
     startedAt: new Date().toISOString(),
     ...meta,
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  writeJsonPretty(pipelinePath, pipeline);
   appendScratchpad(scratchpadPath, `Step: ${name}`, ["- status: running"]);
 }
 
@@ -423,7 +399,7 @@ export function endPipelineStep(
     endedAt: new Date().toISOString(),
     ...meta,
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  writeJsonPretty(pipelinePath, pipeline);
   appendScratchpad(scratchpadPath, `Step: ${name}`, [
     `- status: ${status}`,
     ...Object.entries(meta).map(([k, v]) => `- ${k}: ${String(v)}`),
