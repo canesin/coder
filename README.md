@@ -8,7 +8,7 @@ Each pipeline step is an independent **machine** — callable as a standalone MC
 
 | Requirement | Notes |
 |-------------|-------|
-| Node.js >= 20 | Runtime |
+| Node.js >= 22 | Runtime |
 | `gemini` CLI | Default agent for issue selection, plan review, committing |
 | `claude` (Claude Code) | Default agent for planning, implementation |
 | `codex` CLI | Default agent for code review, coalescing |
@@ -19,8 +19,10 @@ Agent role assignments are configurable — any role can use any of the three ba
 
 ## Install
 
+From the latest [GitHub release](https://github.com/canesin/coder/releases/latest):
+
 ```bash
-npm install -g @canesin/coder
+npm install -g https://github.com/canesin/coder/releases/download/v1.0.0/canesin-coder-1.0.0.tgz
 ```
 
 Or from source:
@@ -81,6 +83,8 @@ coder resume                  # resume paused run
 coder config                  # resolved configuration
 coder steering generate       # create steering context
 coder steering update         # refresh steering context
+coder spec check <dir>        # validate spec directory structure
+coder debug env               # show env vars agents receive
 coder ppcommit                # commit hygiene (all files)
 coder ppcommit --base main    # commit hygiene (branch diff only)
 coder version                 # version, branch, and commit info
@@ -127,6 +131,22 @@ intent-capture → ui-generation → ui-refinement → spec-export
 coder_workflow { action: "start", workflow: "design", designIntent: "..." }
 ```
 
+### Spec build
+
+Ingests existing spec documents, architects issue breakdowns, and renders publishable issue sets:
+
+```
+spec-ingest → spec-architect → spec-render
+```
+
+Machines are callable standalone via MCP tools (`coder_research_spec_ingest`, etc.) or composed via the spec-build workflow runner.
+
+Validate spec directories before ingesting:
+
+```bash
+coder spec check <specDir>
+```
+
 ## Architecture
 
 ### Machines
@@ -142,7 +162,7 @@ Machines are auto-registered as MCP tools (`coder_develop_planning`, `coder_rese
 ```
 src/machines/
   develop/     7 machines
-  research/    7 machines
+  research/   10 machines (7 pipeline + 3 spec-build)
   design/      4 machines
   shared/      2 reusable (web-research, poc-runner)
 ```
