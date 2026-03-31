@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { HostSandboxProvider } from "../src/host-sandbox.js";
 
@@ -320,4 +323,28 @@ test("host sandbox strips CLAUDECODE and CLAUDE_CODE_ENTRYPOINT from final env",
   });
   assert.ok(!/CLAUDECODE=/.test(result.stdout));
   assert.ok(!/CLAUDE_CODE_ENTRYPOINT=/.test(result.stdout));
+});
+
+test("agent subprocess does not source ~/.profile (profile routing does not override sandbox env)", async () => {
+  const home = mkdtempSync(path.join(os.tmpdir(), "coder-agent-noprofile-"));
+  writeFileSync(
+    path.join(home, ".profile"),
+    'export ANTHROPIC_BASE_URL="https://openrouter.example/api"\n',
+  );
+  const provider = new HostSandboxProvider({
+    baseEnv: {
+      HOME: home,
+      PATH: process.env.PATH || "/usr/bin:/bin",
+    },
+  });
+  const sandbox = await provider.create();
+  const result = await sandbox.commands.run(
+    `printf '%s' "\${ANTHROPIC_BASE_URL:-}"`,
+    { timeoutMs: 5000 },
+  );
+  assert.equal(
+    result.stdout,
+    "",
+    "models.claude / sandbox env must win; ~/.profile must not inject ANTHROPIC_BASE_URL (regression: bash -lc)",
+  );
 });

@@ -256,8 +256,20 @@ function modelApiKeyEnvNames(config) {
  * @param {object} [env] - Environment to scan for pattern matches (defaults to process.env)
  * @returns {string[]} Deduplicated list of env var names to pass through
  */
+const PASS_ENV_CLAUDE_TOKEN_CAPS = [
+  "CLAUDE_CODE_MAX_INPUT_TOKENS",
+  "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+];
+
 export function resolvePassEnv(config, env = process.env) {
-  const explicit = config.sandbox?.passEnv ?? DEFAULT_PASS_ENV;
+  // Custom `sandbox.passEnv` replaces `DEFAULT_PASS_ENV` (see schema), so without
+  // this merge the Claude cap names would not be forwarded from the host — and
+  // CliAgent-injected values must still reach `claude` via systemd --setenv / spawn env.
+  const rawPass = config.sandbox?.passEnv;
+  const explicit =
+    rawPass === undefined || rawPass === null
+      ? DEFAULT_PASS_ENV
+      : [...new Set([...PASS_ENV_CLAUDE_TOKEN_CAPS, ...rawPass])];
   const fromModels = modelApiKeyEnvNames(config);
   const mergedExplicit = [...new Set([...explicit, ...fromModels])];
   const patterns = config.sandbox?.passEnvPatterns ?? [];
@@ -596,21 +608,15 @@ export function stripAgentNoise(text, { dropLeadingOnly = false } = {}) {
   return lines.filter((line) => !isAgentNoiseLine(line)).join("\n");
 }
 
+import { extractFromFirstHeading as _extractFromFirstHeading } from "./core/text-cleaning.js";
+
+export {
+  deepCleanAgentOutput,
+  extractFromFirstHeading,
+} from "./core/text-cleaning.js";
+
 export function sanitizeIssueMarkdown(text) {
-  // Drop leading startup noise (common) and then remove any remaining noise lines
-  // anywhere in the document (MCP notifications can leak mid/late output).
-  const cleaned = stripAgentNoise(text, { dropLeadingOnly: true });
-  const fullyCleaned = stripAgentNoise(cleaned).trim();
-  if (!fullyCleaned) return "";
-  // Strip outer markdown code fence if the agent wrapped the output (e.g. Gemini).
-  const fenceMatch = fullyCleaned.match(
-    /^```(?:markdown)?\s*\n([\s\S]*?)\n?```\s*$/i,
-  );
-  const unwrapped = fenceMatch ? fenceMatch[1].trim() : fullyCleaned;
-  const lines = unwrapped.split("\n");
-  const firstHeader = lines.findIndex((line) => line.trim().startsWith("#"));
-  if (firstHeader > 0) return lines.slice(firstHeader).join("\n").trim();
-  return unwrapped;
+  return _extractFromFirstHeading(text);
 }
 
 export function sanitizeUserData(text) {
@@ -1077,44 +1083,7 @@ export async function runHostTests(
   );
 }
 
-/**
- * Parse `<!-- spec-meta ... -->` HTML comment blocks into key-value pairs.
- * @param {string} text - Markdown document content
- * @returns {Record<string, string>} Parsed metadata (empty object if no block found)
- */
-export function parseSpecMeta(text) {
-  const normalized = String(text || "").replace(/\r\n/g, "\n");
-  const match = normalized.match(/<!--\s*spec-meta\n([\s\S]*?)-->/);
-  if (!match) return {};
-  const result = {};
-  for (const line of match[1].split("\n")) {
-    const sep = line.indexOf(":");
-    if (sep === -1) continue;
-    const key = line.slice(0, sep).trim();
-    const value = line.slice(sep + 1).trim();
-    if (key && value) result[key] = value;
-  }
-  return result;
-}
-
-/**
- * Extract the `status` field from an `<!-- adr-meta ... -->` HTML comment block.
- * @param {string} text - ADR markdown document content
- * @returns {string | null} The status value, or null if no block/status found
- */
-export function parseAdrStatus(text) {
-  const normalized = String(text || "").replace(/\r\n/g, "\n");
-  const match = normalized.match(/<!--\s*adr-meta\n([\s\S]*?)-->/);
-  if (!match) return null;
-  for (const line of match[1].split("\n")) {
-    const sep = line.indexOf(":");
-    if (sep === -1) continue;
-    const key = line.slice(0, sep).trim();
-    const value = line.slice(sep + 1).trim();
-    if (key === "status" && value) return value;
-  }
-  return null;
-}
+export { parseAdrStatus, parseSpecMeta } from "./core/metadata-block.js";
 
 /**
  * Parse gap checklist items from spec markdown (e.g. `- [ ] **1. Gap** — Desc. Domain: X. Severity: Y.`).

@@ -1,18 +1,16 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import {
-  extractGeminiPayloadJson,
-  extractJson,
-  formatCommandFailure,
-} from "../../helpers.js";
+import { parseAgentPayload } from "../../core/agent-payload.js";
+import { readJsonSafe, writeJsonPretty } from "../../core/json-io.js";
+import { sanitizeFilenameSegment } from "../../core/sanitize.js";
+import { formatCommandFailure } from "../../helpers.js";
 import { CancelledError } from "../_base.js";
 import { withSessionResume } from "../_session.js";
+
+export {
+  parseAgentPayload,
+  requireExitZero,
+} from "../../core/agent-payload.js";
 
 /**
  * Load session state from the run directory.
@@ -20,13 +18,7 @@ import { withSessionResume } from "../_session.js";
  * @returns {object}
  */
 export function loadSessionState(runDir) {
-  const p = path.join(runDir, "session-state.json");
-  if (!existsSync(p)) return {};
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return {};
-  }
+  return readJsonSafe(path.join(runDir, "session-state.json"), {});
 }
 
 /**
@@ -35,10 +27,7 @@ export function loadSessionState(runDir) {
  * @param {object} state
  */
 export function saveSessionState(runDir, state) {
-  writeFileSync(
-    path.join(runDir, "session-state.json"),
-    `${JSON.stringify(state, null, 2)}\n`,
-  );
+  writeJsonPretty(path.join(runDir, "session-state.json"), state);
 }
 
 /**
@@ -76,31 +65,7 @@ export function chunkPointers(text, { maxChars = 24000 } = {}) {
   return chunks;
 }
 
-/**
- * Sanitize a string for use as a filename segment.
- * @param {string} value
- * @param {{ fallback?: string }} [opts]
- * @returns {string}
- */
-export function sanitizeFilenameSegment(value, { fallback = "item" } = {}) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || fallback;
-}
-
-/**
- * Parse structured JSON from agent output.
- * @param {string} agentName
- * @param {string} stdout
- */
-export function parseAgentPayload(agentName, stdout) {
-  return agentName === "gemini"
-    ? extractGeminiPayloadJson(stdout)
-    : extractJson(stdout);
-}
+export { sanitizeFilenameSegment };
 
 /**
  * Validate that a step payload contains required fields with expected types.
@@ -168,18 +133,6 @@ export function normalizeVerdict(raw, allowed, fallback) {
     if (upper.includes(v.toUpperCase())) return v;
   }
   return fallback;
-}
-
-/**
- * Ensure an agent result has exit code 0, throw otherwise.
- * @param {string} agentName
- * @param {string} label
- * @param {{ exitCode: number, stdout?: string, stderr?: string }} res
- */
-export function requireExitZero(agentName, label, res) {
-  if (res.exitCode !== 0) {
-    throw new Error(formatCommandFailure(`${agentName} ${label}`, res));
-  }
 }
 
 /**
@@ -260,7 +213,7 @@ export async function runStructuredStep({
     stepsDir,
     `${sanitizeFilenameSegment(artifactName || stepName, { fallback: "step" })}.json`,
   );
-  writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+  writeJsonPretty(outputPath, payload);
   const relOutputPath = path.relative(ctx.workspaceDir, outputPath);
   endPipelineStep(
     pipeline,
@@ -296,7 +249,7 @@ export function ensureArtifactOnDisk(stepsDir, artifactName, data) {
     typeof data === "object" &&
     Object.keys(data).length > 0
   ) {
-    writeFileSync(p, `${JSON.stringify(data, null, 2)}\n`);
+    writeJsonPretty(p, data);
   }
   return p;
 }
@@ -312,12 +265,7 @@ export function loadStepArtifact(stepsDir, artifactName) {
     stepsDir,
     `${sanitizeFilenameSegment(artifactName, { fallback: "step" })}.json`,
   );
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
+  return readJsonSafe(p);
 }
 
 /**
@@ -392,7 +340,7 @@ export function initPipeline(runId, pipelinePath) {
     history: [],
     steps: {},
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  writeJsonPretty(pipelinePath, pipeline);
   return pipeline;
 }
 
@@ -400,12 +348,7 @@ export function initPipeline(runId, pipelinePath) {
  * Load pipeline state from disk.
  */
 export function loadPipeline(pipelinePath) {
-  if (!existsSync(pipelinePath)) return null;
-  try {
-    return JSON.parse(readFileSync(pipelinePath, "utf8"));
-  } catch {
-    return null;
-  }
+  return readJsonSafe(pipelinePath);
 }
 
 /**
@@ -430,7 +373,7 @@ export function beginPipelineStep(
     startedAt: new Date().toISOString(),
     ...meta,
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  writeJsonPretty(pipelinePath, pipeline);
   appendScratchpad(scratchpadPath, `Step: ${name}`, ["- status: running"]);
 }
 
@@ -458,7 +401,7 @@ export function endPipelineStep(
     endedAt: new Date().toISOString(),
     ...meta,
   };
-  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  writeJsonPretty(pipelinePath, pipeline);
   appendScratchpad(scratchpadPath, `Step: ${name}`, [
     `- status: ${status}`,
     ...Object.entries(meta).map(([k, v]) => `- ${k}: ${String(v)}`),

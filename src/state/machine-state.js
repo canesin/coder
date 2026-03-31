@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { readJsonSafe, writeJsonPretty } from "../core/json-io.js";
 
 /**
  * Per-machine state checkpoint — saved after each machine completes within a workflow.
@@ -31,17 +32,17 @@ export function saveCheckpoint(workspaceDir, checkpoint) {
   const p = checkpointPathFor(workspaceDir, checkpoint.runId);
   try {
     mkdirSync(path.dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify(checkpoint, null, 2) + "\n");
+    writeJsonPretty(p, checkpoint);
   } catch (err) {
     console.error(`[coder] failed to save checkpoint ${p}: ${err.message}`);
   }
 }
 
 export function loadCheckpoint(workspaceDir, runId) {
-  const p = checkpointPathFor(workspaceDir, runId);
-  if (!existsSync(p)) return null;
+  const raw = readJsonSafe(checkpointPathFor(workspaceDir, runId));
+  if (!raw) return null;
   try {
-    return WorkflowCheckpointSchema.parse(JSON.parse(readFileSync(p, "utf8")));
+    return WorkflowCheckpointSchema.parse(raw);
   } catch {
     return null;
   }

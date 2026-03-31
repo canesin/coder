@@ -116,7 +116,10 @@ export function buildSystemdRunArgs(
     tmpDir = path.join(cwd, ".coder", "tmp");
     mkdirSync(tmpDir, { recursive: true });
   }
-  args.push("bash", "-lc", maybeTmpFile(command, tmpDir));
+  // Non-login shell: `bash -lc` sources ~/.profile and can export ANTHROPIC_BASE_URL /
+  // OpenRouter routing that overrides models.claude in coder.json. Agent env is the
+  // source of truth from config + passEnv (--setenv); keep profile out of it.
+  args.push("bash", "-c", maybeTmpFile(command, tmpDir));
   return args;
 }
 
@@ -191,7 +194,7 @@ export function runShellSync(
 
   const fallbackEnv = { ...(env || process.env) };
   delete fallbackEnv.CLAUDECODE;
-  const res = spawnSync("bash", ["-lc", maybeTmpFile(command)], {
+  const res = spawnSync("bash", ["-c", maybeTmpFile(command)], {
     cwd,
     env: fallbackEnv,
     encoding: "utf8",
@@ -200,7 +203,7 @@ export function runShellSync(
   });
   const io = withSpawnErrorText(res);
   return {
-    cmd: ["bash", "-lc", command],
+    cmd: ["bash", "-c", command],
     exitCode: safeStatus(res),
     stdout: io.stdout,
     stderr: io.stderr,

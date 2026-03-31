@@ -361,3 +361,36 @@ test("auth error with session propagates so machine can run full fix", async () 
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0], { agent: "primary", hasSession: true });
 });
+
+test("RetryFallbackWrapper does not retry fatal rate_limit (quota)", async () => {
+  let calls = 0;
+  const config = makeConfig({ retries: 3, backoffMs: 0 });
+  const pool = makePool(config);
+
+  const quotaErr = new Error("You're out of extra usage");
+  quotaErr.name = "CommandFatalStdoutError";
+  quotaErr.category = "rate_limit";
+
+  const mock = {
+    async execute() {
+      calls++;
+      throw quotaErr;
+    },
+    async executeStructured() {
+      return this.execute();
+    },
+    async executeWithRetry() {
+      return this.execute();
+    },
+    async kill() {},
+  };
+
+  const { agent } = pool.getAgent("planner");
+  agent._primary = mock;
+
+  await assert.rejects(
+    () => agent.execute("prompt"),
+    (err) => err === quotaErr,
+  );
+  assert.equal(calls, 1, "p-retry must not loop on quota exhaustion");
+});

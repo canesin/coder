@@ -112,6 +112,17 @@ test("resolvePassEnv returns schema defaults when config has no sandbox", () => 
   const result = resolvePassEnv({});
   assert.deepEqual(result, defaults.passEnv);
   assert.ok(result.includes("GITLAB_TOKEN"));
+  assert.ok(result.includes("CLAUDE_CODE_MAX_INPUT_TOKENS"));
+  assert.ok(result.includes("CLAUDE_CODE_MAX_OUTPUT_TOKENS"));
+});
+
+test("resolvePassEnv always includes Claude token cap names when sandbox.passEnv is customized", () => {
+  const result = resolvePassEnv({
+    sandbox: { passEnv: ["OPENROUTER_API_KEY", "GEMINI_API_KEY"] },
+  });
+  assert.ok(result.includes("OPENROUTER_API_KEY"));
+  assert.ok(result.includes("CLAUDE_CODE_MAX_INPUT_TOKENS"));
+  assert.ok(result.includes("CLAUDE_CODE_MAX_OUTPUT_TOKENS"));
 });
 
 test("spawnAsync synthesizes ETIMEDOUT error when process is killed by timeout", async () => {
@@ -200,7 +211,12 @@ test("resolvePassEnv returns config sandbox.passEnv when set", () => {
   const config = {
     sandbox: { passEnv: ["MY_KEY", "OTHER_KEY"], passEnvPatterns: [] },
   };
-  assert.deepEqual(resolvePassEnv(config), ["MY_KEY", "OTHER_KEY"]);
+  assert.deepEqual(resolvePassEnv(config), [
+    "CLAUDE_CODE_MAX_INPUT_TOKENS",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "MY_KEY",
+    "OTHER_KEY",
+  ]);
 });
 
 test("resolvePassEnv merges models.*.apiKeyEnv into pass list", () => {
@@ -255,7 +271,7 @@ test("resolvePassEnv deduplicates explicit and pattern-matched keys", () => {
   assert.ok(result.includes("AWS_PROFILE"));
 });
 
-test("resolvePassEnv with empty patterns returns only explicit keys", () => {
+test("resolvePassEnv with empty patterns returns explicit keys plus Claude token caps", () => {
   const config = {
     sandbox: {
       passEnv: ["ONLY_THIS"],
@@ -264,7 +280,11 @@ test("resolvePassEnv with empty patterns returns only explicit keys", () => {
   };
   const env = { ONLY_THIS: "yes", OTHER: "no" };
   const result = resolvePassEnv(config, env);
-  assert.deepEqual(result, ["ONLY_THIS"]);
+  assert.deepEqual(result, [
+    "CLAUDE_CODE_MAX_INPUT_TOKENS",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "ONLY_THIS",
+  ]);
 });
 
 test("formatCommandFailure extracts nested gemini JSON error and includes hint", () => {

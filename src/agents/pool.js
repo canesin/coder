@@ -89,7 +89,8 @@ class RetryFallbackWrapper extends AgentAdapter {
           if (
             (name === "CommandFatalStderrError" ||
               name === "CommandFatalStdoutError") &&
-            ctx.error.category === "auth"
+            (ctx.error.category === "auth" ||
+              ctx.error.category === "rate_limit")
           )
             return false;
           if (name === "McpStartupError") return false;

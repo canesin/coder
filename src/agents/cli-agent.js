@@ -28,8 +28,14 @@ export const CLAUDE_RESUME_FAILURE_PATTERNS = [
   { pattern: "Invalid session ID", category: "auth" },
   { pattern: "Conversation has expired", category: "auth" },
   { pattern: "Session has expired", category: "auth" },
-  // "Session ID X is already in use", --resume variants (claude-code #5524); rare on current Claude but still matched for concurrency / overlapping runs.
-  { pattern: "is already in use", category: "auth" },
+  // "Session ID X is already in use" (claude-code #5524). Require BOTH fragments — the bare
+  // substring "is already in use" matches unrelated stderr (e.g. port/resource messages) and
+  // caused false fatal kills + spurious session rotation when no session collision existed.
+  {
+    pattern: "is already in use",
+    category: "auth",
+    matchAll: ["session id", "is already in use"],
+  },
 ];
 const CODEX_RESUME_FAILURE_PATTERNS = [
   { pattern: "session not found", category: "auth" },
@@ -114,6 +120,10 @@ export class CliAgent extends AgentAdapter {
     if (this.name === "claude") {
       const claudeCfg = this.config.models?.claude;
       baseEnv = { ...baseEnv };
+      const maxIn = this.config.claude?.maxInputTokens;
+      if (maxIn !== undefined && maxIn !== null) {
+        baseEnv.CLAUDE_CODE_MAX_INPUT_TOKENS = String(maxIn);
+      }
       const maxTokens = this.config.claude?.maxOutputTokens;
       if (maxTokens !== undefined && maxTokens !== null) {
         baseEnv.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
@@ -124,8 +134,15 @@ export class CliAgent extends AgentAdapter {
       if (customAnthropic) {
         baseEnv.ANTHROPIC_BASE_URL = ep;
         baseEnv.ANTHROPIC_API_KEY = "";
-        if (claudeCfg.apiKeyEnv && opts.secrets[claudeCfg.apiKeyEnv]) {
-          baseEnv.ANTHROPIC_AUTH_TOKEN = opts.secrets[claudeCfg.apiKeyEnv];
+        const keyEnv = claudeCfg.apiKeyEnv;
+        const keyVal = keyEnv ? opts.secrets[keyEnv] : undefined;
+        if (keyVal) {
+          baseEnv.ANTHROPIC_AUTH_TOKEN = keyVal;
+        } else if (keyEnv) {
+          const m = resolveModelName(claudeCfg) || "?";
+          process.stderr.write(
+            `[coder] Warning: ${keyEnv} is not set where coder runs; ANTHROPIC_AUTH_TOKEN is unset. Claude Code may call Anthropic with OpenRouter-only model "${m}" ("model may not exist"). Export ${keyEnv} for the coder-mcp / coder process.\n`,
+          );
         }
       }
       // Model is passed via --model only (see _buildCommand); not duplicated in env
@@ -293,7 +310,24 @@ export class CliAgent extends AgentAdapter {
       }
       if (sessionId) flags += ` --session-id ${shellEscape(sessionId)}`;
       if (resumeId) flags += ` --resume ${shellEscape(resumeId)}`;
-      return heredocPipe(prompt, flags);
+      let cmd = heredocPipe(prompt, flags);
+      // Set caps in the shell script itself: systemd-run --setenv can mishandle values
+      // with '=' (API keys) or long argv; exports run in the same bash as `claude`.
+      const maxIn = this.config.claude?.maxInputTokens;
+      const maxOut = this.config.claude?.maxOutputTokens;
+      const exports = [];
+      if (maxIn !== undefined && maxIn !== null) {
+        exports.push(
+          `export CLAUDE_CODE_MAX_INPUT_TOKENS=${shellEscape(String(maxIn))}`,
+        );
+      }
+      if (maxOut !== undefined && maxOut !== null) {
+        exports.push(
+          `export CLAUDE_CODE_MAX_OUTPUT_TOKENS=${shellEscape(String(maxOut))}`,
+        );
+      }
+      if (exports.length) cmd = `${exports.join("; ")}; ${cmd}`;
+      return cmd;
     }
 
     // codex: resume is a subcommand, not a flag

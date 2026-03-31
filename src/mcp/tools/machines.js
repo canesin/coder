@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { AgentPool } from "../../agents/pool.js";
 import { resolveConfig } from "../../config.js";
+import { CoderPaths } from "../../core/coder-paths.js";
 import { buildSecrets, resolvePassEnv } from "../../helpers.js";
 import { ensureLogsDir, makeJsonlLogger } from "../../logging.js";
 import { listMachines } from "../../machines/_registry.js";
@@ -12,12 +13,11 @@ import { listMachines } from "../../machines/_registry.js";
  */
 function buildStandaloneContext(workspaceDir, overrides = {}) {
   const config = resolveConfig(workspaceDir, overrides);
-  const artifactsDir = path.join(workspaceDir, ".coder", "artifacts");
-  const scratchpadDir = path.join(workspaceDir, ".coder", "scratchpad");
+  const cp = new CoderPaths(workspaceDir);
 
-  mkdirSync(path.join(workspaceDir, ".coder"), { recursive: true });
-  mkdirSync(artifactsDir, { recursive: true });
-  mkdirSync(scratchpadDir, { recursive: true });
+  mkdirSync(cp.root, { recursive: true });
+  mkdirSync(cp.artifacts, { recursive: true });
+  mkdirSync(cp.scratchpad, { recursive: true });
   ensureLogsDir(workspaceDir);
 
   const log = makeJsonlLogger(workspaceDir, "machines");
@@ -39,8 +39,8 @@ function buildStandaloneContext(workspaceDir, overrides = {}) {
     log,
     cancelToken: { cancelled: false, paused: false },
     secrets,
-    artifactsDir,
-    scratchpadDir,
+    artifactsDir: cp.artifacts,
+    scratchpadDir: cp.scratchpad,
   };
 }
 

@@ -110,6 +110,45 @@ test("runWithMachineRetry: exhausts retries and returns failure", async () => {
   assert.equal(lastLog.attempt, 2);
 });
 
+test("runWithMachineRetry: does not retry on rate limit (no machine_retry_failed or onFailedAttempt)", async () => {
+  const ctx = makeCtx();
+  let calls = 0;
+  let onFailedCalls = 0;
+  const quotaErr = "429 rate limit exceeded";
+  const fn = async () => {
+    calls++;
+    return { status: "failed", error: quotaErr };
+  };
+
+  const result = await runWithMachineRetry(fn, {
+    maxRetries: DEFAULT_MACHINE_RETRIES,
+    backoffMs: 0,
+    ctx,
+    onFailedAttempt: () => {
+      onFailedCalls++;
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error, quotaErr);
+  assert.equal(calls, 1);
+  assert.equal(onFailedCalls, 0);
+  assert.equal(
+    ctx.logEvents.filter((e) => e.event === "machine_retry_failed").length,
+    0,
+  );
+  assert.equal(
+    ctx.logEvents.filter((e) => e.event === "machine_retry_attempt").length,
+    0,
+  );
+  assert.equal(
+    ctx.logEvents.filter(
+      (e) => e.event === "machine_retry_suppressed_rate_limit",
+    ).length,
+    1,
+  );
+});
+
 test("runWithMachineRetry: maxRetries: 0 disables retry", async () => {
   const ctx = makeCtx();
   let calls = 0;

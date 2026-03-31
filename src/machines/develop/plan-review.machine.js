@@ -6,6 +6,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { z } from "zod";
+import { buildErrorLogPayload } from "../../core/log-helpers.js";
+import { deepCleanAgentOutput } from "../../core/text-cleaning.js";
 import {
   formatCommandFailure,
   runPlanreview,
@@ -25,12 +27,6 @@ export function buildPlanReviewExecuteOpts(ctx) {
   return buildStepCliOpts(ctx.config.workflow.timeouts.planReview);
 }
 
-const LOG_TRUNC = 500;
-
-function truncateLogMsg(s) {
-  return String(s ?? "").slice(0, LOG_TRUNC);
-}
-
 function readArtifactDirSample(artifactsDir, limit = 40) {
   try {
     if (!existsSync(artifactsDir)) return [];
@@ -43,25 +39,13 @@ function readArtifactDirSample(artifactsDir, limit = 40) {
 /** Single log for thrown execute failures or nonzero exit (§2b — no double-log with exit check). */
 function logPlanReviewExecuteFailed(ctx, opts) {
   const { err, res, round, critiquePath, planPath } = opts;
-  const payload = {
-    event: "plan_review_execute_failed",
-    errorName: err?.name ?? "Error",
-    errorMessage: truncateLogMsg(err?.message ?? err),
-    round,
-    critiquePath,
-    planPath,
-    isCommandTimeout: err?.name === "CommandTimeoutError",
-  };
-  if (res && typeof res.exitCode === "number") {
-    payload.exitCode = res.exitCode;
-    payload.stdoutLen = (res.stdout || "").length;
-    payload.stderrLen = (res.stderr || "").length;
-  } else if (err) {
-    // Sandbox fatal / throwOnNonZero errors attach err.stdout / err.stderr
-    if (typeof err.stdout === "string") payload.stdoutLen = err.stdout.length;
-    if (typeof err.stderr === "string") payload.stderrLen = err.stderr.length;
-  }
-  ctx.log(payload);
+  ctx.log(
+    buildErrorLogPayload("plan_review_execute_failed", err, res, {
+      round,
+      critiquePath,
+      planPath,
+    }),
+  );
 }
 
 function logCritiqueMissingAfterReview(ctx, opts) {
@@ -80,18 +64,12 @@ function logCritiqueMissingAfterReview(ctx, opts) {
 }
 
 function critiqueStdoutStrippedEmpty(reviewRes) {
-  const cleaned = stripAgentNoise(reviewRes.stdout || "", {
-    dropLeadingOnly: true,
-  });
-  return stripAgentNoise(cleaned).trim().length === 0;
+  return deepCleanAgentOutput(reviewRes.stdout || "").length === 0;
 }
 
 function tryWriteCritiqueFromStdout(reviewRes, critiquePath) {
   if (existsSync(critiquePath)) return;
-  const cleaned = stripAgentNoise(reviewRes.stdout || "", {
-    dropLeadingOnly: true,
-  });
-  const filtered = stripAgentNoise(cleaned).trim();
+  const filtered = deepCleanAgentOutput(reviewRes.stdout || "");
   if (!filtered) return;
   writeFileSync(critiquePath, `${filtered}\n`, "utf8");
 }
