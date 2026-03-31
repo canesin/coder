@@ -151,7 +151,7 @@ Return ONLY valid JSON in this schema:
         artifactName: `analyze-chunk-${String(i + 1).padStart(2, "0")}`,
         role: "issueSelector",
         prompt: chunkPrompt,
-        timeoutMs: ctx.config.workflow.timeouts.researchStep,
+        timeoutMs: ctx.config?.workflow?.timeouts?.researchStep ?? 60_000,
         ...stepOpts,
       });
       requirePayloadFields(
@@ -200,7 +200,7 @@ Return ONLY valid JSON in this schema:
       artifactName: "analysis-brief",
       role: "issueSelector",
       prompt: analysisPrompt,
-      timeoutMs: ctx.config.workflow.timeouts.researchStep,
+      timeoutMs: ctx.config?.workflow?.timeouts?.researchStep ?? 60_000,
       ...stepOpts,
     });
     const analysisBrief = requirePayloadFields(

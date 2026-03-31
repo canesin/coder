@@ -1,6 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { parseAgentPayload } from "../../core/agent-payload.js";
 import { readJsonSafe, writeJsonPretty } from "../../core/json-io.js";
+import { sanitizeFilenameSegment } from "../../core/sanitize.js";
 import { formatCommandFailure } from "../../helpers.js";
 import { CancelledError } from "../_base.js";
 import { withSessionResume } from "../_session.js";
@@ -63,7 +65,7 @@ export function chunkPointers(text, { maxChars = 24000 } = {}) {
   return chunks;
 }
 
-export { sanitizeFilenameSegment } from "../../core/sanitize.js";
+export { sanitizeFilenameSegment };
 
 /**
  * Validate that a step payload contains required fields with expected types.
