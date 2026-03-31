@@ -19,8 +19,10 @@ Agent role assignments are configurable — any role can use any of the three ba
 
 ## Install
 
+Install the latest release directly from GitHub:
+
 ```bash
-npm install -g @canesin/coder
+npm install -g https://github.com/canesin/coder/releases/latest/download/canesin-coder-1.0.0.tgz
 ```
 
 Or from source:
