@@ -87,9 +87,9 @@ export function hydrateMcpEnvFromLoginShell(workspaceDir) {
 
     const names = resolvePassEnv(config, mergedScan);
     for (const key of names) {
-      if (process.env[key]) continue;
+      if (key in process.env) continue;
       const v = mergedScan[key];
-      if (v) process.env[key] = v;
+      if (v !== undefined) process.env[key] = v;
     }
   } catch {
     // resolvePassEnv can throw on invalid passEnvPatterns regex; never take down coder-mcp.
