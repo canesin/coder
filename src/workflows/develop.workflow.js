@@ -1846,6 +1846,7 @@ export async function runDevelopLoop(opts, ctx) {
   }
 
   // Main pass
+  let rateLimitHit = false;
   for (let i = 0; i < issues.length; i++) {
     if (ctx.cancelToken.cancelled) break;
     const issueStatus = await processIssue(issues[i], i);
@@ -1877,6 +1878,7 @@ export async function runDevelopLoop(opts, ctx) {
         issueId: triggerId,
         deferredPendingCount,
       });
+      rateLimitHit = true;
       break;
     }
     if (issueStatus !== "failed") continue;
@@ -1950,7 +1952,11 @@ export async function runDevelopLoop(opts, ctx) {
       return !reason || DEFERRED_SAME_RUN_RETRY_REASONS.includes(reason);
     });
 
-  if (deferredIndices.length > 0 && !ctx.cancelToken.cancelled) {
+  if (
+    deferredIndices.length > 0 &&
+    !ctx.cancelToken.cancelled &&
+    !rateLimitHit
+  ) {
     ctx.log({
       event: "deferred_retry_pass",
       count: deferredIndices.length,
