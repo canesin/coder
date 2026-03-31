@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   executeWithSessionAuthRetry,
   makeClaudeSessionId,
+  shouldRetryAfterNonzeroSessionResult,
   supportsSession,
   withSessionResume,
 } from "../src/machines/_session.js";
@@ -283,6 +284,165 @@ describe("withSessionResume", () => {
 
     assert.equal(callCount, 4);
     assert.equal(result.stdout, "ok");
+  });
+
+  it("executeWithSessionAuthRetry retries with fresh sessionId when execute resolves with nonzero exitCode", async () => {
+    await saveState(tmp, { planningSessionId: "sid-1" });
+    const state = await loadState(tmp);
+    const calls = [];
+    const tokenFailOut =
+      "API Error: Claude's response exceeded the 4096 output token maximum.\n";
+    const result = await executeWithSessionAuthRetry({
+      state,
+      sessionKey: "planningSessionId",
+      workspaceDir: tmp,
+      log: () => {},
+      initialSessionOpts: { sessionId: state.planningSessionId },
+      maxSessionAuthRecoveries: 3,
+      executeFn: (so, meta) => {
+        calls.push({ so, meta });
+        if (calls.length === 1) {
+          return Promise.resolve({
+            exitCode: 1,
+            stdout: tokenFailOut,
+            stderr: "",
+          });
+        }
+        return Promise.resolve({ exitCode: 0, stdout: "ok", stderr: "" });
+      },
+    });
+
+    assert.equal(calls.length, 2);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "ok");
+    assert.ok(calls[0].so.sessionId);
+    assert.ok(calls[1].so.sessionId);
+    assert.notEqual(calls[0].so.sessionId, calls[1].so.sessionId);
+    assert.equal(calls[0].meta.recoveryAttempt, 0);
+    assert.equal(calls[1].meta.recoveryAttempt, 1);
+  });
+
+  it("executeWithSessionAuthRetry does not retry on generic nonzero exit (no token/session signature)", async () => {
+    await saveState(tmp, { planningSessionId: "sid-1" });
+    const state = await loadState(tmp);
+    let calls = 0;
+    const result = await executeWithSessionAuthRetry({
+      state,
+      sessionKey: "planningSessionId",
+      workspaceDir: tmp,
+      log: () => {},
+      initialSessionOpts: { sessionId: state.planningSessionId },
+      maxSessionAuthRecoveries: 3,
+      executeFn: () => {
+        calls++;
+        return Promise.resolve({
+          exitCode: 1,
+          stdout: "tests failed: assertion error\n",
+          stderr: "",
+        });
+      },
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.exitCode, 1);
+    const after = await loadState(tmp);
+    assert.equal(after.planningSessionId, "sid-1");
+  });
+
+  it("executeWithSessionAuthRetry does not clear session after auth recovery then generic nonzero exit", async () => {
+    await saveState(tmp, { planningSessionId: "sid-1" });
+    const state = await loadState(tmp);
+    const authErr = new Error("auth");
+    authErr.name = "CommandFatalStderrError";
+    authErr.category = "auth";
+    let calls = 0;
+    const result = await executeWithSessionAuthRetry({
+      state,
+      sessionKey: "planningSessionId",
+      workspaceDir: tmp,
+      log: () => {},
+      initialSessionOpts: { sessionId: state.planningSessionId },
+      maxSessionAuthRecoveries: 3,
+      executeFn: () => {
+        calls++;
+        if (calls === 1) throw authErr;
+        return Promise.resolve({
+          exitCode: 1,
+          stdout: "cargo test failed\n",
+          stderr: "",
+        });
+      },
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.exitCode, 1);
+    const after = await loadState(tmp);
+    assert.ok(
+      typeof after.planningSessionId === "string" &&
+        after.planningSessionId.length > 0,
+      "session id kept after auth retry + generic failure (nonzeroSessionRecoveryCount was 0)",
+    );
+    assert.notEqual(after.planningSessionId, "sid-1");
+  });
+
+  it("executeWithSessionAuthRetry clears persisted session after exhausted token retries", async () => {
+    await saveState(tmp, { planningSessionId: "sid-1" });
+    const state = await loadState(tmp);
+    const tokenFailOut =
+      "API Error: exceeded the 4096 output token maximum. Set CLAUDE_CODE_MAX_OUTPUT_TOKENS.\n";
+    let calls = 0;
+    const result = await executeWithSessionAuthRetry({
+      state,
+      sessionKey: "planningSessionId",
+      workspaceDir: tmp,
+      log: () => {},
+      initialSessionOpts: { sessionId: state.planningSessionId },
+      maxSessionAuthRecoveries: 1,
+      executeFn: () => {
+        calls++;
+        return Promise.resolve({
+          exitCode: 1,
+          stdout: tokenFailOut,
+          stderr: "",
+        });
+      },
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.exitCode, 1);
+    const after = await loadState(tmp);
+    assert.ok(
+      after.planningSessionId == null,
+      "session id cleared after failed retries",
+    );
+  });
+
+  it("shouldRetryAfterNonzeroSessionResult detects token cap and session messages", () => {
+    assert.equal(
+      shouldRetryAfterNonzeroSessionResult({
+        exitCode: 1,
+        stdout:
+          "API Error: Claude's response exceeded the 4096 output token maximum.\n",
+        stderr: "",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRetryAfterNonzeroSessionResult({
+        exitCode: 1,
+        stdout: "Error: Session ID x is already in use.\n",
+        stderr: "",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRetryAfterNonzeroSessionResult({
+        exitCode: 1,
+        stdout: "cargo test failed\n",
+        stderr: "",
+      }),
+      false,
+    );
   });
 
   it("executeWithSessionAuthRetry passes recoveryAttempt to executeFn", async () => {

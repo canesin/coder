@@ -204,6 +204,7 @@ Layered: `~/.config/coder/config.json` (user) → `coder.json` (repo) → MCP to
 - **`models.claude`** is the single source for `model`, `apiEndpoint`, and which env var holds the API key (`apiKeyEnv`, e.g. `OPENROUTER_API_KEY`).
 - **`resolvePassEnv`** automatically adds every `models.*.apiKeyEnv` to the sandbox secret list, so you do not need to repeat `OPENROUTER_API_KEY` in `sandbox.passEnv` unless you use a fully custom `passEnv` array and want it explicit.
 - For OpenRouter-style endpoints (URL does not contain `anthropic.com`), the CLI sandbox gets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (from the key named in `apiKeyEnv`), and `ANTHROPIC_API_KEY=""` — derived from config, not from duplicating those names in `passEnv`.
+- Agent commands run with a **non-login** shell (`bash -c`), so `~/.profile` / OpenRouter exports for your interactive terminal do **not** override `models.claude` in `coder.json`.
 - The model is still passed as `claude --model …` from `models.claude.model`; it is not set again via `ANTHROPIC_MODEL` in the environment.
 
 
@@ -364,7 +365,7 @@ MCP tools are not shell commands — call **`coder_status`** through the MCP int
 
 ### Troubleshooting
 
-- **Claude responses truncated / “max output tokens”** — Increase `claude.maxOutputTokens` in `coder.json` (or your agent profile) so long plans and reviews are not cut off.
+- **Claude responses truncated / “max output tokens”** — Increase `claude.maxOutputTokens` in `coder.json`, or set `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the host environment and include it in `sandbox.passEnv` (see `coder.example.json`). Same pattern as input: `claude.maxInputTokens` / `CLAUDE_CODE_MAX_INPUT_TOKENS`.
 
 ## Environment variables
 
@@ -372,6 +373,7 @@ MCP tools are not shell commands — call **`coder_status`** through the MCP int
 |----------|---------|
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Gemini CLI + ppcommit LLM checks (auto-aliased) |
 | `ANTHROPIC_API_KEY` | Claude Code |
+| `CLAUDE_CODE_MAX_INPUT_TOKENS` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Claude Code context/output caps (optional; or set `claude.maxInputTokens` / `claude.maxOutputTokens` in `coder.json`) |
 | `OPENAI_API_KEY` | Codex CLI |
 | `GITHUB_TOKEN` | GitHub API (issues, PRs) — used by `gh` CLI |
 | `GITLAB_TOKEN` / `GITLAB_API_TOKEN` | GitLab API — used by `glab` CLI |

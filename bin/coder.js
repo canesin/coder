@@ -729,7 +729,7 @@ async function runDebugEnvCli() {
 
   // Run a real subprocess with that env to show exactly what the session gets
   const { spawnSync } = await import("node:child_process");
-  const res = spawnSync("bash", ["-lc", "env | sort"], {
+  const res = spawnSync("bash", ["-c", "env | sort"], {
     cwd: workspaceDir,
     env: sandboxEnv,
     encoding: "utf8",

@@ -252,6 +252,16 @@ export async function runWithMachineRetry(
     }
     const result = await fn();
     if (result.status !== "failed") return result;
+    if (isRateLimitError(result.error)) {
+      ctx.log({
+        event: "machine_retry_suppressed_rate_limit",
+        attempt,
+        maxRetries,
+        error: result.error,
+        ...(retryScope ? { scope: retryScope } : {}),
+      });
+      return result;
+    }
     ctx.log({
       event: "machine_retry_failed",
       attempt,
@@ -1836,10 +1846,41 @@ export async function runDevelopLoop(opts, ctx) {
   }
 
   // Main pass
+  let rateLimitHit = false;
   for (let i = 0; i < issues.length; i++) {
     if (ctx.cancelToken.cancelled) break;
     const issueStatus = await processIssue(issues[i], i);
     if (issueStatus === "cancelled") break;
+    // Global API quota: do not process further pending issues in this run (they
+    // would fail the same way). Defer them for a later workflow start.
+    if (
+      issueStatus === "deferred" &&
+      loopState.issueQueue[i].deferredReason === "rate_limit"
+    ) {
+      const triggerError =
+        loopState.issueQueue[i].error || "Rate limit exceeded";
+      const triggerId = issues[i]?.id ?? "";
+      let deferredPendingCount = 0;
+      for (let j = 0; j < loopState.issueQueue.length; j++) {
+        if (j === i) continue;
+        const entry = loopState.issueQueue[j];
+        if (entry.status !== "pending") continue;
+        entry.status = "deferred";
+        entry.deferredReason = "rate_limit";
+        entry.error = `Deferred: loop stopped for API quota after issue ${triggerId}. ${String(triggerError).slice(0, 280)}`;
+        deferredPendingCount++;
+      }
+      await saveLoopState(ctx.workspaceDir, loopState, {
+        guardRunId: loopState.runId,
+      });
+      ctx.log({
+        event: "loop_stopped_rate_limit",
+        issueId: triggerId,
+        deferredPendingCount,
+      });
+      rateLimitHit = true;
+      break;
+    }
     if (issueStatus !== "failed") continue;
 
     // Skip only transitive dependents of the failed issue; independent issues continue.
@@ -1901,11 +1942,7 @@ export async function runDevelopLoop(opts, ctx) {
 
   // Retry pass for deferred issues whose dependencies are now resolved.
   // Exclude infra/plan_blocked — those require operator action and next start.
-  const DEFERRED_SAME_RUN_RETRY_REASONS = [
-    "conflict",
-    "rate_limit",
-    "dependency",
-  ];
+  const DEFERRED_SAME_RUN_RETRY_REASONS = ["conflict", "dependency"];
   const deferredIndices = issues
     .map((_, i) => i)
     .filter((i) => {
@@ -1915,7 +1952,11 @@ export async function runDevelopLoop(opts, ctx) {
       return !reason || DEFERRED_SAME_RUN_RETRY_REASONS.includes(reason);
     });
 
-  if (deferredIndices.length > 0 && !ctx.cancelToken.cancelled) {
+  if (
+    deferredIndices.length > 0 &&
+    !ctx.cancelToken.cancelled &&
+    !rateLimitHit
+  ) {
     ctx.log({
       event: "deferred_retry_pass",
       count: deferredIndices.length,
@@ -2162,7 +2203,7 @@ export async function runDevelopLoop(opts, ctx) {
       const hasBlockedDeferrals = loopState.issueQueue.some(
         (q) =>
           q.status === "deferred" &&
-          ["infra", "plan_blocked", "git_tracking"].includes(
+          ["infra", "plan_blocked", "git_tracking", "rate_limit"].includes(
             q.deferredReason || "",
           ),
       );

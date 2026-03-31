@@ -41,6 +41,76 @@ async function backoffAfterSessionCollision(recoveryCount) {
 }
 
 /**
+ * Whether a resolved (non-throwing) agent result with nonzero exitCode should trigger
+ * a fresh session id + retry. We intentionally do NOT retry on arbitrary exitCode !== 0:
+ * side-effectful runs (e.g. reviewer/programmer) may have edited the tree; replaying the
+ * same prompt on a new session would duplicate work or mask the real error.
+ *
+ * Only session/token/usage-style failures are retried — the cases where a new session id
+ * avoids "already in use" or a stuck cap without re-applying tool side effects meaningfully.
+ *
+ * @param {{ exitCode?: number, stdout?: string, stderr?: string }} result
+ * @returns {boolean}
+ */
+export function shouldRetryAfterNonzeroSessionResult(result) {
+  const combined = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}`;
+  if (!combined.trim()) return false;
+  const lower = combined.toLowerCase();
+  if (lower.includes("session id") && lower.includes("is already in use")) {
+    return true;
+  }
+  if (lower.includes("output token maximum")) return true;
+  if (lower.includes("claude_code_max_output_tokens")) return true;
+  if (lower.includes("max_output_tokens")) return true;
+  if (
+    lower.includes("exceeded") &&
+    lower.includes("token") &&
+    lower.includes("maximum")
+  ) {
+    return true;
+  }
+  if (
+    lower.includes("conversation not found") ||
+    lower.includes("session not found") ||
+    lower.includes("no conversation found")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Drop persisted session id after we rotated for nonzero-exit retries but still return failure,
+ * so the next step does not resume a half-created session.
+ * Uses the nonzero-exit recovery count only — not auth-recovery `recoveryCount`.
+ */
+async function clearSessionKeyAfterFailedNonzeroRetries(
+  state,
+  sessionKey,
+  workspaceDir,
+  log,
+  nonzeroSessionRecoveryCount,
+  result,
+) {
+  const exitCode = result?.exitCode;
+  if (
+    typeof exitCode !== "number" ||
+    exitCode === 0 ||
+    nonzeroSessionRecoveryCount <= 0
+  ) {
+    return;
+  }
+  delete state[sessionKey];
+  await saveState(workspaceDir, state);
+  log({
+    event: "session_cleared_after_failed_nonzero_retry",
+    sessionKey,
+    exitCode,
+    nonzeroSessionRecoveryCount,
+  });
+}
+
+/**
  * Run an agent execute with explicit sessionId/resumeId; on auth-category fatal errors,
  * rotate state[sessionKey] to a new UUID and retry with a fresh sessionId.
  *
@@ -63,10 +133,48 @@ export async function executeWithSessionAuthRetry({
 }) {
   let sessionOpts = initialSessionOpts;
   let recoveryCount = 0;
+  /** Increments only when we retry after a resolved nonzero exit (token/session signature). */
+  let nonzeroSessionRecoveryCount = 0;
 
   while (true) {
     try {
-      return await executeFn(sessionOpts, { recoveryAttempt: recoveryCount });
+      const result = await executeFn(sessionOpts, {
+        recoveryAttempt: recoveryCount + nonzeroSessionRecoveryCount,
+      });
+      // execute() resolves with exitCode even on failure (no throw). Narrow retries to
+      // token/session signatures only — not every nonzero exit (see shouldRetryAfterNonzeroSessionResult).
+      const hadSessionOpts = sessionOpts.resumeId || sessionOpts.sessionId;
+      const exitCode = result?.exitCode;
+      const canRetryNonzero =
+        typeof exitCode === "number" &&
+        exitCode !== 0 &&
+        hadSessionOpts &&
+        nonzeroSessionRecoveryCount < maxSessionAuthRecoveries &&
+        shouldRetryAfterNonzeroSessionResult(result);
+      if (canRetryNonzero) {
+        log({
+          event: "session_retry_after_nonzero_exit",
+          sessionKey,
+          sessionId: state[sessionKey],
+          exitCode,
+          recoveryAttempt: nonzeroSessionRecoveryCount + 1,
+          maxRecoveries: maxSessionAuthRecoveries,
+        });
+        nonzeroSessionRecoveryCount++;
+        state[sessionKey] = makeClaudeSessionId(workflowRunId);
+        await saveState(workspaceDir, state);
+        sessionOpts = { sessionId: state[sessionKey] };
+        continue;
+      }
+      await clearSessionKeyAfterFailedNonzeroRetries(
+        state,
+        sessionKey,
+        workspaceDir,
+        log,
+        nonzeroSessionRecoveryCount,
+        result,
+      );
+      return result;
     } catch (err) {
       const isAuthError =
         isSessionAuthCommandError(err) && err.category === "auth";
@@ -202,10 +310,44 @@ export async function withSessionResume({
   }
 
   let recoveryCount = 0;
+  let nonzeroSessionRecoveryCount = 0;
 
   while (true) {
     try {
-      return await executeFn(sessionOpts);
+      const result = await executeFn(sessionOpts);
+      const hadSessionOpts = sessionOpts.resumeId || sessionOpts.sessionId;
+      const exitCode = result?.exitCode;
+      const canRetryNonzero =
+        isSupported &&
+        typeof exitCode === "number" &&
+        exitCode !== 0 &&
+        hadSessionOpts &&
+        nonzeroSessionRecoveryCount < maxSessionAuthRecoveries &&
+        shouldRetryAfterNonzeroSessionResult(result);
+      if (canRetryNonzero) {
+        log({
+          event: "session_retry_after_nonzero_exit",
+          sessionKey,
+          sessionId: state[sessionKey],
+          exitCode,
+          recoveryAttempt: nonzeroSessionRecoveryCount + 1,
+          maxRecoveries: maxSessionAuthRecoveries,
+        });
+        nonzeroSessionRecoveryCount++;
+        state[sessionKey] = makeClaudeSessionId(workflowRunId);
+        await saveState(workspaceDir, state);
+        sessionOpts = { sessionId: state[sessionKey] };
+        continue;
+      }
+      await clearSessionKeyAfterFailedNonzeroRetries(
+        state,
+        sessionKey,
+        workspaceDir,
+        log,
+        nonzeroSessionRecoveryCount,
+        result,
+      );
+      return result;
     } catch (err) {
       const isAuthError =
         isSupported &&

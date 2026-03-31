@@ -437,7 +437,7 @@ test("dependency chain: multiple dependency branches fails dependent (EARS-3)", 
   }
 });
 
-test("rate-limited failures defer and do not trigger queue abort", async () => {
+test("rate-limited failures defer: stop main pass, defer pending issues, no abort", async () => {
   const ws = makeTmpWorkspace();
   const originalRun = WorkflowRunner.prototype.run;
 
@@ -495,13 +495,144 @@ test("rate-limited failures defer and do not trigger queue abort", async () => {
       ctx,
     );
 
-    assert.ok(issueDraftCalls.includes("B"));
-    assert.equal(result.completed, 2);
+    assert.deepEqual(
+      issueDraftCalls,
+      ["A"],
+      "pending issues must not start after quota — same account would fail again",
+    );
+    const finalState = await loadLoopState(ws);
+    const issueA = finalState.issueQueue.find((q) => q.id === "A");
+    const issueB = finalState.issueQueue.find((q) => q.id === "B");
+    assert.equal(issueA.status, "deferred");
+    assert.equal(issueA.deferredReason, "rate_limit");
+    assert.equal(issueB.status, "deferred");
+    assert.equal(issueB.deferredReason, "rate_limit");
+    assert.ok(String(issueB.error).includes("quota"));
+    assert.equal(result.completed, 0);
+    assert.equal(result.deferred, 2);
     assert.equal(result.failed, 0);
     assert.equal(result.skipped, 0);
+    assert.equal(result.status, "blocked");
     assert.equal(
       ctx.logEvents.some((event) => event.event === "loop_aborted_on_failure"),
       false,
+    );
+    assert.ok(ctx.logEvents.some((e) => e.event === "loop_stopped_rate_limit"));
+    assert.ok(
+      !ctx.logEvents.some((e) => e.event === "deferred_retry_pass"),
+      "no same-run retry pass for quota defers",
+    );
+  } finally {
+    WorkflowRunner.prototype.run = originalRun;
+    rmSync(path.dirname(ws), { recursive: true, force: true });
+  }
+});
+
+test("rate limit with maxMachineRetries > 0: phase3 outer retry not masking quota with auth", async () => {
+  const ws = makeTmpWorkspace();
+  const originalRun = WorkflowRunner.prototype.run;
+
+  try {
+    const issuesDir = writeLocalManifest(ws, [
+      { id: "A", title: "Issue A", difficulty: 1 },
+      { id: "B", title: "Issue B", difficulty: 2 },
+    ]);
+    const issueDraftCalls = [];
+    let currentIssueId = null;
+    const attempts = new Map();
+
+    WorkflowRunner.prototype.run = async function runStub(steps) {
+      const machineName = steps[0]?.machine?.name;
+      if (machineName === "develop.issue_draft") {
+        currentIssueId = steps[0]?.inputMapper?.()?.issue?.id;
+        issueDraftCalls.push(currentIssueId);
+      }
+      if (
+        machineName === "develop.planning" ||
+        machineName === "develop.plan_review"
+      ) {
+        return {
+          status: "completed",
+          results: [{ status: "ok", data: { verdict: "APPROVED" } }],
+          runId: "run-rate-limit-outer",
+          durationMs: 0,
+        };
+      }
+      if (machineName === "develop.implementation") {
+        const nextAttempt = (attempts.get(currentIssueId) || 0) + 1;
+        attempts.set(currentIssueId, nextAttempt);
+        if (currentIssueId === "A" && nextAttempt === 1) {
+          return {
+            status: "failed",
+            error: "429 rate limit exceeded",
+            results: [
+              {
+                machine: "develop.quality_review",
+                status: "error",
+                error: "429 rate limit exceeded",
+              },
+            ],
+            runId: "run-rate-limit-outer",
+            durationMs: 0,
+          };
+        }
+        if (currentIssueId === "A" && nextAttempt === 2) {
+          return {
+            status: "failed",
+            error:
+              "Command aborted after fatal stderr match [auth]: Session ID already in use",
+            results: [
+              {
+                machine: "develop.implementation",
+                status: "error",
+                error: "Session ID already in use",
+              },
+            ],
+            runId: "run-rate-limit-outer",
+            durationMs: 0,
+          };
+        }
+      }
+      return completedRunnerResult("run-rate-limit-outer");
+    };
+
+    const baseCtx = makeCtx(ws);
+    const ctx = {
+      ...baseCtx,
+      config: {
+        ...baseCtx.config,
+        workflow: {
+          ...baseCtx.config.workflow,
+          maxMachineRetries: 2,
+          retryBackoffMs: 0,
+        },
+      },
+    };
+
+    const result = await runDevelopLoop(
+      { issueSource: "local", localIssuesDir: issuesDir },
+      ctx,
+    );
+
+    assert.equal(
+      attempts.get("A"),
+      1,
+      "runWithMachineRetry must not run a second phase3 attempt after quota",
+    );
+    assert.deepEqual(issueDraftCalls, ["A"]);
+    const finalState = await loadLoopState(ws);
+    const issueA = finalState.issueQueue.find((q) => q.id === "A");
+    const issueB = finalState.issueQueue.find((q) => q.id === "B");
+    assert.equal(issueA.status, "deferred");
+    assert.equal(issueA.deferredReason, "rate_limit");
+    assert.equal(issueB.status, "deferred");
+    assert.equal(issueB.deferredReason, "rate_limit");
+    assert.equal(result.status, "blocked");
+    assert.ok(ctx.logEvents.some((e) => e.event === "loop_stopped_rate_limit"));
+    assert.ok(
+      ctx.logEvents.some(
+        (e) => e.event === "machine_retry_suppressed_rate_limit",
+      ),
     );
   } finally {
     WorkflowRunner.prototype.run = originalRun;

@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { isRateLimitError } from "../helpers.js";
 import {
   appendStepCheckpoint,
   loadCheckpoint,
@@ -274,6 +275,18 @@ export class WorkflowRunner {
 
           if (result.status === "cancelled") break;
           if (result.status !== "error") break;
+          if (isRateLimitError(result.error)) {
+            this.ctx.log({
+              event: "step_retry_suppressed_rate_limit",
+              workflow: this.name,
+              runId: this.runId,
+              machine: machineName,
+              attempt,
+              maxRetries: stepMaxRetries,
+              error: result.error,
+            });
+            break;
+          }
 
           this.ctx.log({
             event: "step_retry_failed",

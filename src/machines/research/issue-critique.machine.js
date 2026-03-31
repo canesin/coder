@@ -149,7 +149,7 @@ Return JSON:
       stepName: "issue_critique",
       role: "planReviewer",
       prompt,
-      timeoutMs: ctx.config.workflow.timeouts.researchStep,
+      timeoutMs: ctx.config?.workflow?.timeouts?.researchStep ?? 60_000,
       stepsDir: input.stepsDir,
       scratchpadPath: input.scratchpadPath,
       pipeline,

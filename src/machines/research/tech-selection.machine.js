@@ -140,7 +140,7 @@ Return JSON:
       stepName: "tech_evaluation",
       role: "planner",
       prompt,
-      timeoutMs: ctx.config.workflow.timeouts.researchStep,
+      timeoutMs: ctx.config?.workflow?.timeouts?.researchStep ?? 60_000,
       stepsDir: input.stepsDir,
       scratchpadPath: input.scratchpadPath,
       pipeline,

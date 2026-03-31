@@ -269,6 +269,44 @@ describe("WorkflowRunner per-step retry", () => {
     assert.equal(failedAttempts[1].result.error, "fail-2");
   });
 
+  it("does not retry on rate limit error — preserves quota failure for deferral", async () => {
+    const ctx = makeCtx(tmp);
+    let calls = 0;
+    const quotaMsg =
+      "Command aborted after fatal stdout match [rate_limit]: You're out of extra usage";
+    const machine = makeMachine("test.rate_limit", () => {
+      calls++;
+      return { status: "error", error: quotaMsg };
+    });
+
+    const runner = new WorkflowRunner({
+      name: "test",
+      workflowContext: ctx,
+    });
+    const result = await runner.run([
+      {
+        machine,
+        inputMapper: () => ({}),
+        maxRetries: 3,
+        backoffMs: 0,
+      },
+    ]);
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.error, quotaMsg);
+    assert.equal(calls, 1);
+    assert.equal(
+      ctx.logEvents.filter((e) => e.event === "step_retry_attempt").length,
+      0,
+    );
+    assert.equal(
+      ctx.logEvents.filter(
+        (e) => e.event === "step_retry_suppressed_rate_limit",
+      ).length,
+      1,
+    );
+  });
+
   it("does not retry on cancelled status from machine", async () => {
     const ctx = makeCtx(tmp);
     let calls = 0;
