@@ -184,17 +184,17 @@ class HostSandboxInstance extends EventEmitter {
     const killOnStderrPatterns = Array.isArray(options.killOnStderrPatterns)
       ? options.killOnStderrPatterns.filter(
           (p) =>
-            typeof p?.pattern === "string" &&
-            p.pattern.trim() !== "" &&
-            typeof p?.category === "string",
+            typeof p?.category === "string" &&
+            ((typeof p?.pattern === "string" && p.pattern.trim() !== "") ||
+              (Array.isArray(p?.matchAll) && p.matchAll.length > 0)),
         )
       : [];
     const killOnStdoutPatterns = Array.isArray(options.killOnStdoutPatterns)
       ? options.killOnStdoutPatterns.filter(
           (p) =>
-            typeof p?.pattern === "string" &&
-            p.pattern.trim() !== "" &&
-            typeof p?.category === "string",
+            typeof p?.category === "string" &&
+            ((typeof p?.pattern === "string" && p.pattern.trim() !== "") ||
+              (Array.isArray(p?.matchAll) && p.matchAll.length > 0)),
         )
       : [];
 
@@ -441,9 +441,17 @@ class HostSandboxInstance extends EventEmitter {
         if (patterns.length === 0) return;
         if (pendingFatalError || pendingTimeoutError) return;
         const lower = accumulatedOutput.toLowerCase();
-        const hit = patterns.find((p) =>
-          lower.includes(p.pattern.toLowerCase()),
-        );
+        const hit = patterns.find((p) => {
+          if (Array.isArray(p.matchAll) && p.matchAll.length > 0) {
+            return p.matchAll.every((frag) =>
+              lower.includes(String(frag).toLowerCase()),
+            );
+          }
+          if (typeof p.pattern === "string" && p.pattern.trim() !== "") {
+            return lower.includes(p.pattern.toLowerCase());
+          }
+          return false;
+        });
         if (!hit || pendingFatalError) return;
         fatalMatchTs = Date.now();
         if (log) {
@@ -637,7 +645,9 @@ class HostSandboxInstance extends EventEmitter {
       return { child, useSystemd: true, unitName };
     }
 
-    const child = spawn("bash", ["-lc", command], {
+    // `bash -lc` loads ~/.profile and can override ANTHROPIC_* / OpenRouter routing;
+    // agent env is built from coder.json + passEnv only (see systemd-run.js).
+    const child = spawn("bash", ["-c", command], {
       cwd: this.cwd,
       env: this.env,
       stdio: background ? "ignore" : ["ignore", "pipe", "pipe"],

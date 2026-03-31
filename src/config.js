@@ -260,6 +260,8 @@ export const CoderConfigSchema = z.object({
   claude: z
     .object({
       skipPermissions: z.boolean().default(true),
+      /** Max input/context tokens for Claude CLI. Injected as CLAUDE_CODE_MAX_INPUT_TOKENS. */
+      maxInputTokens: z.number().int().positive().optional(),
       /** Max output tokens for Claude CLI. Injected as CLAUDE_CODE_MAX_OUTPUT_TOKENS to avoid OpenRouter 402 when credits are low. */
       maxOutputTokens: z.number().int().positive().optional(),
     })

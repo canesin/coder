@@ -256,8 +256,20 @@ function modelApiKeyEnvNames(config) {
  * @param {object} [env] - Environment to scan for pattern matches (defaults to process.env)
  * @returns {string[]} Deduplicated list of env var names to pass through
  */
+const PASS_ENV_CLAUDE_TOKEN_CAPS = [
+  "CLAUDE_CODE_MAX_INPUT_TOKENS",
+  "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+];
+
 export function resolvePassEnv(config, env = process.env) {
-  const explicit = config.sandbox?.passEnv ?? DEFAULT_PASS_ENV;
+  // Custom `sandbox.passEnv` replaces `DEFAULT_PASS_ENV` (see schema), so without
+  // this merge the Claude cap names would not be forwarded from the host — and
+  // CliAgent-injected values must still reach `claude` via systemd --setenv / spawn env.
+  const rawPass = config.sandbox?.passEnv;
+  const explicit =
+    rawPass === undefined || rawPass === null
+      ? DEFAULT_PASS_ENV
+      : [...new Set([...PASS_ENV_CLAUDE_TOKEN_CAPS, ...rawPass])];
   const fromModels = modelApiKeyEnvNames(config);
   const mergedExplicit = [...new Set([...explicit, ...fromModels])];
   const patterns = config.sandbox?.passEnvPatterns ?? [];
