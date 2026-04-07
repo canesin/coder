@@ -90,10 +90,6 @@ export function __setBeforeAtomicWriteJsonForTests(fn) {
   _beforeAtomicWriteJsonForTests = fn || null;
 }
 
-export function __setWriteChainForTests(key, promise) {
-  _writeChains.set(key, promise);
-}
-
 async function _persistSnapshotToSqliteInner(sqlitePath, payload) {
   await mkdir(path.dirname(sqlitePath), { recursive: true });
   const valueJson = JSON.stringify(payload.value ?? null);

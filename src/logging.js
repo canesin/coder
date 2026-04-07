@@ -140,9 +140,10 @@ export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
       .catch(() => {})
       .then(async () => {
         if (openStreams.get(p) !== activeState) return;
-        const activeStream = activeState.stream;
-        if (!activeStream) return;
-        await writeLine(activeStream, line);
+        if (!activeState.stream) {
+          activeState.stream = createLogStream(p, name);
+        }
+        await writeLine(activeState.stream, line);
       });
   };
 }

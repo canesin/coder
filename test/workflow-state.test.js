@@ -6,7 +6,6 @@ import test from "node:test";
 import { createActor } from "xstate";
 import {
   __setBeforeAtomicWriteJsonForTests,
-  __setWriteChainForTests,
   createWorkflowLifecycleMachine,
   loadLoopState,
   loadState,
@@ -479,14 +478,8 @@ test("cross-workspace concurrent writes are isolated", async (t) => {
 
 test("write chain recovers from prior rejection without dropping writes", async () => {
   const ws = makeTmpDir();
-  // Inject a rejected promise directly into the write chain
-  const rejected = Promise.reject(new Error("injected chain rejection"));
-  rejected.catch(() => {}); // prevent unhandled rejection warning
-  __setWriteChainForTests(ws, rejected);
-
-  // saveLoopState chains onto the rejected promise via getWriteChain
-  const ok = await saveLoopState(ws, {
-    runId: "recover-run",
+  const baseState = {
+    runId: "first-run",
     goal: "",
     status: "running",
     projectFilter: null,
@@ -500,7 +493,27 @@ test("write chain recovers from prior rejection without dropping writes", async 
     activeAgent: null,
     startedAt: null,
     completedAt: null,
+  };
+
+  // First write succeeds to seed the chain
+  await saveLoopState(ws, baseState);
+
+  // Make the next write fail inside the chain via the existing test hook
+  let failCount = 0;
+  __setBeforeAtomicWriteJsonForTests(async () => {
+    if (failCount++ < 1) throw new Error("injected write failure");
   });
+
+  // This saveLoopState will reject internally
+  await assert.rejects(() =>
+    saveLoopState(ws, { ...baseState, runId: "fail-run" }),
+  );
+
+  // Clear the hook so subsequent writes succeed
+  __setBeforeAtomicWriteJsonForTests(null);
+
+  // The next saveLoopState must still work despite the prior chain rejection
+  const ok = await saveLoopState(ws, { ...baseState, runId: "recover-run" });
   assert.equal(ok, true, "saveLoopState must succeed after chain rejection");
   const loaded = await loadLoopState(ws);
   assert.equal(loaded.runId, "recover-run");
