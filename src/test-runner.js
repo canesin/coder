@@ -34,11 +34,12 @@ export function detectTestCommand(repoDir) {
   return null;
 }
 
-export function runTestCommand(repoDir, argv) {
-  const res = spawnSync(argv[0], argv.slice(1), {
+export function runTestCommand(repoDir, argv, spawnFn = spawnSync) {
+  const res = spawnFn(argv[0], argv.slice(1), {
     cwd: repoDir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: process.env,
   });
   const stderr = res.stderr || "";
   return {
