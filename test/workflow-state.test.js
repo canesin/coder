@@ -6,6 +6,7 @@ import test from "node:test";
 import { createActor } from "xstate";
 import {
   __setBeforeAtomicWriteJsonForTests,
+  __setWriteChainForTests,
   createWorkflowLifecycleMachine,
   loadLoopState,
   loadState,
@@ -474,4 +475,34 @@ test("cross-workspace concurrent writes are isolated", async (t) => {
 
   rmSync(wsA, { recursive: true, force: true });
   rmSync(wsB, { recursive: true, force: true });
+});
+
+test("write chain recovers from prior rejection without dropping writes", async () => {
+  const ws = makeTmpDir();
+  // Inject a rejected promise directly into the write chain
+  const rejected = Promise.reject(new Error("injected chain rejection"));
+  rejected.catch(() => {}); // prevent unhandled rejection warning
+  __setWriteChainForTests(ws, rejected);
+
+  // saveLoopState chains onto the rejected promise via getWriteChain
+  const ok = await saveLoopState(ws, {
+    runId: "recover-run",
+    goal: "",
+    status: "running",
+    projectFilter: null,
+    maxIssues: null,
+    issueQueue: [],
+    currentIndex: 0,
+    currentStage: null,
+    currentStageStartedAt: null,
+    lastHeartbeatAt: null,
+    runnerPid: null,
+    activeAgent: null,
+    startedAt: null,
+    completedAt: null,
+  });
+  assert.equal(ok, true, "saveLoopState must succeed after chain rejection");
+  const loaded = await loadLoopState(ws);
+  assert.equal(loaded.runId, "recover-run");
+  rmSync(ws, { recursive: true, force: true });
 });

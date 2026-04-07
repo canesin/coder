@@ -26,7 +26,7 @@ const _sqliteWriteChains = new Map();
 let _beforeAtomicWriteJsonForTests = null;
 
 function getWriteChain(key) {
-  return _writeChains.get(key) || Promise.resolve();
+  return (_writeChains.get(key) || Promise.resolve()).catch(() => {});
 }
 
 function setWriteChain(key, promise) {
@@ -88,6 +88,10 @@ async function writeJson(filePath, data) {
 
 export function __setBeforeAtomicWriteJsonForTests(fn) {
   _beforeAtomicWriteJsonForTests = fn || null;
+}
+
+export function __setWriteChainForTests(key, promise) {
+  _writeChains.set(key, promise);
 }
 
 async function _persistSnapshotToSqliteInner(sqlitePath, payload) {

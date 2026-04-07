@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  __getOpenStreamStateForTests,
   closeAllLoggers,
   logsDir,
   makeJsonlLogger,
@@ -60,6 +61,34 @@ test("sanitizeLogEvent redacts nested objects, arrays, and query tokens", () => 
   assert.match(event.nested.authorization, /REDACTED/);
   assert.match(event.array[0], /access_token=\[REDACTED\]/);
   assert.match(event.array[0], /token=\[REDACTED\]/);
+});
+
+test("makeJsonlLogger survives endStream throw on replacement", async () => {
+  const ws = mkdtempSync(path.join(os.tmpdir(), "coder-logging-endstr-"));
+  const log1 = makeJsonlLogger(ws, "recover");
+  log1({ event: "first" });
+
+  const logPath = path.join(logsDir(ws), "recover.jsonl");
+  const state = __getOpenStreamStateForTests(logPath);
+  assert.ok(state, "stream state should exist");
+  assert.ok(state.stream, "stream should be open");
+
+  // Monkey-patch stream.end to throw (simulates errored stream)
+  state.stream.end = () => {
+    throw new Error("simulated stream.end failure");
+  };
+
+  // Replacement triggers endStream on the broken stream
+  const log2 = makeJsonlLogger(ws, "recover");
+  log2({ event: "second" });
+  await closeAllLoggers();
+
+  const content = readFileSync(logPath, "utf8");
+  const lines = content.trim().split("\n").filter(Boolean);
+  assert.ok(
+    lines.some((l) => l.includes('"second"')),
+    "new logger must write after endStream failure on predecessor",
+  );
 });
 
 test("stale logger stops writing after closeAllLoggers", async () => {

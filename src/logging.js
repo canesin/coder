@@ -84,7 +84,11 @@ function endStream(stream) {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
-    stream.end(resolve);
+    try {
+      stream.end(resolve);
+    } catch {
+      resolve();
+    }
   });
 }
 
@@ -108,7 +112,9 @@ export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
       .then(async () => {
         const previous = state.stream;
         state.stream = null;
-        await endStream(previous);
+        try {
+          await endStream(previous);
+        } catch {}
         if (openStreams.get(p) !== state) return;
         state.stream = createLogStream(p, name);
       });
@@ -139,6 +145,10 @@ export function makeJsonlLogger(workspaceDir, name, { runId = "" } = {}) {
         await writeLine(activeStream, line);
       });
   };
+}
+
+export function __getOpenStreamStateForTests(filePath) {
+  return openStreams.get(filePath) || null;
 }
 
 export function closeAllLoggers() {
