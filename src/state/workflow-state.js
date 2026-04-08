@@ -26,7 +26,7 @@ const _sqliteWriteChains = new Map();
 let _beforeAtomicWriteJsonForTests = null;
 
 function getWriteChain(key) {
-  return _writeChains.get(key) || Promise.resolve();
+  return (_writeChains.get(key) || Promise.resolve()).catch(() => {});
 }
 
 function setWriteChain(key, promise) {

@@ -475,3 +475,47 @@ test("cross-workspace concurrent writes are isolated", async (t) => {
   rmSync(wsA, { recursive: true, force: true });
   rmSync(wsB, { recursive: true, force: true });
 });
+
+test("write chain recovers from prior rejection without dropping writes", async () => {
+  const ws = makeTmpDir();
+  const baseState = {
+    runId: "first-run",
+    goal: "",
+    status: "running",
+    projectFilter: null,
+    maxIssues: null,
+    issueQueue: [],
+    currentIndex: 0,
+    currentStage: null,
+    currentStageStartedAt: null,
+    lastHeartbeatAt: null,
+    runnerPid: null,
+    activeAgent: null,
+    startedAt: null,
+    completedAt: null,
+  };
+
+  // First write succeeds to seed the chain
+  await saveLoopState(ws, baseState);
+
+  // Make the next write fail inside the chain via the existing test hook
+  let failCount = 0;
+  __setBeforeAtomicWriteJsonForTests(async () => {
+    if (failCount++ < 1) throw new Error("injected write failure");
+  });
+
+  // This saveLoopState will reject internally
+  await assert.rejects(() =>
+    saveLoopState(ws, { ...baseState, runId: "fail-run" }),
+  );
+
+  // Clear the hook so subsequent writes succeed
+  __setBeforeAtomicWriteJsonForTests(null);
+
+  // The next saveLoopState must still work despite the prior chain rejection
+  const ok = await saveLoopState(ws, { ...baseState, runId: "recover-run" });
+  assert.equal(ok, true, "saveLoopState must succeed after chain rejection");
+  const loaded = await loadLoopState(ws);
+  assert.equal(loaded.runId, "recover-run");
+  rmSync(ws, { recursive: true, force: true });
+});
