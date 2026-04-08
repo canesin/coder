@@ -50,6 +50,7 @@ Tasks:
 2. Decompose the project into architectural domains
 3. Create ADR-style decision records for key architectural choices
 4. Define implementation phases with issue groupings
+5. Sequence issues within the same domain by populating the "depends_on" field with the titles of prerequisite issues
 
 Return ONLY valid JSON:
 {
@@ -138,6 +139,7 @@ ${phaseInstruction}Tasks:
 3. Assign priority and severity
 4. ${hasExistingPhases ? "Assign each gap to the existing phases above, preserving their IDs and titles. Only create new phases if a gap does not fit any existing phase." : "Group gaps into implementation phases with dependency ordering"}
 5. For each gap, produce an issue-shaped object and reference it in the phase's issueSpecs by title
+6. Sequence issues within the same domain by populating the "depends_on" field with the titles of prerequisite issues
 
 Return ONLY valid JSON:
 {
