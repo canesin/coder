@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 import test from "node:test";
 import {
   loadTestConfig,
@@ -35,6 +36,20 @@ test("runTestCommand returns exitCode 0 for successful command", () => {
 test("runTestCommand preserves specific exit codes", () => {
   const res = runTestCommand(os.tmpdir(), ["node", "-e", "process.exit(42)"]);
   assert.equal(res.exitCode, 42);
+});
+
+test("runTestCommand explicitly passes process.env to spawn options", () => {
+  let capturedOptions;
+  const mockSpawn = (_cmd, _args, opts) => {
+    capturedOptions = opts;
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  runTestCommand(os.tmpdir(), ["node", "--version"], mockSpawn);
+  assert.ok(
+    "env" in capturedOptions,
+    "env should be explicitly set in options",
+  );
+  assert.strictEqual(capturedOptions.env, process.env);
 });
 
 test("loadTestConfig: testConfigPath to unified coder.json accepts test.command object", () => {
