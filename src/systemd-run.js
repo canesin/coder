@@ -203,7 +203,7 @@ export function runShellSync(
   });
   const io = withSpawnErrorText(res);
   return {
-    cmd: ["bash", "-c", command],
+    cmd: ["bash", "-lc", command],
     exitCode: safeStatus(res),
     stdout: io.stdout,
     stderr: io.stderr,
