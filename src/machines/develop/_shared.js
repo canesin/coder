@@ -107,7 +107,7 @@ export function ensureGitignore(workspaceDir) {
     ? readFileSync(gitignorePath, "utf8")
     : "";
   const giLines = giContent.split("\n").map((l) => l.trim());
-  const needed = [".coder/", ".gemini/", ".coder/logs/"];
+  const needed = [".coder/", ".gemini/"];
   const missing = needed.filter((rule) => !giLines.includes(rule));
   if (missing.length > 0) {
     const suffix = giContent.endsWith("\n") || giContent === "" ? "" : "\n";
