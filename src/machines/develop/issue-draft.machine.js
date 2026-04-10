@@ -259,12 +259,7 @@ export default defineMachine({
       });
     }
 
-    // Ensure .gitignore rules exist AFTER cleanup (checkout -- . reverts .gitignore
-    // to committed version, which may lack .coder/ rules).
-    ensureGitignore(ctx.workspaceDir);
-    mkdirSync(ctx.artifactsDir, { recursive: true });
-
-    // Verify clean repo
+    // Verify clean repo FIRST — before any writes that could block checkout.
     gitCleanOrThrow(repoRoot);
     state.steps.verifiedCleanRepo = true;
     await saveState(ctx.workspaceDir, state);
@@ -310,6 +305,13 @@ export default defineMachine({
       forceRecreate: input.force,
       signal: ctx.signal,
     });
+
+    // Ensure .gitignore/.geminiignore rules exist AFTER all branch operations
+    // complete. Must come after checkout (which may revert .gitignore to
+    // committed version) and after ensureBranch (which may also switch branches).
+    // Running before checkout would dirty .gitignore, blocking branch switches (#317).
+    ensureGitignore(ctx.workspaceDir);
+    mkdirSync(ctx.artifactsDir, { recursive: true });
 
     // Draft ISSUE.md
     ctx.log({ event: "step2_draft_issue", issue: input.issue });
