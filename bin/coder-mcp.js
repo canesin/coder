@@ -275,6 +275,7 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
           onsessioninitialized: (newSessionId) => {
             transports.set(newSessionId, transport);
             servers.set(newSessionId, mcpServer);
+            sessionLastSeen.set(newSessionId, Date.now());
           },
         });
 
