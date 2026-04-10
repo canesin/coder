@@ -150,6 +150,8 @@ async function runStdio(workspace) {
 
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
+const SSE_KEEPALIVE_INTERVAL_MS = 30_000; // 30 seconds
+const MAX_SESSIONS = 50;
 
 async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
   if (process.env.CODER_ALLOW_ANY_WORKSPACE === "1") {
@@ -226,6 +228,44 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
           return;
         }
 
+        // Evict oldest session when at capacity to prevent unbounded growth (#316)
+        if (transports.size >= MAX_SESSIONS) {
+          let oldestSid = null;
+          let oldestTime = Infinity;
+          for (const [sid, ts] of sessionLastSeen) {
+            if (ts < oldestTime) {
+              oldestSid = sid;
+              oldestTime = ts;
+            }
+          }
+          if (oldestSid) {
+            process.stderr.write(
+              `[coder-mcp] Session limit reached (${MAX_SESSIONS}). ` +
+                `Evicting oldest session ${oldestSid} ` +
+                `(age: ${Math.round((Date.now() - oldestTime) / 1000)}s).\n`,
+            );
+            const oldTransport = transports.get(oldestSid);
+            if (oldTransport) {
+              try {
+                await oldTransport.close();
+              } catch {
+                /* best-effort */
+              }
+              transports.delete(oldestSid);
+            }
+            const oldServer = servers.get(oldestSid);
+            if (oldServer) {
+              try {
+                await oldServer.close();
+              } catch {
+                /* best-effort */
+              }
+              servers.delete(oldestSid);
+            }
+            sessionLastSeen.delete(oldestSid);
+          }
+        }
+
         const mcpServer = buildServer(workspace, { httpMode: true });
         // onsessioninitialized must be a constructor option — the Node.js
         // StreamableHTTPServerTransport wrapper does not forward property
@@ -273,7 +313,11 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
     ? `${routePath}health`
     : `${routePath}/health`;
   app.get(healthPath, (_req, res) =>
-    res.json({ status: "ok", sessions: transports.size }),
+    res.json({
+      status: "ok",
+      sessions: transports.size,
+      maxSessions: MAX_SESSIONS,
+    }),
   );
 
   app.get(routePath, async (req, res) => {
@@ -286,8 +330,20 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
       return;
     }
     const transport = transports.get(sessionId);
+    sessionLastSeen.set(sessionId, Date.now());
     try {
       await transport.handleRequest(req, res);
+      // SSE keepalive: send periodic comment frames to prevent TCP idle
+      // timeouts and keep sessionLastSeen fresh for the cleanup sweep (#316).
+      const keepalive = setInterval(() => {
+        if (res.destroyed || res.writableEnded) {
+          clearInterval(keepalive);
+          return;
+        }
+        res.write(":keepalive\n\n");
+        sessionLastSeen.set(sessionId, Date.now());
+      }, SSE_KEEPALIVE_INTERVAL_MS);
+      res.on("close", () => clearInterval(keepalive));
     } catch (err) {
       console.error("[coder-mcp] HTTP transport error (GET):", err);
       if (!res.headersSent) {
@@ -310,6 +366,7 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
       return;
     }
     const transport = transports.get(sessionId);
+    sessionLastSeen.set(sessionId, Date.now());
     try {
       await transport.handleRequest(req, res);
     } catch (err) {
