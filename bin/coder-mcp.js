@@ -247,25 +247,28 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
                 `Evicting oldest session ${oldestSid} ` +
                 `(age: ${Math.round((Date.now() - oldestTime) / 1000)}s).\n`,
             );
+            // Remove from maps synchronously so capacity is freed immediately
+            // and concurrent POSTs see the updated count without a TOCTOU gap.
             const oldTransport = transports.get(oldestSid);
+            const oldServer = servers.get(oldestSid);
+            transports.delete(oldestSid);
+            servers.delete(oldestSid);
+            sessionLastSeen.delete(oldestSid);
+            // Close resources asynchronously (best-effort cleanup).
             if (oldTransport) {
               try {
                 await oldTransport.close();
               } catch {
                 /* best-effort */
               }
-              transports.delete(oldestSid);
             }
-            const oldServer = servers.get(oldestSid);
             if (oldServer) {
               try {
                 await oldServer.close();
               } catch {
                 /* best-effort */
               }
-              servers.delete(oldestSid);
             }
-            sessionLastSeen.delete(oldestSid);
           }
         }
 
