@@ -81,6 +81,6 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.8"
+    "@biomejs/biome": "^2.4.10"
   }
 }
