@@ -166,6 +166,9 @@ export async function saveWorkflowSnapshot(
   };
   let writeErr;
   let guarded = false;
+  // SQLite persistence is part of the chain so drainWriteChain() covers it.
+  // Otherwise fire-and-forget callers (e.g. actor.subscribe) leave SQLite tmp
+  // files in flight after drain returns, breaking workspace teardown.
   const chain = getWriteChain(workspaceDir)
     .then(async () => {
       if (await readGuardRunId(statePath, guardRunId)) {
@@ -173,6 +176,7 @@ export async function saveWorkflowSnapshot(
         return;
       }
       await writeJson(statePath, payload);
+      await persistSnapshotToSqlite(sqlitePath, payload);
     })
     .catch((e) => {
       writeErr = e;
@@ -181,7 +185,6 @@ export async function saveWorkflowSnapshot(
   await chain;
   if (guarded) return null;
   if (writeErr) throw writeErr;
-  await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
@@ -208,6 +211,7 @@ export async function saveWorkflowTerminalState(
   };
   let writeErr;
   let guarded = false;
+  // SQLite persistence is part of the chain so drainWriteChain() covers it.
   const chain = getWriteChain(workspaceDir)
     .then(async () => {
       if (await readGuardRunId(statePath, guardRunId)) {
@@ -215,6 +219,7 @@ export async function saveWorkflowTerminalState(
         return;
       }
       await writeJson(statePath, payload);
+      await persistSnapshotToSqlite(sqlitePath, payload);
     })
     .catch((e) => {
       writeErr = e;
@@ -223,7 +228,6 @@ export async function saveWorkflowTerminalState(
   await chain;
   if (guarded) return null;
   if (writeErr) throw writeErr;
-  await persistSnapshotToSqlite(sqlitePath, payload);
   return payload;
 }
 
