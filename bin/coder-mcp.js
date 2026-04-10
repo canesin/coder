@@ -172,6 +172,9 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
   const servers = new Map();
   /** @type {Map<string, number>} */
   const sessionLastSeen = new Map();
+  /** Guards against TOCTOU race: concurrent POSTs could bypass MAX_SESSIONS
+   *  because the capacity check and session registration span async work. */
+  let pendingCreates = 0;
 
   // Workaround: @hono/node-server (used internally by StreamableHTTPServerTransport)
   // injects Content-Length and buffers SSE responses when Transfer-Encoding: chunked
@@ -229,7 +232,7 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
         }
 
         // Evict oldest session when at capacity to prevent unbounded growth (#316)
-        if (transports.size >= MAX_SESSIONS) {
+        if (transports.size + pendingCreates >= MAX_SESSIONS) {
           let oldestSid = null;
           let oldestTime = Infinity;
           for (const [sid, ts] of sessionLastSeen) {
@@ -266,30 +269,35 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
           }
         }
 
-        const mcpServer = buildServer(workspace, { httpMode: true });
-        // onsessioninitialized must be a constructor option — the Node.js
-        // StreamableHTTPServerTransport wrapper does not forward property
-        // setters for it (MCP SDK bug).
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (newSessionId) => {
-            transports.set(newSessionId, transport);
-            servers.set(newSessionId, mcpServer);
-            sessionLastSeen.set(newSessionId, Date.now());
-          },
-        });
+        pendingCreates++;
+        try {
+          const mcpServer = buildServer(workspace, { httpMode: true });
+          // onsessioninitialized must be a constructor option — the Node.js
+          // StreamableHTTPServerTransport wrapper does not forward property
+          // setters for it (MCP SDK bug).
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (newSessionId) => {
+              transports.set(newSessionId, transport);
+              servers.set(newSessionId, mcpServer);
+              sessionLastSeen.set(newSessionId, Date.now());
+            },
+          });
 
-        transport.onclose = async () => {
-          const sid = transport.sessionId;
-          if (!sid) return;
-          transports.delete(sid);
-          sessionLastSeen.delete(sid);
-          const s = servers.get(sid);
-          servers.delete(sid);
-          if (s) await s.close().catch(() => {});
-        };
+          transport.onclose = async () => {
+            const sid = transport.sessionId;
+            if (!sid) return;
+            transports.delete(sid);
+            sessionLastSeen.delete(sid);
+            const s = servers.get(sid);
+            servers.delete(sid);
+            if (s) await s.close().catch(() => {});
+          };
 
-        await mcpServer.connect(transport);
+          await mcpServer.connect(transport);
+        } finally {
+          pendingCreates--;
+        }
       }
 
       if (transport.sessionId)
@@ -336,15 +344,23 @@ async function runHttp({ workspace, host, port, routePath, allowedHosts }) {
       await transport.handleRequest(req, res);
       // SSE keepalive: send periodic comment frames to prevent TCP idle
       // timeouts and keep sessionLastSeen fresh for the cleanup sweep (#316).
-      const keepalive = setInterval(() => {
-        if (res.destroyed || res.writableEnded) {
-          clearInterval(keepalive);
-          return;
-        }
-        res.write(":keepalive\n\n");
-        sessionLastSeen.set(sessionId, Date.now());
-      }, SSE_KEEPALIVE_INTERVAL_MS);
-      res.on("close", () => clearInterval(keepalive));
+      // Only start if the response is still open (it's an SSE stream).
+      if (!res.destroyed && !res.writableEnded) {
+        const keepalive = setInterval(() => {
+          if (res.destroyed || res.writableEnded) {
+            clearInterval(keepalive);
+            return;
+          }
+          try {
+            res.write(":keepalive\n\n");
+          } catch {
+            clearInterval(keepalive);
+            return;
+          }
+          sessionLastSeen.set(sessionId, Date.now());
+        }, SSE_KEEPALIVE_INTERVAL_MS);
+        res.on("close", () => clearInterval(keepalive));
+      }
     } catch (err) {
       console.error("[coder-mcp] HTTP transport error (GET):", err);
       if (!res.headersSent) {
