@@ -241,7 +241,8 @@ Required sections:
    specify the test command. For difficulty ≥ 3, add a Red/Green TDD
    subsection listing the failing assertions to write BEFORE code (test
    name + expected failure reason — e.g. "ReferenceError:
-   parseConfig is not defined"). Otherwise test-after is acceptable.
+   parseConfig is not defined"). For difficulty < 3, test-after is
+   acceptable only when a failing-test-first approach isn't practical.
 6. **Out of Scope** — what this change does NOT include.
 
 ## House Rules

@@ -364,7 +364,9 @@ output its contents to stdout.
 2. **Problem** — what's wrong or missing, with specific file/function refs.
 3. **Requirements** — behavioral requirements in EARS syntax. Follow
    these sentence forms, substituting concrete project-specific text
-   for the \`<...>\` placeholders:
+   for the \`<...>\` placeholders. **Do NOT emit the angle-bracket
+   placeholders or backticks verbatim** — every requirement in the
+   final output must be a concrete project-specific sentence:
    - Ubiquitous: \`The <system> shall <behavior>.\`
    - Event-driven: \`WHEN <trigger>, the <system> shall <behavior>.\`
    - State-driven: \`WHILE <state>, the <system> shall <behavior>.\`
@@ -380,7 +382,7 @@ output its contents to stdout.
    a Red/Green TDD subsection listing the specific failing assertions the
    implementation agent should write BEFORE coding (test name, assertion,
    expected failure reason — e.g. missing function, wrong return value).`
-       : ` Test-after is acceptable for this low-complexity issue.`
+       : ` For this low-complexity issue, test-after is acceptable if a failing-test-first approach isn't practical.`
    }
 6. **Verification** — a concrete shell command or test that proves the
    fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`).
