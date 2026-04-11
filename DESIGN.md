@@ -19,6 +19,10 @@ v2 is a rethink of how coder operates: from an MCP tool that Claude calls, to a 
 
 ---
 
+## Documentation
+
+- [Prompt Contracts](docs/prompt-contracts.md) — cross-prompt artifact section registry
+
 ## Components
 
 ### 1. Daemon

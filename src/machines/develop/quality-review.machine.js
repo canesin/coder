@@ -11,6 +11,7 @@ import {
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { renderFindingExample } from "../prompt-contracts.js";
 import {
   executeWithSessionAuthRetry,
   makeClaudeSessionId,
@@ -150,11 +151,7 @@ minor), **File**, **Lines**, **Issue**, **Suggestion** — like this:
 # Review Findings — Round ${round}
 
 ## Finding 1
-- **Severity**: major
-- **File**: src/foo.js
-- **Lines**: 42-58
-- **Issue**: <what's wrong>
-- **Suggestion**: <how to fix>
+${renderFindingExample("REVIEW_FINDINGS.md")}
 
 ## VERDICT: REVISE
 \`\`\`

@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { sanitizeUserData } from "../../helpers.js";
 import { checkCancel, defineMachine } from "../_base.js";
+import { renderIssueBacklogExample } from "../prompt-contracts.js";
 import {
   appendScratchpad,
   ensureArtifactOnDisk,
@@ -153,49 +154,7 @@ Rules:
   write with expected behavior, and the repo's test framework/conventions.
 
 Return ONLY valid JSON in this schema:
-{
-  "issues": [
-    {
-      "id": "IDEA-01",
-      "title": "string",
-      "objective": "string",
-      "problem": "string",
-      "changes": ["string"],
-      "verification": "string",
-      "out_of_scope": ["string"],
-      "depends_on": ["IDEA-00"],
-      "priority": "P0|P1|P2|P3",
-      "tags": ["string"],
-      "estimated_effort": "string",
-      "acceptance_criteria": ["string"],
-      "testing_strategy": {
-        "existing_tests": ["path/to/test — what it covers"],
-        "new_tests": ["description of test to write and expected behavior"],
-        "test_patterns": "brief note on repo's test framework/conventions"
-      },
-      "research_questions": ["string"],
-      "risks": ["string"],
-      "notes": "string",
-      "references": [
-        {
-          "source": "github|show_hn|docs|other",
-          "title": "string",
-          "url": "string",
-          "why": "string"
-        }
-      ],
-      "validation": {
-        "mode": "bug_repro|poc|analysis",
-        "status": "passed|failed|inconclusive|not_run",
-        "method": "string",
-        "evidence": ["string"],
-        "limitations": ["string"]
-      }
-    }
-  ],
-  "assumptions": ["string"],
-  "open_questions": ["string"]
-}`;
+${renderIssueBacklogExample()}`;
       const draftRes = await runStructuredStep({
         stepName: `draft_issue_backlog_${String(i).padStart(2, "0")}`,
         artifactName: `draft-${String(i).padStart(2, "0")}`,

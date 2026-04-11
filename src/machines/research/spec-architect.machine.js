@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
+import { renderSpecArchitectExample } from "../prompt-contracts.js";
 import {
   appendScratchpad,
   loadPipeline,
@@ -57,30 +58,7 @@ Tasks:
 6. Sequence issues within the same domain by populating the "depends_on" field with the titles of prerequisite issues
 
 Return ONLY valid JSON:
-{
-  "domains": [{"name": "string", "description": "string", "gaps": ["string"]}],
-  "decisions": [{"id": "ADR-NNN", "title": "string", "status": "proposed|accepted|deprecated|superseded", "rationale": "string"}],
-  "phases": [{"id": "phase-N", "title": "string", "issueSpecs": []}],
-  "issueSpecs": [
-    {
-      "title": "string",
-      "objective": "string",
-      "problem": "string",
-      "changes": ["string"],
-      "acceptance_criteria": ["string"],
-      "priority": "P0|P1|P2|P3",
-      "domain": "string",
-      "depends_on": [],
-      "tags": ["string"],
-      "estimated_effort": "string",
-      "testing_strategy": {
-        "existing_tests": [],
-        "new_tests": ["string"],
-        "test_patterns": "string"
-      }
-    }
-  ]
-}`;
+${renderSpecArchitectExample("build")}`;
 
       const res = await runStructuredStep({
         stepName: "spec_architect",
@@ -146,28 +124,7 @@ ${phaseInstruction}Tasks:
 6. Sequence issues within the same domain by populating the "depends_on" field with the titles of prerequisite issues
 
 Return ONLY valid JSON:
-{
-  "phases": [{"id": "phase-N", "title": "string", "issueSpecs": [{"title": "matching issue title"}]}],
-  "issueSpecs": [
-    {
-      "title": "string",
-      "objective": "string",
-      "problem": "string",
-      "changes": ["string"],
-      "acceptance_criteria": ["string"],
-      "priority": "P0|P1|P2|P3",
-      "domain": "string",
-      "depends_on": [],
-      "tags": ["string"],
-      "estimated_effort": "string",
-      "testing_strategy": {
-        "existing_tests": [],
-        "new_tests": ["string"],
-        "test_patterns": "string"
-      }
-    }
-  ]
-}`;
+${renderSpecArchitectExample("ingest")}`;
 
     const res = await runStructuredStep({
       stepName: "spec_architect",

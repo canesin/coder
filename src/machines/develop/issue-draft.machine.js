@@ -13,6 +13,7 @@ import { ScratchpadPersistence } from "../../state/persistence.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { buildIssueBranchName } from "../../worktrees.js";
 import { defineMachine } from "../_base.js";
+import { getSections } from "../prompt-contracts.js";
 import {
   artifactPaths,
   checkArtifactCollisions,
@@ -362,9 +363,11 @@ preamble, no commentary). If you wrote it to disk via a tool, also
 output its contents to stdout.
 
 ## Required Sections (in order)
-1. **Metadata** — Source, Issue ID, Repo Root (relative), Difficulty (1-5).
-2. **Problem** — what's wrong or missing, with specific file/function refs.
-3. **Requirements** — behavioral requirements in EARS syntax. Follow
+${(() => {
+  const secs = getSections("ISSUE.md");
+  return `1. **${secs[0]}** — Source, Issue ID, Repo Root (relative), Difficulty (1-5).
+2. **${secs[1]}** — what's wrong or missing, with specific file/function refs.
+3. **${secs[2]}** — behavioral requirements in EARS syntax. Follow
    these sentence forms, substituting concrete project-specific text
    for the \`<...>\` placeholders. **Do NOT emit the angle-bracket
    placeholders or backticks verbatim** — every requirement in the
@@ -374,8 +377,8 @@ output its contents to stdout.
    - State-driven: \`WHILE <state>, the <system> shall <behavior>.\`
    - Unwanted Behavior: \`IF <trigger>, THEN the <system> shall <behavior>.\`
    - Optional Feature: \`WHERE <feature is present>, the <system> shall <behavior>.\`
-4. **Changes** — exactly which files change and how.
-5. **Testing Strategy** — search the codebase for existing test files and
+4. **${secs[3]}** — exactly which files change and how.
+5. **${secs[4]}** — search the codebase for existing test files and
    patterns first, then list: existing tests that cover related behavior
    (paths + what they test), the repo's test framework and conventions,
    and concrete new test cases (inputs, outputs, edge cases).${
@@ -386,10 +389,11 @@ output its contents to stdout.
    expected failure reason — e.g. missing function, wrong return value).`
        : ` For this low-complexity issue, test-after is acceptable if a failing-test-first approach isn't practical.`
    }
-6. **Verification** — a concrete shell command or test that proves the
+6. **${secs[5]}** — a concrete shell command or test that proves the
    fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`).
    Downstream agents use this to close the feedback loop.
-7. **Out of Scope** — what this does NOT include.
+7. **${secs[6]}** — what this does NOT include.`;
+})()}
 `;
 
     const res = await agent.execute(issuePrompt, {

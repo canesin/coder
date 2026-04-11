@@ -7,6 +7,7 @@ import {
   saveState,
 } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { renderCritiqueSectionList } from "../prompt-contracts.js";
 import { makeClaudeSessionId } from "./_session.js";
 import {
   artifactPaths,
@@ -131,10 +132,9 @@ Build upon existing correct work. Do not duplicate or revert it.
 
 ## Step 1: Address Critique
 Update ${paths.plan} to resolve every finding in the critique —
-Critical Issues, Over-Engineering Concerns, Data Structure Review,
-Concerns, and Questions. For each Question: answer it only when the
-repo or ISSUE.md gives you an explicit, verifiable answer. When you
-can't:
+${renderCritiqueSectionList("PLANREVIEW.md")}. For each Question:
+answer it only when the repo or ISSUE.md gives you an explicit,
+verifiable answer. When you can't:
 - **Blocking question** (affects required behavior, acceptance
   criteria, or API/data-shape the implementation must match): STOP.
   Record the question under an \`## Open Questions (BLOCKING)\`
