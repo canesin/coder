@@ -42,18 +42,34 @@ test("every producer and consumer file in CONTRACTS exists", () => {
   }
 });
 
-test("every producer file imports from prompt-contracts registry", () => {
-  // Catches regressions where a producer reverts to hardcoding section
-  // names inline instead of pulling them from the registry.
+// Dedicated helpers bind 1:1 to a specific contract key. When a
+// producer calls one, we don't also need the literal key string to
+// appear in the source — the helper itself carries the reference.
+const DEDICATED_HELPERS = {
+  "research/issue-backlog.json": "renderIssueBacklogExample",
+  "research/spec-architect.json": "renderSpecArchitectExample",
+};
+
+test("every producer file imports the registry AND references its contract key", () => {
+  // Two-step check. The import ensures the producer is at least
+  // plugged into the registry. The literal contract-key (or dedicated
+  // helper) check makes sure the producer is pulling from the
+  // ARTIFACT'S OWN entry, not just importing some unrelated helper
+  // while re-hardcoding its section names elsewhere.
   const importRe = /from\s+["']\.\.?\/prompt-contracts(?:\.js)?["']/;
-  const seen = new Set();
   for (const [key, entry] of Object.entries(CONTRACTS)) {
-    if (seen.has(entry.producedBy)) continue;
-    seen.add(entry.producedBy);
     const src = readFileSync(entry.producedBy, "utf8");
     assert.ok(
       importRe.test(src),
       `${entry.producedBy} (producer for ${key}) does not import from prompt-contracts.js`,
+    );
+    const referencesKey = src.includes(`"${key}"`) || src.includes(`'${key}'`);
+    const dedicatedHelper = DEDICATED_HELPERS[key];
+    const referencesDedicated =
+      dedicatedHelper && src.includes(dedicatedHelper);
+    assert.ok(
+      referencesKey || referencesDedicated,
+      `${entry.producedBy} (producer for ${key}) never passes "${key}" to a registry helper and does not call its dedicated helper`,
     );
   }
 });
@@ -61,9 +77,10 @@ test("every producer file imports from prompt-contracts registry", () => {
 test("every prompt consumer imports from prompt-contracts registry", () => {
   // Consumers that embed the artifact's section names in their own
   // prompts must import the registry. Runtime consumers that only
-  // destructure JS fields from the artifact don't — they're listed
-  // below with a short rationale.
-  const RUNTIME_CONSUMERS = new Set([
+  // destructure JS fields from the artifact, or passive consumers
+  // that just read the file's content without embedding section
+  // names, are exempt and listed below with a rationale.
+  const PASSIVE_CONSUMERS = new Set([
     // issue-publish just writes the issues/ directory from payload.issues;
     // it never embeds "issues" / "assumptions" / "open_questions" in a
     // prompt string, so there is no section-name drift risk.
@@ -75,7 +92,7 @@ test("every prompt consumer imports from prompt-contracts registry", () => {
   const importRe = /from\s+["']\.\.?\/prompt-contracts(?:\.js)?["']/;
   for (const [key, entry] of Object.entries(CONTRACTS)) {
     for (const consumer of entry.consumers) {
-      if (RUNTIME_CONSUMERS.has(consumer)) continue;
+      if (PASSIVE_CONSUMERS.has(consumer)) continue;
       const src = readFileSync(consumer, "utf8");
       assert.ok(
         importRe.test(src),
@@ -165,6 +182,24 @@ test("getSections returns correct section array for ISSUE.md", () => {
 // ---------------------------------------------------------------------------
 // JSON schema render helpers
 // ---------------------------------------------------------------------------
+
+test("every issueField has an explicit entry in issueFieldExamples", () => {
+  // Guards against buildIssueFieldsExample silently falling back to the
+  // generic "string" placeholder when a new array/object-typed field is
+  // added without a corresponding example.
+  for (const key of [
+    "research/issue-backlog.json",
+    "research/spec-architect.json",
+  ]) {
+    const entry = CONTRACTS[key];
+    for (const field of entry.issueFields) {
+      assert.ok(
+        entry.issueFieldExamples && field in entry.issueFieldExamples,
+        `${key}: issueField "${field}" is missing from issueFieldExamples`,
+      );
+    }
+  }
+});
 
 test("renderIssueBacklogExample produces valid JSON with all contract fields", () => {
   const json = JSON.parse(renderIssueBacklogExample());
