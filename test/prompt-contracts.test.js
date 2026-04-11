@@ -9,6 +9,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { parsePlanVerdict } from "../src/machines/develop/plan-review.machine.js";
 import { parseReviewVerdict } from "../src/machines/develop/quality-review.machine.js";
 import {
@@ -23,6 +24,16 @@ import {
 } from "../src/machines/prompt-contracts.js";
 import { renderIdeaIssueMarkdown } from "../src/machines/research/_shared.js";
 
+// Resolve contract file paths (which are repo-relative strings like
+// "src/machines/develop/planning.machine.js") against the repo root derived
+// from this test file's location, not process.cwd(). This lets the test
+// suite be invoked from any working directory without false failures.
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const resolveContractPath = (p) => path.resolve(repoRoot, p);
+
 // ---------------------------------------------------------------------------
 // Shape validation
 // ---------------------------------------------------------------------------
@@ -30,12 +41,12 @@ import { renderIdeaIssueMarkdown } from "../src/machines/research/_shared.js";
 test("every producer and consumer file in CONTRACTS exists", () => {
   for (const [key, entry] of Object.entries(CONTRACTS)) {
     assert.ok(
-      existsSync(entry.producedBy),
+      existsSync(resolveContractPath(entry.producedBy)),
       `producer for ${key} not found: ${entry.producedBy}`,
     );
     for (const consumer of entry.consumers) {
       assert.ok(
-        existsSync(consumer),
+        existsSync(resolveContractPath(consumer)),
         `consumer of ${key} not found: ${consumer}`,
       );
     }
@@ -58,7 +69,7 @@ test("every producer file imports the registry AND references its contract key",
   // while re-hardcoding its section names elsewhere.
   const importRe = /from\s+["']\.\.?\/prompt-contracts(?:\.js)?["']/;
   for (const [key, entry] of Object.entries(CONTRACTS)) {
-    const src = readFileSync(entry.producedBy, "utf8");
+    const src = readFileSync(resolveContractPath(entry.producedBy), "utf8");
     assert.ok(
       importRe.test(src),
       `${entry.producedBy} (producer for ${key}) does not import from prompt-contracts.js`,
@@ -101,7 +112,7 @@ test("every active consumer pair references its contract key", () => {
       CONTRACTS[key]?.consumers.includes(consumer),
       `${consumer} is not listed as a consumer of ${key} in CONTRACTS`,
     );
-    const src = readFileSync(consumer, "utf8");
+    const src = readFileSync(resolveContractPath(consumer), "utf8");
     assert.ok(
       importRe.test(src),
       `${consumer} (active consumer of ${key}) does not import from prompt-contracts.js`,
