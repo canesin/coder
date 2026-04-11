@@ -111,7 +111,7 @@ async function fetchMergeRequestsViaApi(repoRoot, _log, opts = {}) {
     if (urlRes.status !== 0) return [];
     const url = (urlRes.stdout || "").trim();
     const projectPathRaw = extractGitLabProjectPath(url);
-    if (!projectPathRaw || !projectPathRaw.includes("/")) return [];
+    if (!projectPathRaw?.includes("/")) return [];
     const projectPath = encodeURIComponent(
       projectPathRaw.replace(/\.git$/, ""),
     );

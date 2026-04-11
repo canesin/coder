@@ -364,7 +364,7 @@ export function fileRcaIssue({ repoRoot, title, body, labels, repo }) {
   const raw = (res.stdout || "").trim();
   const lines = raw.split("\n").filter((l) => l.trim());
   const issueUrl = lines.find((l) => l.startsWith("http")) || lines.pop() || "";
-  if (!issueUrl || !issueUrl.startsWith("http")) {
+  if (!issueUrl?.startsWith("http")) {
     throw new Error(
       `gh issue create did not return an issue URL. Output:\n${raw || "(empty)"}`,
     );

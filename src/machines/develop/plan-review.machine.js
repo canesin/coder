@@ -90,10 +90,15 @@ function buildCritiqueRetryPrompt(planPath, critiquePath, round) {
     `2. Write a critical plan critique as markdown to **${critiquePath}**.${roundNote}\n\n` +
     `Required sections (in order):\n` +
     `1. Critical Issues (Must Fix)\n` +
-    `2. Over-Engineering Concerns\n` +
-    `3. Concerns (Should Address)\n` +
-    `4. Questions (Need Clarification)\n` +
-    `5. Verdict (REJECT | REVISE | PROCEED WITH CAUTION | APPROVED)\n\n` +
+    `2. Over-Engineering Concerns — flag speculative optimizations (caches,\n` +
+    `   memoization, fancy algorithms) that lack a measurement, and flag fancy\n` +
+    `   data structures where plain arrays/objects would work for the expected n\n` +
+    `3. Data Structure Review — is the plan carrying the right data shapes?\n` +
+    `   Would different data make the algorithm self-evident? Are core types\n` +
+    `   reused from elsewhere in the repo?\n` +
+    `4. Concerns (Should Address)\n` +
+    `5. Questions (Need Clarification)\n` +
+    `6. Verdict (REJECT | REVISE | PROCEED WITH CAUTION | APPROVED)\n\n` +
     `Constraints:\n` +
     `- Do not modify tracked files.\n` +
     `- Keep critique concrete with file-level references when possible.\n` +
@@ -249,10 +254,15 @@ export default defineMachine({
 
 Required sections (in order):
 1. Critical Issues (Must Fix)
-2. Over-Engineering Concerns
-3. Concerns (Should Address)
-4. Questions (Need Clarification)
-5. Verdict (REJECT | REVISE | PROCEED WITH CAUTION | APPROVED)
+2. Over-Engineering Concerns — flag speculative optimizations (caches,
+   memoization, fancy algorithms) that lack a measurement, and flag fancy
+   data structures where plain arrays/objects would work for the expected n
+3. Data Structure Review — is the plan carrying the right data shapes?
+   Would different data make the algorithm self-evident? Are core types
+   reused from elsewhere in the repo?
+4. Concerns (Should Address)
+5. Questions (Need Clarification)
+6. Verdict (REJECT | REVISE | PROCEED WITH CAUTION | APPROVED)
 
 Constraints:
 - Do not modify tracked files.

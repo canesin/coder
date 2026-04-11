@@ -48,9 +48,13 @@ ${JSON.stringify(manifest, null, 2)}
 Tasks:
 1. Explore the codebase structure at ${repoRoot}
 2. Decompose the project into architectural domains
-3. Create ADR-style decision records for key architectural choices
-4. Define implementation phases with issue groupings
-5. Sequence issues within the same domain by populating the "depends_on" field with the titles of prerequisite issues
+3. For each domain, record at least one ADR-style decision covering the
+   **core data structures** — their shape, ownership, and lifetime. Get the
+   data right and the algorithms follow; get it wrong and no algorithm
+   will save you.
+4. Create ADR-style decision records for other key architectural choices
+5. Define implementation phases with issue groupings
+6. Sequence issues within the same domain by populating the "depends_on" field with the titles of prerequisite issues
 
 Return ONLY valid JSON:
 {
