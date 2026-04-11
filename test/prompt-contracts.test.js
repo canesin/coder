@@ -74,31 +74,42 @@ test("every producer file imports the registry AND references its contract key",
   }
 });
 
-test("every prompt consumer imports from prompt-contracts registry", () => {
-  // Consumers that embed the artifact's section names in their own
-  // prompts must import the registry. Runtime consumers that only
-  // destructure JS fields from the artifact, or passive consumers
-  // that just read the file's content without embedding section
-  // names, are exempt and listed below with a rationale.
-  const PASSIVE_CONSUMERS = new Set([
-    // issue-publish just writes the issues/ directory from payload.issues;
-    // it never embeds "issues" / "assumptions" / "open_questions" in a
-    // prompt string, so there is no section-name drift risk.
-    "src/machines/research/issue-publish.machine.js",
-    // spec-render destructures domains/decisions/phases from the
-    // architect payload and renders markdown docs. Same rationale.
-    "src/machines/research/spec-render.machine.js",
-  ]);
+// The vast majority of consumer-contract pairs are PASSIVE: the consumer
+// reads the artifact file's content as opaque text or destructures JS
+// fields from parsed data, and never embeds the contract's section names
+// back into a prompt. Passive consumers have no section-name drift risk,
+// so they are exempt from the literal-key requirement below.
+//
+// ACTIVE consumer-contract pairs embed the contract's section names in
+// their own prompts. For those, we require the literal contract key (or
+// a dedicated helper) to appear in the consumer source — mirroring the
+// producer test from round 4 — so drift fails loudly.
+const ACTIVE_CONSUMER_PAIRS = [
+  // implementation.machine.js instructs the programmer to address every
+  // PLANREVIEW.md critique section, and pulls that list from the
+  // registry via renderCritiqueSectionList("PLANREVIEW.md").
+  {
+    consumer: "src/machines/develop/implementation.machine.js",
+    key: "PLANREVIEW.md",
+  },
+];
+
+test("every active consumer pair references its contract key", () => {
   const importRe = /from\s+["']\.\.?\/prompt-contracts(?:\.js)?["']/;
-  for (const [key, entry] of Object.entries(CONTRACTS)) {
-    for (const consumer of entry.consumers) {
-      if (PASSIVE_CONSUMERS.has(consumer)) continue;
-      const src = readFileSync(consumer, "utf8");
-      assert.ok(
-        importRe.test(src),
-        `${consumer} (consumer of ${key}) does not import from prompt-contracts.js`,
-      );
-    }
+  for (const { consumer, key } of ACTIVE_CONSUMER_PAIRS) {
+    assert.ok(
+      CONTRACTS[key]?.consumers.includes(consumer),
+      `${consumer} is not listed as a consumer of ${key} in CONTRACTS`,
+    );
+    const src = readFileSync(consumer, "utf8");
+    assert.ok(
+      importRe.test(src),
+      `${consumer} (active consumer of ${key}) does not import from prompt-contracts.js`,
+    );
+    assert.ok(
+      src.includes(`"${key}"`) || src.includes(`'${key}'`),
+      `${consumer} (active consumer of ${key}) never passes "${key}" to a registry helper`,
+    );
   }
 });
 
@@ -127,7 +138,14 @@ test("parseReviewVerdict extracts verdict from synthetic registry artifact", () 
     writeFileSync(filePath, md);
     const result = parseReviewVerdict(filePath);
     assert.equal(result.verdict, "APPROVED");
-    assert.ok(result.findings);
+    // `findings` is the full markdown content — prove the parser preserved
+    // every declared field heading, not just that the string was truthy.
+    for (const field of fields) {
+      assert.ok(
+        result.findings.includes(`**${field}**`),
+        `parsed content missing field ${field}`,
+      );
+    }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -273,6 +291,14 @@ test("renderReviewFindingsTemplate produces a parser-compatible block", () => {
     assert.ok(block.includes(`## ${entry.verdictHeading}:`));
     for (const field of entry.findingFields) {
       assert.ok(block.includes(`**${field}**`), `missing field ${field}`);
+    }
+    // Prove the parser preserved every field in its output, not just
+    // that `findings` was truthy.
+    for (const field of entry.findingFields) {
+      assert.ok(
+        parsed.findings.includes(`**${field}**`),
+        `parsed content missing field ${field}`,
+      );
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true });

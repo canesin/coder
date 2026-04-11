@@ -220,6 +220,10 @@ export const CONTRACTS = {
 export function renderRequiredSections(key) {
   const entry = CONTRACTS[key];
   if (!entry) throw new Error(`Unknown contract: ${key}`);
+  if (!Array.isArray(entry.sections))
+    throw new Error(
+      `renderRequiredSections(${key}): contract has no flat 'sections' array`,
+    );
   const descriptions = entry.sectionDescriptions || {};
   return entry.sections
     .map((s, i) => {
@@ -238,6 +242,10 @@ export function renderRequiredSections(key) {
 export function renderCritiqueSectionList(key) {
   const entry = CONTRACTS[key];
   if (!entry) throw new Error(`Unknown contract: ${key}`);
+  if (!Array.isArray(entry.sections))
+    throw new Error(
+      `renderCritiqueSectionList(${key}): contract has no flat 'sections' array`,
+    );
   const actionable = entry.sections
     .filter((s) => !/^Verdict\b/.test(s))
     .map((s) => s.replace(/\s*\(.*\)$/, ""));
@@ -249,6 +257,10 @@ export function renderCritiqueSectionList(key) {
 export function getSections(key) {
   const entry = CONTRACTS[key];
   if (!entry) throw new Error(`Unknown contract: ${key}`);
+  if (!Array.isArray(entry.sections))
+    throw new Error(
+      `getSections(${key}): contract has no flat 'sections' array`,
+    );
   return entry.sections;
 }
 
