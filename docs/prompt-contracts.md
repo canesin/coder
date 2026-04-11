@@ -12,11 +12,14 @@ Machine prompts produce and consume structured artifacts (PLANREVIEW.md, PLAN.md
 - `consumers` — file paths of consuming machines
 - `format` — `"markdown"` or `"json"`
 - `sections` — canonical section/field names
+- `sectionDescriptions` — optional per-section prose appended by `renderRequiredSections`
+- `findingFields` / `findingFieldExamples` — used by `REVIEW_FINDINGS.md`
 
 Render helpers convert entries into prompt-ready strings:
 
-- `renderRequiredSections(key)` — numbered list for heading-level output
+- `renderRequiredSections(key)` — numbered list for heading-level output; appends `sectionDescriptions` after an em-dash when present
 - `renderCritiqueSectionList(key)` — comma-joined actionable names (strips parentheticals, excludes Verdict) for inline use
+- `renderFindingExample(key)` — bulleted `- **Field**: example` lines built from `findingFields` + `findingFieldExamples`
 - `getSections(key)` — raw array for programmatic access
 
 ## Adding a Section to an Existing Artifact
