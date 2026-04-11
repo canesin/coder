@@ -362,8 +362,9 @@ output its contents to stdout.
 ## Required Sections (in order)
 1. **Metadata** — Source, Issue ID, Repo Root (relative), Difficulty (1-5).
 2. **Problem** — what's wrong or missing, with specific file/function refs.
-3. **Requirements** — behavioral requirements in EARS syntax. Use these
-   templates verbatim for each requirement:
+3. **Requirements** — behavioral requirements in EARS syntax. Follow
+   these sentence forms, substituting concrete project-specific text
+   for the \`<...>\` placeholders:
    - Ubiquitous: \`The <system> shall <behavior>.\`
    - Event-driven: \`WHEN <trigger>, the <system> shall <behavior>.\`
    - State-driven: \`WHILE <state>, the <system> shall <behavior>.\`
