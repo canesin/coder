@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -33,6 +39,22 @@ test("every producer and consumer file in CONTRACTS exists", () => {
         `consumer of ${key} not found: ${consumer}`,
       );
     }
+  }
+});
+
+test("every producer file imports from prompt-contracts registry", () => {
+  // Catches regressions where a producer reverts to hardcoding section
+  // names inline instead of pulling them from the registry.
+  const importRe = /from\s+["']\.\.?\/prompt-contracts(?:\.js)?["']/;
+  const seen = new Set();
+  for (const [key, entry] of Object.entries(CONTRACTS)) {
+    if (seen.has(entry.producedBy)) continue;
+    seen.add(entry.producedBy);
+    const src = readFileSync(entry.producedBy, "utf8");
+    assert.ok(
+      importRe.test(src),
+      `${entry.producedBy} (producer for ${key}) does not import from prompt-contracts.js`,
+    );
   }
 });
 
@@ -93,6 +115,12 @@ test("renderCritiqueSectionList excludes Verdict and strips parentheticals", () 
     !rendered.includes("(Must Fix)"),
     "parentheticals should be stripped",
   );
+  // Must read as a universal "address every section" list, not alternatives.
+  assert.ok(
+    /, and \w/.test(rendered),
+    "must use ' and ' as the final conjunction, not ' or '",
+  );
+  assert.ok(!rendered.includes(", or "), "must not use ' or ' conjunction");
 });
 
 test("getSections returns correct section array for ISSUE.md", () => {
@@ -117,7 +145,12 @@ test("renderIssueBacklogExample produces valid JSON with all contract fields", (
   for (const section of entry.sections) {
     assert.ok(section in json, `missing top-level section: ${section}`);
   }
-  const issue = json[entry.sections[0]][0];
+  // Issue objects must live under the literal "issues" slot — not
+  // whatever section happens to be first in the array. This catches
+  // silent misplacement when the sections array is reordered.
+  assert.ok(Array.isArray(json.issues), "'issues' must be an array");
+  const issue = json.issues[0];
+  assert.equal(typeof issue, "object", "'issues[0]' must be an object");
   for (const field of entry.issueFields) {
     assert.ok(field in issue, `missing issue field: ${field}`);
   }
