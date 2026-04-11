@@ -355,14 +355,20 @@ Clarifications from user:
 Scratchpad for notes between drafting passes: ${scratchpadPath}
 (Use it for hypotheses, constraints, and open questions — not \`issues/\`.)
 
-Output markdown suitable for writing directly to ISSUE.md. If you wrote
-it to disk via a tool, also output its contents to stdout.
+Output ONLY markdown suitable for writing directly to ISSUE.md (no
+preamble, no commentary). If you wrote it to disk via a tool, also
+output its contents to stdout.
 
 ## Required Sections (in order)
 1. **Metadata** — Source, Issue ID, Repo Root (relative), Difficulty (1-5).
 2. **Problem** — what's wrong or missing, with specific file/function refs.
-3. **Requirements** — behavioral requirements in EARS syntax (Ubiquitous,
-   Event-driven, State-driven, Unwanted Behavior, Optional Feature).
+3. **Requirements** — behavioral requirements in EARS syntax. Use these
+   templates verbatim for each requirement:
+   - Ubiquitous: \`The <system> shall <behavior>.\`
+   - Event-driven: \`WHEN <trigger>, the <system> shall <behavior>.\`
+   - State-driven: \`WHILE <state>, the <system> shall <behavior>.\`
+   - Unwanted Behavior: \`IF <trigger>, THEN the <system> shall <behavior>.\`
+   - Optional Feature: \`WHERE <feature is present>, the <system> shall <behavior>.\`
 4. **Changes** — exactly which files change and how.
 5. **Testing Strategy** — search the codebase for existing test files and
    patterns first, then list: existing tests that cover related behavior

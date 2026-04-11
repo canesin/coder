@@ -142,12 +142,27 @@ ${planAdherenceItem}
 ${ppSection}
 
 ## Output Format
-Write findings to ${paths.reviewFindings} as markdown. Each finding:
-**Severity** (critical | major | minor), **File**, **Lines**,
-**Issue**, **Suggestion**. End with \`## VERDICT: APPROVED\` or
-\`## VERDICT: REVISE\` as the LAST \`##\` heading in the file. Use
-REVISE only for critical/major findings — minor findings alone are
-not grounds for REVISE. Do NOT modify source files.`;
+Write findings to ${paths.reviewFindings} as markdown. Each finding is a
+\`## Finding N\` heading followed by **Severity** (critical | major |
+minor), **File**, **Lines**, **Issue**, **Suggestion** — like this:
+
+\`\`\`markdown
+# Review Findings — Round ${round}
+
+## Finding 1
+- **Severity**: major
+- **File**: src/foo.js
+- **Lines**: 42-58
+- **Issue**: <what's wrong>
+- **Suggestion**: <how to fix>
+
+## VERDICT: REVISE
+\`\`\`
+
+End the file with \`## VERDICT: APPROVED\` or \`## VERDICT: REVISE\` as
+the LAST \`##\` heading. Use REVISE only for critical/major findings —
+minor findings alone are not grounds for REVISE. Do NOT modify source
+files.`;
 }
 
 function buildProgrammerFixPrompt(paths, round) {

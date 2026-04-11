@@ -130,9 +130,10 @@ Build upon existing correct work. Do not duplicate or revert it.
     const implPrompt = `${recoveryContext}Read ${paths.plan} and ${paths.critique}.
 
 ## Step 1: Address Critique
-Update ${paths.plan} to fix any Critical Issues or Over-Engineering
-Concerns. If the critique says REJECT, revise significantly before
-proceeding.
+Update ${paths.plan} to resolve every critique section that asks for
+a change — Critical Issues, Over-Engineering Concerns, Data Structure
+Review, and any Concerns the reviewer flagged. If the critique says
+REJECT, revise significantly before proceeding.
 
 ## Step 2: Tests First
 ${
@@ -152,12 +153,14 @@ Run them to confirm they fail for the right reasons (missing
 implementation, not broken tests), then move on.`
 }
 
-Skip this step only for pure config/docs/refactors with no new
-behavior. For refactors, verify existing tests pass before and after.
+Skip Steps 2 and 3's test-first flow only for pure config/docs/refactors
+with no new behavior — in that case, run the existing suite before and
+after Step 3 to confirm nothing regressed.
 
 ## Step 3: Implement
-Make the failing tests pass. Work incrementally — one piece at a time,
-run tests, see progress. Do NOT weaken assertions, skip tests, reduce
+Make the Step 2 failing tests pass (or, on the skip path, keep the
+existing suite green). Work incrementally — one piece at a time, run
+tests, see progress. Do NOT weaken assertions, skip tests, reduce
 coverage, or edit the Step 2 tests to make them green. Fix the
 implementation instead.
 

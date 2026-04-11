@@ -254,7 +254,8 @@ Required sections:
   speculative optimizations (caches, memoization, custom data
   structures) without a benchmark — measure before tuning.
 - Do not invent APIs; verify in actual documentation.
-- Do not implement code yet; only write ${paths.plan}.
+- Do not implement code yet.
+- Do not modify any tracked files — only write ${paths.plan}.
 - Do not ask questions — ISSUE.md is ground truth.`;
 
     // Append active-branch awareness so the planner can detect conflicts
