@@ -221,7 +221,8 @@ export function renderRequiredSections(key) {
 /**
  * Comma-joined actionable section names (excludes Verdict sections),
  * with parenthetical suffixes stripped for inline prompt use.
- * Uses " or " before the last item for natural sentence flow.
+ * Uses " and " before the last item — consumers must address *every*
+ * critique section, not any one of them.
  */
 export function renderCritiqueSectionList(key) {
   const entry = CONTRACTS[key];
@@ -230,11 +231,7 @@ export function renderCritiqueSectionList(key) {
     .filter((s) => !/^Verdict\b/.test(s))
     .map((s) => s.replace(/\s*\(.*\)$/, ""));
   if (actionable.length <= 1) return actionable.join("");
-  return (
-    actionable.slice(0, -1).join(", ") +
-    ", or " +
-    actionable[actionable.length - 1]
-  );
+  return `${actionable.slice(0, -1).join(", ")}, and ${actionable[actionable.length - 1]}`;
 }
 
 /** Raw sections array for programmatic use. */
@@ -323,17 +320,27 @@ export function buildIssueFieldsExample(key) {
   );
 }
 
-/** Full JSON schema example string for the issue-backlog contract. */
+/**
+ * Full JSON schema example string for the issue-backlog contract.
+ * Iterates named sections (not positional indices) — the "issues" slot
+ * holds an issue object built from `issueFields`, every other section
+ * is a placeholder string array. If the contract ever renames "issues"
+ * this helper throws loudly.
+ */
 export function renderIssueBacklogExample() {
   const entry = CONTRACTS["research/issue-backlog.json"];
+  if (!entry.sections.includes("issues"))
+    throw new Error(
+      "research/issue-backlog.json contract must include an 'issues' section",
+    );
+  const issueExample = buildIssueFieldsExample("research/issue-backlog.json");
   return JSON.stringify(
-    {
-      [entry.sections[0]]: [
-        buildIssueFieldsExample("research/issue-backlog.json"),
-      ],
-      [entry.sections[1]]: ["string"],
-      [entry.sections[2]]: ["string"],
-    },
+    Object.fromEntries(
+      entry.sections.map((s) => [
+        s,
+        s === "issues" ? [issueExample] : ["string"],
+      ]),
+    ),
     null,
     2,
   );
