@@ -58,6 +58,33 @@ test("every producer file imports from prompt-contracts registry", () => {
   }
 });
 
+test("every prompt consumer imports from prompt-contracts registry", () => {
+  // Consumers that embed the artifact's section names in their own
+  // prompts must import the registry. Runtime consumers that only
+  // destructure JS fields from the artifact don't — they're listed
+  // below with a short rationale.
+  const RUNTIME_CONSUMERS = new Set([
+    // issue-publish just writes the issues/ directory from payload.issues;
+    // it never embeds "issues" / "assumptions" / "open_questions" in a
+    // prompt string, so there is no section-name drift risk.
+    "src/machines/research/issue-publish.machine.js",
+    // spec-render destructures domains/decisions/phases from the
+    // architect payload and renders markdown docs. Same rationale.
+    "src/machines/research/spec-render.machine.js",
+  ]);
+  const importRe = /from\s+["']\.\.?\/prompt-contracts(?:\.js)?["']/;
+  for (const [key, entry] of Object.entries(CONTRACTS)) {
+    for (const consumer of entry.consumers) {
+      if (RUNTIME_CONSUMERS.has(consumer)) continue;
+      const src = readFileSync(consumer, "utf8");
+      assert.ok(
+        importRe.test(src),
+        `${consumer} (consumer of ${key}) does not import from prompt-contracts.js`,
+      );
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Parser roundtrips
 // ---------------------------------------------------------------------------
@@ -156,24 +183,28 @@ test("renderIssueBacklogExample produces valid JSON with all contract fields", (
   }
 });
 
-test("renderSpecArchitectExample build mode includes all sections and fields", () => {
+test("renderSpecArchitectExample build mode includes exactly the contract sections", () => {
   const json = JSON.parse(renderSpecArchitectExample("build"));
   const entry = CONTRACTS["research/spec-architect.json"];
-  for (const section of entry.modes.build.sections) {
-    assert.ok(section in json, `missing build section: ${section}`);
-  }
+  // Exact key equality — catches stale keys from modeExamples after a
+  // section is removed from modes.build.sections.
+  assert.deepEqual(
+    Object.keys(json).sort(),
+    [...entry.modes.build.sections].sort(),
+  );
   const issue = json.issueSpecs[0];
   for (const field of entry.issueFields) {
     assert.ok(field in issue, `missing issue field: ${field}`);
   }
 });
 
-test("renderSpecArchitectExample ingest mode includes all sections and fields", () => {
+test("renderSpecArchitectExample ingest mode includes exactly the contract sections", () => {
   const json = JSON.parse(renderSpecArchitectExample("ingest"));
   const entry = CONTRACTS["research/spec-architect.json"];
-  for (const section of entry.modes.ingest.sections) {
-    assert.ok(section in json, `missing ingest section: ${section}`);
-  }
+  assert.deepEqual(
+    Object.keys(json).sort(),
+    [...entry.modes.ingest.sections].sort(),
+  );
   const issue = json.issueSpecs[0];
   for (const field of entry.issueFields) {
     assert.ok(field in issue, `missing issue field: ${field}`);
