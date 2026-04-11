@@ -55,7 +55,7 @@ function formatBodyWithComments(body, comments) {
  * @param {string} id - Issue ID (e.g. "#42", "!7", "GH-60")
  * @param {string} repoRoot - Repo directory for CLI calls
  * @param {string} localIssuesDir - Resolved path to local issues dir (for "local" source)
- * @returns {string | null}
+ * @returns {Promise<string | null>}
  */
 async function fetchIssueBody(
   source,

@@ -13,7 +13,7 @@ const RETRY_DELAY_MS = 200;
  *
  * @param {string} workspaceDir - Absolute path to workspace (must match cwd in session file)
  * @param {number} runStartTimeMs - Timestamp (Date.now()) recorded before execute(); only accept files with mtime >= runStartTimeMs (strict; no slack)
- * @returns {string|null} - sessionId or null if not found
+ * @returns {Promise<string|null>} - sessionId or null if not found
  */
 export async function discoverCodexSessionId(workspaceDir, runStartTimeMs) {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");

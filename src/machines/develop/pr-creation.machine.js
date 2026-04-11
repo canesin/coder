@@ -189,7 +189,7 @@ export default defineMachine({
       const mrRaw = (mr.stdout || "").trim();
       const mrLines = mrRaw.split("\n").filter((l) => l.trim());
       prUrl = mrLines.find((l) => l.startsWith("http")) || mrLines.pop() || "";
-      if (!prUrl || !prUrl.startsWith("http")) {
+      if (!prUrl?.startsWith("http")) {
         throw new Error(
           `glab mr create did not return an MR URL. Output:\n${mrRaw || "(empty)"}`,
         );
@@ -217,7 +217,7 @@ export default defineMachine({
       const raw = (pr.stdout || "").trim();
       const lines = raw.split("\n").filter((l) => l.trim());
       prUrl = lines.find((l) => l.startsWith("http")) || lines.pop() || "";
-      if (!prUrl || !prUrl.startsWith("http")) {
+      if (!prUrl?.startsWith("http")) {
         throw new Error(
           `gh pr create did not return a PR URL. Output:\n${raw || "(empty)"}`,
         );
