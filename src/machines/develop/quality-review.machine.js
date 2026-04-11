@@ -100,10 +100,9 @@ Verify whether each critical/major finding has been addressed. If the programmer
     ? `\n**WARNING: The plan in ${paths.plan} was NOT approved by the plan reviewer** (review rounds exhausted with unresolved concerns). Treat the plan as a tentative guide, not an agreed-upon spec. Scrutinize the implementation more carefully against the original issue requirements rather than trusting the plan as authoritative.\n`
     : "";
 
-  return `You are a code reviewer. Your role is to CRITIQUE only — do NOT modify any source code files.
+  return `You are a code reviewer. Critique only — do NOT modify source files.
 
-Read ${paths.issue} to understand what was originally requested.
-Read ${paths.plan} for the technical approach and constraints.${planCaveat}
+Read ${paths.issue} (what was requested) and ${paths.plan} (technical approach).${planCaveat}
 
 ${roundContext}
 
@@ -111,65 +110,59 @@ ${deltaSection}
 ## Review Checklist
 
 ### 1. Scope Conformance
-- Does the change implement what ${paths.issue} requested and conform to the approach in ${paths.plan}?
-- Are there unrequested features? Flag them.
-- Are there unrelated refactors? Flag them.
+Does the change implement what ${paths.issue} requested and conform to
+${paths.plan}? Flag unrequested features and unrelated refactors.
 
 ### 2. Completeness
-- Is the implementation fully complete? No stubs, TODOs, placeholders?
-- Are there test bypasses or skipped tests?
+Any stubs, TODOs, placeholders, test bypasses, or skipped tests?
 
 ### 3. Code Quality
-- Is this the SIMPLEST solution that works?
-- Are there unnecessary abstractions, wrapper functions, or over-engineering?
+- Is this the SIMPLEST solution that works? Flag unnecessary
+  abstractions and wrapper functions.
+- Any optimizations (caches, memoization, indexes, custom data
+  structures, fancy algorithms) added without a benchmark? Flag as
+  over-engineering — measure before tuning.
+- Do the data structures make the logic self-evident, or is the code
+  fighting the shape of the data?
 
 ### 4. Comment Hygiene
-Flag these comment patterns:
-- Tutorial-style: "First we...", "Now we...", "Step N:"
-- Restating code: "// increment counter" above counter++
-- Narration: "Here we define...", "This function..."
+Flag tutorial-style ("First we...", "Step N:"), restating code
+("// increment counter" above \`counter++\`), and narration
+("Here we define...", "This function...").
 
 ### 5. Backwards-Compat Hacks
-Flag these patterns:
-- Variables renamed to start with \`_\` but not used
-- Re-exports of removed items for compatibility
-- Empty functions kept for interface compatibility
+Flag unused \`_\`-prefixed vars, re-exports of removed items, and
+empty functions kept for interface compatibility.
 
 ### 6. Correctness
-- Edge cases handled appropriately?
-- Off-by-one errors?
-- Error handling only for errors that can actually occur?
+Edge cases, off-by-one errors, error handling only for errors that
+can actually occur.
 ${planAdherenceItem}
 ## ppcommit (commit hygiene)
 ${ppSection}
 
 ## Output Format
-
-Write your findings to ${paths.reviewFindings} with this structure:
+Write findings to ${paths.reviewFindings} as markdown. Each finding is a
+\`## Finding N\` heading followed by **Severity** (critical | major |
+minor), **File**, **Lines**, **Issue**, **Suggestion** — like this:
 
 \`\`\`markdown
 # Review Findings — Round ${round}
 
 ## Finding 1
-- **Severity**: critical | major | minor
-- **File**: path/to/file.js
+- **Severity**: major
+- **File**: src/foo.js
 - **Lines**: 42-58
-- **Issue**: Description of the problem
-- **Suggestion**: How to fix it
+- **Issue**: <what's wrong>
+- **Suggestion**: <how to fix>
 
-## Finding 2
-...
-
-## VERDICT: APPROVED
+## VERDICT: REVISE
 \`\`\`
 
-Use \`## VERDICT: APPROVED\` if there are no critical or major findings remaining.
-Use \`## VERDICT: REVISE\` if critical or major findings need to be addressed.
-
-IMPORTANT:
-- Write findings to the file, do NOT modify source code
-- The verdict line must be the LAST ## heading in the file
-- Minor findings alone are NOT grounds for REVISE — only critical/major findings`;
+End the file with \`## VERDICT: APPROVED\` or \`## VERDICT: REVISE\` as
+the LAST \`##\` heading. Use REVISE only for critical/major findings —
+minor findings alone are not grounds for REVISE. Do NOT modify source
+files.`;
 }
 
 function buildProgrammerFixPrompt(paths, round) {

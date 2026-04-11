@@ -130,91 +130,73 @@ Build upon existing correct work. Do not duplicate or revert it.
     const implPrompt = `${recoveryContext}Read ${paths.plan} and ${paths.critique}.
 
 ## Step 1: Address Critique
-Update ${paths.plan} to address any Critical Issues or Over-Engineering Concerns from the critique.
-If critique says REJECT, revise the plan significantly before proceeding.
+Update ${paths.plan} to resolve every finding in the critique —
+Critical Issues, Over-Engineering Concerns, Data Structure Review,
+Concerns, and Questions. For each Question: answer it only when the
+repo or ISSUE.md gives you an explicit, verifiable answer. When you
+can't:
+- **Blocking question** (affects required behavior, acceptance
+  criteria, or API/data-shape the implementation must match): STOP.
+  Record the question under an \`## Open Questions (BLOCKING)\`
+  section in ${paths.plan} and do NOT produce an implementation diff.
+  Let the workflow surface the blocker.
+- **Non-blocking question** (style, naming, minor polish): record
+  the question and the working assumption under \`## Open Questions\`
+  in ${paths.plan}, then proceed. Make the assumption obvious so
+  reviewers can catch it.
+
+If the critique says REJECT, revise significantly before proceeding.
+
+## Step 2: Tests First
 ${
   useRedGreen
-    ? `
-## Step 2: RED — Write Failing Tests First
-This is a difficulty ${difficulty} issue. Use Red/Green TDD.
+    ? `Difficulty ${difficulty} — use Red/Green TDD.
 
-Before writing ANY implementation code:
-1. Read the Testing Strategy from ${paths.issue} and the Testing section from ${paths.plan}
-2. Write test files/cases that capture the expected behavior described in the issue
-   - Each test should target one specific requirement
-   - Use the repo's existing test framework and conventions
-3. **Run the test suite and confirm the new tests FAIL**
-   - Verify they fail for the RIGHT reasons: missing functions, unimplemented behavior, wrong return values
-   - NOT for syntax errors, import failures in the test itself, or broken test setup
-   - If a test passes before implementation, it is not testing new behavior — rewrite it
-4. Do NOT proceed to Step 3 until you have confirmed RED (failing tests)
-
-## Step 3: GREEN — Implement to Pass Tests
-Implement the feature following the plan. Your goal: make every failing test from Step 2 pass.
-- Work incrementally — implement one piece, run tests, see progress
-- Do NOT weaken assertions, skip tests, or reduce coverage to get green
-- Do NOT modify the tests you wrote in Step 2 to make them pass (fix the implementation, not the tests)
-- When all tests pass, you are done with this step`
-    : `
-## Step 2: Write Tests
-Before writing implementation code:
-1. Read the Testing Strategy from ${paths.issue} and the Testing section from ${paths.plan}
-2. Write tests that capture the expected behavior described in the issue
-3. Run the test suite to confirm the new tests fail for the right reasons (missing implementation, not broken tests)
-4. Only then proceed to Step 3
-
-## Step 3: Implement
-Implement the feature following the plan. Make the failing tests pass without shortcuts — do not weaken assertions, skip tests, or reduce coverage to get green.`
+Write tests from the Testing Strategy in ${paths.issue} and
+${paths.plan}, using the repo's existing framework and conventions.
+Each test targets one specific requirement. Run them and confirm
+they FAIL for the RIGHT reasons (missing functions, unimplemented
+behavior, wrong return values — NOT syntax errors or broken setup).
+If a test passes before implementation, rewrite it. Do not proceed
+to Step 3 until RED is confirmed.`
+    : `Write tests from the Testing Strategy in ${paths.issue} and
+${paths.plan}, using the repo's existing framework and conventions.
+Run them to confirm they fail for the right reasons (missing
+implementation, not broken tests), then move on.`
 }
 
-Skip Steps 2-3 test phases ONLY when the change is purely non-behavioral (config files, documentation, pure refactors with no new behavior). For refactors, verify existing tests still pass before and after.
+Skip Step 2's failing-test-first requirement only for pure
+config/docs/refactors with no new behavior. Step 3 still runs — on
+the skip path, run the existing suite before and after to confirm
+nothing regressed.
 
-## STRICT Requirements
+## Step 3: Implement
+Make the Step 2 failing tests pass (or, on the skip path, keep the
+existing suite green). Work incrementally — one piece at a time, run
+tests, see progress. Do NOT weaken assertions, skip tests, reduce
+coverage, or edit the Step 2 tests to make them green. Fix the
+implementation instead.
 
-### Match Existing Patterns
-- Study similar code in this repo BEFORE writing
-- Copy the EXACT style: naming, formatting, error handling, comments
-- If the codebase doesn't have docstrings, don't add them
-- If the codebase uses terse variable names, use terse names
-
-### Minimize Changes
-- Only modify files listed in the plan
-- Only add code that directly implements the feature
-- Delete any code that becomes unused
-- Prefer fewer lines over "cleaner" abstractions
-
-### NO Tutorial Comments
-FORBIDDEN comment patterns:
-- "First, we..." / "Now we..." / "Next, we..."
-- "This function does X" (obvious from the code)
-- "Step 1:", "Step 2:", etc.
-- Comments explaining what the next line does
-- Comments that restate the function name
-
-ALLOWED comments:
-- Non-obvious business logic explanations
-- Workaround explanations with ticket/issue references
-- Performance optimization explanations
-- Regex explanations
-
-### NO Over-Engineering
-FORBIDDEN patterns:
-- Creating interfaces/base classes for single implementations
-- Adding configuration for single use cases
-- Factory functions for simple object creation
-- Wrapper functions that just call one other function
-- Error handling for impossible code paths
-- Logging for debugging that won't ship
-
-### Scope Discipline
-- If you notice something that "should" be fixed but isn't in the issue, DON'T fix it
-- If you think of a "nice to have" feature, DON'T add it
-- If code could be "cleaner" with a refactor, DON'T refactor unless required
-
-### Code Quality
-- Fix root causes, no hacks
-- Do not bypass tests
-- Use the repo's normal commands (lint, format, test)`;
+## House Rules
+- **Match the repo's style exactly.** Study similar code before
+  writing. Copy naming, formatting, error handling, and comment
+  density. No docstrings if the codebase has none; terse names if
+  surrounding code is terse.
+- **Minimum diff.** Only touch files in the plan. Delete code that
+  becomes unused. Fewer lines beat "cleaner" abstractions.
+- **No over-engineering.** No interfaces for one implementation, no
+  config for one use case, no factories for simple objects, no
+  wrappers around one call, no error handling for impossible paths,
+  no debug logging that won't ship, no speculative optimizations
+  (caches, memoization, custom data structures) without a benchmark.
+  When in doubt, use brute force.
+- **No tutorial comments.** Skip "First we...", "Step N:", and
+  comments that restate code. Keep only non-obvious logic, workaround
+  refs with ticket links, perf notes, and regex explanations.
+- **Stay in scope.** If you notice something "should" be fixed or
+  could be "cleaner", don't — it's not in the ticket.
+- **Fix root causes.** Don't bypass tests. Use the repo's standard
+  lint/format/test commands.`;
 
     async function captureCodexSessionId(runStartTimeMs, resultObj) {
       let sid = null;

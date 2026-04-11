@@ -206,63 +206,61 @@ export default defineMachine({
     }
 
     // Full prompt used only when creating a fresh session.
-    const planPrompt = `You are planning an implementation. Follow this structured approach:
+    const planPrompt = `You are planning an implementation. Write ${paths.plan}.
 
-## Phase 1: Research (MANDATORY)
-Before writing any plan:
-1. Read ${paths.issue} completely
-2. Search the codebase to understand existing patterns, conventions, and architecture
-3. For any external dependencies mentioned:
-   - Verify they exist and are actively maintained
-   - Read their actual documentation (not your training data)
-   - Confirm the APIs you plan to use actually exist
-4. Identify similar existing implementations in this codebase to use as templates
+## Phase 1: Research
+- Read ${paths.issue} completely.
+- Search the codebase for existing patterns, conventions, and similar
+  implementations to use as templates.
+- For external dependencies: verify they exist, are maintained, and the
+  APIs you'd call are real — read actual docs, not your training data.
 
 ## Phase 2: Evaluate Approaches
-Consider at least 2 different approaches. For each:
-- Pros/cons
-- Complexity
-- Alignment with existing patterns
 
-Select the simplest approach that solves the problem.
+Pin down the **data** first: input shape, output shape, intermediate
+state. Reuse existing repo types before inventing new ones. When the
+data structures are right, the algorithm is usually obvious.
 
-## Phase 3: Write Plan to ${paths.plan}
+Compare at least 2 approaches on pros/cons, complexity, alignment with
+existing patterns, and **expected n** (loop / collection / request
+counts). For bounded or small n, prefer brute force and record the
+estimate so the reviewer can challenge it.
 
-Structure:
-1. **Summary**: One paragraph describing what will change
-2. **Approach**: Which approach and why (reference existing patterns)
-3. **Files to Modify**: List each file with specific changes
-4. **Files to Create**: Only if absolutely necessary (prefer modifying existing files)
-5. **Dependencies**: Any new dependencies with version and justification
-6. **Testing Strategy**:
-   - Reference the testing strategy from ISSUE.md if present
-   - List existing test files that validate related behavior
-   - Describe specific test cases to write (inputs, expected outputs, edge cases)
-   - Specify the test command to run
-   - **Red/Green TDD** (when ISSUE.md difficulty >= 3 or change is non-trivial):
-     - RED phase: List the exact test files to create/modify and the failing assertions to write BEFORE implementation. Each test should target one requirement from ISSUE.md. Describe the expected failure (e.g. "ReferenceError: parseConfig is not defined", "Expected 3 but got undefined").
-     - GREEN phase: Which files to implement and in what order to make tests pass incrementally.
-     - If ISSUE.md difficulty < 3 and the change is straightforward, note that test-after is acceptable.
-7. **Out of Scope**: Explicitly list what this change does NOT include
+Select the simplest approach. When in doubt, use brute force — clever
+code is buggier and n is usually small.
 
-## Complexity Budget
-- Prefer modifying 1-3 files over touching many files
-- Prefer using existing utilities over creating new abstractions
-- Prefer inline code over new helper functions for one-time operations
-- Prefer direct solutions over configurable/extensible patterns
+## Phase 3: Write ${paths.plan}
 
-## Anti-Patterns to AVOID
-- Do NOT add abstractions "for future flexibility"
-- Do NOT create wrapper classes/functions around simple operations
-- Do NOT add configuration options that aren't requested
-- Do NOT refactor unrelated code
-- Do NOT add error handling for impossible scenarios
+Required sections:
+1. **Summary** — one paragraph.
+2. **Approach** — which approach and why, referencing existing patterns.
+3. **Files to Modify** — list each existing file with the specific
+   changes it needs.
+4. **Files to Create** — only when absolutely necessary; prefer
+   modifying existing files. Justify each new file.
+5. **Dependencies** — versions + justification.
+6. **Testing Strategy** — reference ISSUE.md's strategy, list existing
+   related tests, describe new test cases (inputs, outputs, edges), and
+   specify the test command. For difficulty ≥ 3, add a Red/Green TDD
+   subsection listing the failing assertions to write BEFORE code (test
+   name + expected failure reason — e.g. "ReferenceError:
+   parseConfig is not defined"). For difficulty < 3, test-after is
+   acceptable only when a failing-test-first approach isn't practical.
+7. **Out of Scope** — what this change does NOT include.
 
-Constraints:
-- Do NOT implement code yet
-- Do NOT modify any tracked files (only write ${paths.plan})
-- Do NOT invent APIs - verify they exist in actual documentation
-- Do NOT ask questions; use repo conventions and ISSUE.md as ground truth`;
+## House Rules
+- Small scope: 1-3 files, existing utilities over new abstractions,
+  inline code over helpers for one-time ops, direct solutions over
+  configurable ones.
+- No over-engineering: no "future flexibility" abstractions, no
+  wrappers around single operations, no unrequested configuration, no
+  unrelated refactors, no error handling for impossible cases, no
+  speculative optimizations (caches, memoization, custom data
+  structures) without a benchmark — measure before tuning.
+- Do not invent APIs; verify in actual documentation.
+- Do not implement code yet.
+- Do not modify any tracked files — only write ${paths.plan}.
+- Do not ask questions — ISSUE.md is ground truth.`;
 
     // Append active-branch awareness so the planner can detect conflicts
     let activeBranchesSection = "";
