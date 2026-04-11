@@ -11,6 +11,8 @@ import {
   renderCritiqueSectionList,
   renderIssueBacklogExample,
   renderRequiredSections,
+  renderReviewFindingsTemplate,
+  renderSectionsWithDescriptions,
   renderSpecArchitectExample,
 } from "../src/machines/prompt-contracts.js";
 import { renderIdeaIssueMarkdown } from "../src/machines/research/_shared.js";
@@ -143,6 +145,84 @@ test("renderSpecArchitectExample ingest mode includes all sections and fields", 
   for (const field of entry.issueFields) {
     assert.ok(field in issue, `missing issue field: ${field}`);
   }
+});
+
+test("renderSpecArchitectExample throws on unknown mode", () => {
+  assert.throws(
+    () => renderSpecArchitectExample("nope"),
+    /unknown mode "nope"/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// renderReviewFindingsTemplate
+// ---------------------------------------------------------------------------
+
+test("renderReviewFindingsTemplate produces a parser-compatible block", () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "contract-test-"));
+  const filePath = path.join(tmp, "REVIEW_FINDINGS.md");
+  try {
+    const block = renderReviewFindingsTemplate("REVIEW_FINDINGS.md", 2);
+    // Replace example verdict with APPROVED so parseReviewVerdict agrees.
+    const md = block.replace(/VERDICT:\s*REVISE/, "VERDICT: APPROVED");
+    writeFileSync(filePath, `${md}\n`);
+    const parsed = parseReviewVerdict(filePath);
+    assert.equal(parsed.verdict, "APPROVED");
+    // Heading/verdict text is sourced from the registry — check it matches.
+    const entry = CONTRACTS["REVIEW_FINDINGS.md"];
+    assert.ok(block.includes(`## ${entry.findingHeading} 1`));
+    assert.ok(block.includes(`## ${entry.verdictHeading}:`));
+    for (const field of entry.findingFields) {
+      assert.ok(block.includes(`**${field}**`), `missing field ${field}`);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// renderSectionsWithDescriptions — name-keyed, drift-proof
+// ---------------------------------------------------------------------------
+
+test("renderSectionsWithDescriptions numbers every contract section", () => {
+  const descriptions = {
+    Summary: "S",
+    Approach: "A",
+    "Files to Modify": "FM",
+    "Files to Create": "FC",
+    Dependencies: "D",
+    "Testing Strategy": "T",
+    "Out of Scope": "O",
+  };
+  const rendered = renderSectionsWithDescriptions("PLAN.md", descriptions);
+  const sections = getSections("PLAN.md");
+  sections.forEach((s, i) => {
+    assert.ok(
+      rendered.includes(`${i + 1}. **${s}** — ${descriptions[s]}`),
+      `missing row for ${s}`,
+    );
+  });
+});
+
+test("renderSectionsWithDescriptions throws on missing keys", () => {
+  assert.throws(
+    () =>
+      renderSectionsWithDescriptions("PLAN.md", {
+        Summary: "S",
+        Approach: "A",
+      }),
+    /missing descriptions for/,
+  );
+});
+
+test("renderSectionsWithDescriptions throws on unknown keys", () => {
+  const entry = CONTRACTS["PLAN.md"];
+  const descriptions = Object.fromEntries(entry.sections.map((s) => [s, "x"]));
+  descriptions.Stowaway = "extra";
+  assert.throws(
+    () => renderSectionsWithDescriptions("PLAN.md", descriptions),
+    /unknown sections Stowaway/,
+  );
 });
 
 // ---------------------------------------------------------------------------

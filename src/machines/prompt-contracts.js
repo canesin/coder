@@ -50,7 +50,12 @@ export const CONTRACTS = {
     producedBy: "src/machines/develop/quality-review.machine.js",
     consumers: ["src/machines/develop/quality-review.machine.js"],
     format: "markdown",
-    sections: ["Finding {N}", "VERDICT"],
+    // Unlike the section-list contracts above, REVIEW_FINDINGS.md is a
+    // repeating-findings doc. Producers render the full template via
+    // renderReviewFindingsTemplate(), which pulls the heading, finding
+    // fields, and verdict line from this entry so nothing is hardcoded.
+    findingHeading: "Finding",
+    verdictHeading: "VERDICT",
     verdictValues: ["APPROVED", "REVISE"],
     findingFields: ["Severity", "File", "Lines", "Issue", "Suggestion"],
     findingFieldExamples: {
@@ -254,6 +259,59 @@ export function renderFindingExample(key) {
     .join("\n");
 }
 
+/**
+ * Full REVIEW_FINDINGS.md example block — the `# Review Findings` title,
+ * one `## Finding 1` sample with registry-sourced fields, and the
+ * `## VERDICT: REVISE` closing line. Single source of truth for the
+ * producer prompt so the template cannot drift from the registry.
+ */
+export function renderReviewFindingsTemplate(key, round) {
+  const entry = CONTRACTS[key];
+  if (!entry?.findingHeading || !entry?.verdictHeading)
+    throw new Error(`Contract ${key} is not a review-findings contract`);
+  const defaultVerdict =
+    entry.verdictValues?.find((v) => v !== "APPROVED") ?? "REVISE";
+  return [
+    `# Review Findings — Round ${round}`,
+    "",
+    `## ${entry.findingHeading} 1`,
+    renderFindingExample(key),
+    "",
+    `## ${entry.verdictHeading}: ${defaultVerdict}`,
+  ].join("\n");
+}
+
+/**
+ * Numbered `N. **Section** — description` list where `descriptions` is a
+ * name-keyed map. Enforces that every section in the contract has a
+ * description and that no stray keys are passed — swapping, reordering,
+ * or forgetting a section fails loudly instead of silently misaligning
+ * the prompt text.
+ */
+export function renderSectionsWithDescriptions(key, descriptions) {
+  const entry = CONTRACTS[key];
+  if (!entry) throw new Error(`Unknown contract: ${key}`);
+  if (!descriptions || typeof descriptions !== "object")
+    throw new Error(
+      `renderSectionsWithDescriptions(${key}): descriptions required`,
+    );
+  const missing = entry.sections.filter((s) => !(s in descriptions));
+  if (missing.length > 0)
+    throw new Error(
+      `renderSectionsWithDescriptions(${key}): missing descriptions for ${missing.join(", ")}`,
+    );
+  const extra = Object.keys(descriptions).filter(
+    (k) => !entry.sections.includes(k),
+  );
+  if (extra.length > 0)
+    throw new Error(
+      `renderSectionsWithDescriptions(${key}): unknown sections ${extra.join(", ")}`,
+    );
+  return entry.sections
+    .map((s, i) => `${i + 1}. **${s}** — ${descriptions[s]}`)
+    .join("\n");
+}
+
 /** Build an example issue object from a contract's issueFields + issueFieldExamples. */
 export function buildIssueFieldsExample(key) {
   const entry = CONTRACTS[key];
@@ -284,7 +342,11 @@ export function renderIssueBacklogExample() {
 /** Full JSON schema example string for the spec-architect contract (build or ingest mode). */
 export function renderSpecArchitectExample(mode) {
   const entry = CONTRACTS["research/spec-architect.json"];
-  const modeExample = entry.modeExamples?.[mode] || {};
+  const modeExample = entry.modeExamples?.[mode];
+  if (!modeExample)
+    throw new Error(
+      `renderSpecArchitectExample: unknown mode "${mode}"; expected one of ${Object.keys(entry.modeExamples || {}).join(", ")}`,
+    );
   const issueExample = buildIssueFieldsExample("research/spec-architect.json");
   return JSON.stringify(
     { ...modeExample, issueSpecs: [issueExample] },
