@@ -341,7 +341,7 @@ export default defineMachine({
         ? "\nFetch the full issue description via Linear MCP using the issue id above.\n"
         : "";
 
-    const issuePrompt = `Draft an ISSUE.md for the chosen issue. Use the local codebase in ${repoRoot} as ground truth.
+    const issuePrompt = `Draft an ISSUE.md for the chosen issue. Use the codebase in ${repoRoot} as ground truth.
 
 Chosen issue:
 - source: ${input.issue.source}
@@ -352,38 +352,33 @@ ${issueBodySection}
 Clarifications from user:
 <user-data field="clarifications">${sanitizeUserData(input.clarifications || "(none provided)")}</user-data>
 
-Scratchpad for iterative notes:
-- path: ${scratchpadPath}
-- append hypotheses, constraints, open questions, and feedback between drafting passes
-- keep temporary notes in this scratchpad (not in \`issues/\`)
+Scratchpad for notes between drafting passes: ${scratchpadPath}
+(Use it for hypotheses, constraints, and open questions — not \`issues/\`.)
 
-Output ONLY markdown suitable for writing directly to ISSUE.md.
-If you wrote ISSUE.md to disk via a tool, also output its full contents to stdout.
+Output markdown suitable for writing directly to ISSUE.md. If you wrote
+it to disk via a tool, also output its contents to stdout.
 
 ## Required Sections (in order)
-1. **Metadata**: Source, Issue ID, Repo Root (relative path), Difficulty (1-5)
-2. **Problem**: What's wrong or missing — reference specific files/functions
-3. **Requirements**: Behavioral requirements using EARS Syntax Patterns:
-   - Ubiquitous: The <system> shall <behavior>.
-   - Event-driven: WHEN <trigger>, the <system> shall <behavior>.
-   - State-driven: WHILE <state>, the <system> shall <behavior>.
-   - Unwanted Behavior: IF <trigger>, THEN the <system> shall <behavior>.
-   - Optional Feature: WHERE <feature is present>, the <system> shall <behavior>.
-4. **Changes**: Exactly which files need to change and how
-5. **Testing Strategy**: Search the codebase for existing test files/patterns, then specify:
-   - **Existing tests**: Which test files cover related behavior (paths + what they test)
-   - **Test patterns**: The repo's test framework, conventions, assertion style
-   - **New test cases**: Concrete test cases to write — inputs, expected outputs, edge cases
-   ${
+1. **Metadata** — Source, Issue ID, Repo Root (relative), Difficulty (1-5).
+2. **Problem** — what's wrong or missing, with specific file/function refs.
+3. **Requirements** — behavioral requirements in EARS syntax (Ubiquitous,
+   Event-driven, State-driven, Unwanted Behavior, Optional Feature).
+4. **Changes** — exactly which files change and how.
+5. **Testing Strategy** — search the codebase for existing test files and
+   patterns first, then list: existing tests that cover related behavior
+   (paths + what they test), the repo's test framework and conventions,
+   and concrete new test cases (inputs, outputs, edge cases).${
      (input.issue.difficulty ?? 3) >= 3
-       ? `- **Red/Green TDD**: This is a difficulty ${input.issue.difficulty ?? 3} issue — use Red/Green TDD.
-     List specific failing assertions the implementation agent should write BEFORE coding:
-     - Test name, assertion, and expected failure reason (missing function, wrong return value, etc.)
-     - These form the RED phase — they must fail for the right reasons before implementation begins`
-       : `- For this low-complexity issue, a lightweight test-after approach is acceptable if a failing-test-first approach isn't practical`
+       ? ` For this difficulty ${input.issue.difficulty ?? 3} issue, add
+   a Red/Green TDD subsection listing the specific failing assertions the
+   implementation agent should write BEFORE coding (test name, assertion,
+   expected failure reason — e.g. missing function, wrong return value).`
+       : ` Test-after is acceptable for this low-complexity issue.`
    }
-6. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
-7. **Out of Scope**: What this does NOT include
+6. **Verification** — a concrete shell command or test that proves the
+   fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`).
+   Downstream agents use this to close the feedback loop.
+7. **Out of Scope** — what this does NOT include.
 `;
 
     const res = await agent.execute(issuePrompt, {

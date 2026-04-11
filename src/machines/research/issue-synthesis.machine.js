@@ -115,7 +115,7 @@ export default defineMachine({
 
 Repo root: ${repoRoot}
 
-## Input Artifacts (read these files)
+## Input artifacts (read these)
 - Pointer analysis: ${briefPath}
 - Web references: ${webRefPath}
 - Validation results: ${validationPath}
@@ -126,27 +126,27 @@ Clarifications:
 Feedback to incorporate:
 <user-data field="feedback">${sanitizeUserData(feedbackSection)}</user-data>
 
-## Phase 1: Codebase Exploration (MANDATORY)
-Before drafting issues, explore the codebase at \`${repoRoot}\`:
-- Search for existing test files and understand the test framework/conventions
-- Identify project structure, key modules, and architecture patterns
-- Find existing implementations related to the problem spaces in the analysis brief
-- Note file paths that issues should reference
+## Phase 1: Codebase exploration (mandatory)
+Before drafting, explore the codebase at \`${repoRoot}\` — identify the
+test framework and conventions, project structure and key modules,
+existing implementations related to the problem spaces in the analysis
+brief, and file paths the issues should reference.
 
-## Phase 2: Issue Drafting
-With codebase context, draft the issue backlog. Ground every issue in actual files and patterns you found.
+## Phase 2: Issue drafting
+Ground every issue in actual files and patterns you found.
 
 Rules:
-- Return EXACTLY ${maxIssues} issues (or fewer only if the analysis genuinely warrants fewer).
-- Keep issues small, independently verifiable, and dependency-light.
+- Return EXACTLY ${maxIssues} issues (fewer only if the analysis warrants).
+- Keep issues small, independently verifiable, dependency-light.
 - Include references and validation metadata per issue.
-- Do not use issues/ as scratch storage; this workflow uses .coder/scratchpad.
-- Do NOT re-add issues that prior feedback explicitly asked to drop.
-- Prefer brute-force / simple-data-structure implementations for the first
-  issue that introduces a new feature; if optimization is genuinely needed,
-  make it a separate follow-up issue whose objective includes a
-  measurement target (baseline number + goal).
-- Each issue MUST include a "testing_strategy" field grounded in actual test files you found in the codebase. Include: existing tests to leverage (with real file paths), new tests to write with expected behavior, and the repo's test framework/conventions.
+- Use .coder/scratchpad for scratch notes, not \`issues/\`.
+- Do NOT re-add issues prior feedback asked to drop.
+- For new features, prefer brute-force / simple-data-structure for the
+  first issue; if optimization is needed, make it a separate follow-up
+  whose objective names a measurement target (baseline + goal).
+- Each issue MUST include "testing_strategy" grounded in real test files:
+  existing tests to leverage (paths + what they cover), new tests to
+  write with expected behavior, and the repo's test framework/conventions.
 
 Return ONLY valid JSON in this schema:
 {
