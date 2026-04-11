@@ -79,7 +79,7 @@ function tryWriteCritiqueFromStdout(reviewRes, critiquePath) {
  * Fresh-session retry: same task spec as the primary review prompt so the agent
  * reads PLAN.md and applies round/constraints — not a generic template critique.
  */
-function buildCritiqueRetryPrompt(planPath, critiquePath, round) {
+export function buildCritiqueRetryPrompt(planPath, critiquePath, round) {
   const roundNote =
     round > 0
       ? `\n\nNote: This is revision round ${round + 1}. The prior plan was rejected. Focus on whether the issues from the prior critique have been addressed.`

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { jsonrepair } from "jsonrepair";
+import { CONTRACTS } from "./machines/prompt-contracts.js";
 import { DEFAULT_PASS_ENV } from "./pass-env.js";
 import { runPpcommitBranch, runPpcommitNative } from "./ppcommit.js";
 import { runShellSync } from "./systemd-run.js";
@@ -679,14 +680,28 @@ export function runPlanreview(repoDir, planPath, critiquePath) {
 }
 
 /**
- * Run plan review using gemini CLI directly (with native search grounding).
- * This alternative to the planreview tool better leverages Gemini's
- * ability to search for and verify external API documentation.
+ * Build the Gemini plan-review prompt from CONTRACTS["PLANREVIEW.md"] sections.
+ * Exported for testing — ensures Gemini review headings stay in sync with the registry.
  */
-export function runPlanreviewWithGemini(repoDir, planPath, critiquePath) {
-  const planContent = readFileSync(planPath, "utf8");
+export function buildGeminiReviewPrompt(planContent) {
+  const critiqueSections = CONTRACTS["PLANREVIEW.md"].sections;
+  const sectionMarkdown = critiqueSections
+    .map((s) => {
+      if (s.name.startsWith("Verdict")) {
+        return `### ${s.name}
+IMPORTANT: Your verdict line MUST be exactly one of these four options, with no other words:
+- REJECT
+- REVISE
+- PROCEED WITH CAUTION
+- APPROVED
 
-  const reviewPrompt = `You are a rigorous, experienced senior principal engineer reviewing a technical plan.
+Do NOT paraphrase (e.g. do not write "Needs Revision" or "Needs Rework"). Write the exact keyword.`;
+      }
+      return `### ${s.name}\n${s.description}.`;
+    })
+    .join("\n\n");
+
+  return `You are a rigorous, experienced senior principal engineer reviewing a technical plan.
 
 ## CRITICAL: Verify External Dependencies
 
@@ -740,29 +755,20 @@ ${planContent}
 
 After verifying external APIs via search, provide your critique:
 
-### Critical Issues (Must Fix)
-Issues that would cause the plan to fail or violate constraints.
-
-### Over-Engineering Concerns
-Unnecessary complexity, abstractions, or scope creep.
-
-### Concerns (Should Address)
-Problems that should be addressed but won't cause immediate failure.
-
-### Questions (Need Clarification)
-Ambiguities or assumptions that need to be verified.
-
-### Verdict
-IMPORTANT: Your verdict line MUST be exactly one of these four options, with no other words:
-- REJECT
-- REVISE
-- PROCEED WITH CAUTION
-- APPROVED
-
-Do NOT paraphrase (e.g. do not write "Needs Revision" or "Needs Rework"). Write the exact keyword.
+${sectionMarkdown}
 
 Be specific. Reference what you found in your searches about the external APIs.
 Reference specific sections in the plan when identifying over-engineering.`;
+}
+
+/**
+ * Run plan review using gemini CLI directly (with native search grounding).
+ * This alternative to the planreview tool better leverages Gemini's
+ * ability to search for and verify external API documentation.
+ */
+export function runPlanreviewWithGemini(repoDir, planPath, critiquePath) {
+  const planContent = readFileSync(planPath, "utf8");
+  const reviewPrompt = buildGeminiReviewPrompt(planContent);
 
   // Use gemini CLI with yolo mode and text output
   const cmd = heredocPipe(reviewPrompt, "gemini --yolo -o text");

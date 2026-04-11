@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { parsePlanVerdict } from "../src/machines/develop/plan-review.machine.js";
-import { parseReviewVerdict } from "../src/machines/develop/quality-review.machine.js";
+import { buildGeminiReviewPrompt } from "../src/helpers.js";
+import {
+  buildCritiqueRetryPrompt,
+  parsePlanVerdict,
+} from "../src/machines/develop/plan-review.machine.js";
+import {
+  buildSpecDeltaPrompt,
+  parseReviewVerdict,
+} from "../src/machines/develop/quality-review.machine.js";
 import {
   CONTRACTS,
   renderCritiqueSectionList,
@@ -123,5 +130,71 @@ test("markdown entries have sections array, json entries have fields object", ()
     if (entry.fields) {
       assert.equal(typeof entry.fields, "object", `${key}.fields not object`);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Call-site integration tests: verify real prompt builders include all
+// CONTRACTS section headings so registry changes flow end-to-end.
+// ---------------------------------------------------------------------------
+
+test("buildGeminiReviewPrompt includes all PLANREVIEW.md section headings from CONTRACTS", () => {
+  const prompt = buildGeminiReviewPrompt("# Fake Plan\nSome content.");
+  for (const s of CONTRACTS["PLANREVIEW.md"].sections) {
+    assert.ok(
+      prompt.includes(s.name),
+      `Gemini review prompt missing CONTRACTS section: "${s.name}"`,
+    );
+  }
+});
+
+test("buildCritiqueRetryPrompt includes all PLANREVIEW.md section headings from CONTRACTS", () => {
+  const prompt = buildCritiqueRetryPrompt(
+    "/tmp/PLAN.md",
+    "/tmp/PLANREVIEW.md",
+    0,
+  );
+  for (const s of CONTRACTS["PLANREVIEW.md"].sections) {
+    assert.ok(
+      prompt.includes(s.name),
+      `Critique retry prompt missing CONTRACTS section: "${s.name}"`,
+    );
+  }
+});
+
+test("buildSpecDeltaPrompt includes all SPEC_DELTA section headings from CONTRACTS", () => {
+  const prompt = buildSpecDeltaPrompt("/tmp/ISSUE.md", "/tmp/PLAN.md");
+  for (const s of CONTRACTS.SPEC_DELTA.sections) {
+    assert.ok(
+      prompt.includes(s.name),
+      `Spec delta prompt missing CONTRACTS section: "${s.name}"`,
+    );
+  }
+});
+
+test("planning.machine.js and issue-draft.machine.js import and use CONTRACTS", () => {
+  // Structural check: these machines build prompts inline in execute() using
+  // CONTRACTS directly. Verify the source imports CONTRACTS and references
+  // the expected contract key so hardcoded-section regressions are caught.
+  const checks = [
+    {
+      file: "src/machines/develop/planning.machine.js",
+      key: 'CONTRACTS["PLAN.md"]',
+    },
+    {
+      file: "src/machines/develop/issue-draft.machine.js",
+      key: 'CONTRACTS["ISSUE.md"]',
+    },
+  ];
+  for (const { file, key } of checks) {
+    const src = readFileSync(path.resolve(repoRoot, file), "utf8");
+    assert.ok(
+      src.includes('from "../prompt-contracts.js"'),
+      `${file} does not import from prompt-contracts.js`,
+    );
+    assert.ok(
+      src.includes(key),
+      `${file} does not reference ${key} — sections may be hardcoded`,
+    );
   }
 });

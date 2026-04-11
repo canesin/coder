@@ -12,6 +12,10 @@ export const CONTRACTS = {
     producedBy: "src/machines/develop/plan-review.machine.js",
     consumers: [
       {
+        file: "src/helpers.js",
+        usage: "Gemini plan-review prompt sections",
+      },
+      {
         file: "src/machines/develop/implementation.machine.js",
         usage: "Step 1 critique sections",
       },
