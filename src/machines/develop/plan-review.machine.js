@@ -15,6 +15,7 @@ import {
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { renderRequiredSections } from "../prompt-contracts.js";
 import { withSessionResume } from "./_session.js";
 import {
   artifactPaths,
@@ -89,11 +90,8 @@ function buildCritiqueRetryPrompt(planPath, critiquePath, round) {
     `1. Read the implementation plan at **${planPath}** in full.\n` +
     `2. Write a critical plan critique as markdown to **${critiquePath}**.${roundNote}\n\n` +
     `Required sections (in order):\n` +
-    `1. Critical Issues (Must Fix)\n` +
-    `2. Over-Engineering Concerns\n` +
-    `3. Concerns (Should Address)\n` +
-    `4. Questions (Need Clarification)\n` +
-    `5. Verdict (REJECT | REVISE | PROCEED WITH CAUTION | APPROVED)\n\n` +
+    renderRequiredSections("PLANREVIEW.md") +
+    `\n\n` +
     `Constraints:\n` +
     `- Do not modify tracked files.\n` +
     `- Keep critique concrete with file-level references when possible.\n` +
@@ -248,11 +246,7 @@ export default defineMachine({
       const basePromptBody = `Review ${paths.plan} and write a critical plan critique to ${paths.critique}.${roundNote}
 
 Required sections (in order):
-1. Critical Issues (Must Fix)
-2. Over-Engineering Concerns
-3. Concerns (Should Address)
-4. Questions (Need Clarification)
-5. Verdict (REJECT | REVISE | PROCEED WITH CAUTION | APPROVED)
+${renderRequiredSections("PLANREVIEW.md")}
 
 Constraints:
 - Do not modify tracked files.

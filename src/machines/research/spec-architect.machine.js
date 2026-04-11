@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defineMachine } from "../_base.js";
+import { CONTRACTS } from "../prompt-contracts.js";
 import {
   appendScratchpad,
   loadPipeline,
@@ -87,12 +88,7 @@ Return ONLY valid JSON:
 
       requirePayloadFields(
         res.payload,
-        {
-          domains: "array",
-          decisions: "array",
-          phases: "array",
-          issueSpecs: "array",
-        },
+        CONTRACTS["spec-architect-build"].fields,
         "spec_architect (build)",
       );
       const { domains, decisions, phases, issueSpecs } = res.payload;
@@ -173,7 +169,7 @@ Return ONLY valid JSON:
 
     requirePayloadFields(
       res.payload,
-      { phases: "array", issueSpecs: "array" },
+      CONTRACTS["spec-architect-ingest"].fields,
       "spec_architect (ingest)",
     );
     const { phases, issueSpecs } = res.payload;

@@ -211,6 +211,8 @@ coder run develop --repo ./api --input "$(coder artifacts get <research-run-id>)
 
 Internally, the artifact JSON is validated against the downstream workflow's input schema before dispatch. Validation failure is a hard error with a clear message.
 
+See also: [Cross-Prompt Contract Patterns](docs/prompt-contracts.md) for the section heading specifications used to validate artifact outputs.
+
 ---
 
 ### 6. Agent Skill

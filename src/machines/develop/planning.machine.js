@@ -11,6 +11,7 @@ import { z } from "zod";
 import { stripAgentNoise } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { CONTRACTS } from "../prompt-contracts.js";
 import {
   executeWithSessionAuthRetry,
   makeClaudeSessionId,
@@ -229,21 +230,22 @@ Select the simplest approach that solves the problem.
 ## Phase 3: Write Plan to ${paths.plan}
 
 Structure:
-1. **Summary**: One paragraph describing what will change
-2. **Approach**: Which approach and why (reference existing patterns)
-3. **Files to Modify**: List each file with specific changes
-4. **Files to Create**: Only if absolutely necessary (prefer modifying existing files)
-5. **Dependencies**: Any new dependencies with version and justification
-6. **Testing Strategy**:
-   - Reference the testing strategy from ISSUE.md if present
+${CONTRACTS["PLAN.md"].sections
+  .map((s, i) => {
+    let line = `${i + 1}. **${s.name}**: ${s.description}`;
+    if (s.name === "Testing Strategy") {
+      line += `:\n   - Reference the testing strategy from ISSUE.md if present
    - List existing test files that validate related behavior
    - Describe specific test cases to write (inputs, expected outputs, edge cases)
    - Specify the test command to run
    - **Red/Green TDD** (when ISSUE.md difficulty >= 3 or change is non-trivial):
      - RED phase: List the exact test files to create/modify and the failing assertions to write BEFORE implementation. Each test should target one requirement from ISSUE.md. Describe the expected failure (e.g. "ReferenceError: parseConfig is not defined", "Expected 3 but got undefined").
      - GREEN phase: Which files to implement and in what order to make tests pass incrementally.
-     - If ISSUE.md difficulty < 3 and the change is straightforward, note that test-after is acceptable.
-7. **Out of Scope**: Explicitly list what this change does NOT include
+     - If ISSUE.md difficulty < 3 and the change is straightforward, note that test-after is acceptable.`;
+    }
+    return line;
+  })
+  .join("\n")}
 
 ## Complexity Budget
 - Prefer modifying 1-3 files over touching many files

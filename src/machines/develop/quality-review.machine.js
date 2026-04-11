@@ -11,6 +11,7 @@ import {
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { CONTRACTS } from "../prompt-contracts.js";
 import {
   executeWithSessionAuthRetry,
   makeClaudeSessionId,
@@ -44,20 +45,17 @@ export function parseReviewVerdict(filePath) {
 }
 
 export function buildSpecDeltaPrompt(issuePath, planPath) {
+  const deltaSections = CONTRACTS.SPEC_DELTA.sections
+    .map((s) => `### ${s.name}\n(${s.description})`)
+    .join("\n\n");
+
   return `Compare ${issuePath} (original requirements) with ${planPath} (technical plan).
 
 Write a concise "Spec Delta Summary" with these sections:
 
 ## Spec Delta Summary
 
-### Additions
-(New technical constraints or approaches introduced in the plan)
-
-### Refinements
-(Changes in approach from the original issue)
-
-### Omissions
-(Requirements deferred or removed in the plan)
+${deltaSections}
 
 Keep each section to 2-5 bullets max. Output only the summary, no other text.`;
 }

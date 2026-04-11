@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { sanitizeUserData } from "../../helpers.js";
 import { checkCancel, defineMachine } from "../_base.js";
+import { CONTRACTS } from "../prompt-contracts.js";
 import {
   appendScratchpad,
   ensureArtifactOnDisk,
@@ -201,7 +202,7 @@ Return ONLY valid JSON in this schema:
       saveSessionState(runDir, sessionState);
       const draftPayload = requirePayloadFields(
         draftRes.payload,
-        { issues: "array" },
+        CONTRACTS["synthesis-draft"].fields,
         `draft_issue_backlog_${i}`,
       );
       if (draftPayload.issues.length === 0) {
@@ -266,7 +267,7 @@ Return ONLY valid JSON in this schema:
       saveSessionState(runDir, sessionState);
       finalReview = requirePayloadFields(
         reviewRes.payload,
-        { must_fix: "array", should_fix: "array" },
+        CONTRACTS["synthesis-review"].fields,
         `review_issue_backlog_${i}`,
       );
 

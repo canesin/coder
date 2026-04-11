@@ -7,6 +7,7 @@ import {
   saveState,
 } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { renderCritiqueSectionList } from "../prompt-contracts.js";
 import { makeClaudeSessionId } from "./_session.js";
 import {
   artifactPaths,
@@ -130,7 +131,7 @@ Build upon existing correct work. Do not duplicate or revert it.
     const implPrompt = `${recoveryContext}Read ${paths.plan} and ${paths.critique}.
 
 ## Step 1: Address Critique
-Update ${paths.plan} to address any Critical Issues or Over-Engineering Concerns from the critique.
+Update ${paths.plan} to address any ${renderCritiqueSectionList("PLANREVIEW.md", ["Critical Issues (Must Fix)", "Over-Engineering Concerns"])} from the critique.
 If critique says REJECT, revise the plan significantly before proceeding.
 ${
   useRedGreen

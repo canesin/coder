@@ -13,6 +13,7 @@ import { ScratchpadPersistence } from "../../state/persistence.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { buildIssueBranchName } from "../../worktrees.js";
 import { defineMachine } from "../_base.js";
+import { CONTRACTS } from "../prompt-contracts.js";
 import {
   artifactPaths,
   checkArtifactCollisions,
@@ -359,16 +360,18 @@ Output ONLY markdown suitable for writing directly to ISSUE.md.
 If you wrote ISSUE.md to disk via a tool, also output its full contents to stdout.
 
 ## Required Sections (in order)
-1. **Metadata**: Source, Issue ID, Repo Root (relative path), Difficulty (1-5)
-2. **Problem**: What's wrong or missing — reference specific files/functions
-3. **Requirements**: Behavioral requirements using EARS Syntax Patterns:
+${CONTRACTS["ISSUE.md"].sections
+  .map((s, i) => {
+    let line = `${i + 1}. **${s.name}**: ${s.description}`;
+    if (s.name === "Requirements") {
+      line += `:
    - Ubiquitous: The <system> shall <behavior>.
    - Event-driven: WHEN <trigger>, the <system> shall <behavior>.
    - State-driven: WHILE <state>, the <system> shall <behavior>.
    - Unwanted Behavior: IF <trigger>, THEN the <system> shall <behavior>.
-   - Optional Feature: WHERE <feature is present>, the <system> shall <behavior>.
-4. **Changes**: Exactly which files need to change and how
-5. **Testing Strategy**: Search the codebase for existing test files/patterns, then specify:
+   - Optional Feature: WHERE <feature is present>, the <system> shall <behavior>.`;
+    } else if (s.name === "Testing Strategy") {
+      line += `. Search the codebase for existing test files/patterns, then specify:
    - **Existing tests**: Which test files cover related behavior (paths + what they test)
    - **Test patterns**: The repo's test framework, conventions, assertion style
    - **New test cases**: Concrete test cases to write — inputs, expected outputs, edge cases
@@ -379,9 +382,13 @@ If you wrote ISSUE.md to disk via a tool, also output its full contents to stdou
      - Test name, assertion, and expected failure reason (missing function, wrong return value, etc.)
      - These form the RED phase — they must fail for the right reasons before implementation begins`
        : `- For this low-complexity issue, a lightweight test-after approach is acceptable if a failing-test-first approach isn't practical`
-   }
-6. **Verification**: A concrete shell command or test to prove the fix works (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.
-7. **Out of Scope**: What this does NOT include
+   }`;
+    } else if (s.name === "Verification") {
+      line += ` (e.g. \`npm test\`, \`node -e "..."\`, \`curl ...\`). This is critical — downstream agents use this to close the feedback loop.`;
+    }
+    return line;
+  })
+  .join("\n")}
 `;
 
     const res = await agent.execute(issuePrompt, {
