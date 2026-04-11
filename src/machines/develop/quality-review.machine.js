@@ -122,6 +122,13 @@ ${deltaSection}
 ### 3. Code Quality
 - Is this the SIMPLEST solution that works?
 - Are there unnecessary abstractions, wrapper functions, or over-engineering?
+- Any optimizations (caches, memoization, indexes, custom data structures,
+  fancy algorithms) added without a benchmark justifying them? Flag as
+  over-engineering — bottlenecks live in surprising places, so code that
+  wasn't measured shouldn't be tuned.
+- Do the data structures make the logic self-evident, or is the code
+  fighting the shape of the data? Would a different data layout remove
+  branches, loops, or special cases?
 
 ### 4. Comment Hygiene
 Flag these comment patterns:

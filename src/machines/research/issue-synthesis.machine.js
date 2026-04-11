@@ -142,6 +142,10 @@ Rules:
 - Include references and validation metadata per issue.
 - Do not use issues/ as scratch storage; this workflow uses .coder/scratchpad.
 - Do NOT re-add issues that prior feedback explicitly asked to drop.
+- Prefer brute-force / simple-data-structure implementations for the first
+  issue that introduces a new feature; if optimization is genuinely needed,
+  make it a separate follow-up issue whose objective includes a
+  measurement target (baseline number + goal).
 - Each issue MUST include a "testing_strategy" field grounded in actual test files you found in the codebase. Include: existing tests to leverage (with real file paths), new tests to write with expected behavior, and the repo's test framework/conventions.
 
 Return ONLY valid JSON in this schema:

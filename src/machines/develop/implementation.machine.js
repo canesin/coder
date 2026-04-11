@@ -205,11 +205,16 @@ FORBIDDEN patterns:
 - Wrapper functions that just call one other function
 - Error handling for impossible code paths
 - Logging for debugging that won't ship
+- Performance optimizations (caches, memoization, custom data structures,
+  fancy algorithms) without a benchmark proving the naive version is too
+  slow — you can't guess where bottlenecks are, so measure before tuning
 
 ### Scope Discipline
 - If you notice something that "should" be fixed but isn't in the issue, DON'T fix it
 - If you think of a "nice to have" feature, DON'T add it
 - If code could be "cleaner" with a refactor, DON'T refactor unless required
+- When in doubt, use brute force. If it turns out to be slow, a measurement
+  will tell you — and only then is it time to optimize.
 
 ### Code Quality
 - Fix root causes, no hacks

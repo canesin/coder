@@ -219,12 +219,23 @@ Before writing any plan:
 4. Identify similar existing implementations in this codebase to use as templates
 
 ## Phase 2: Evaluate Approaches
-Consider at least 2 different approaches. For each:
+
+Before comparing algorithms, pin down the **data** the change touches:
+- What shape is the input? The output? The intermediate state?
+- Which existing repo type / record / schema should carry it? Reuse before inventing.
+- If the data structures are right, the algorithm is usually obvious —
+  state the one-sentence algorithm that falls out of them.
+
+Then consider at least 2 different approaches. For each:
 - Pros/cons
 - Complexity
 - Alignment with existing patterns
+- **Expected n** for any loop / collection / repeated op (items, requests,
+  files). If n is small or bounded, prefer the brute-force version; record
+  the estimate so the reviewer can challenge it.
 
-Select the simplest approach that solves the problem.
+Select the simplest approach that solves the problem. When in doubt, use
+brute force — clever code is buggier and n is usually small.
 
 ## Phase 3: Write Plan to ${paths.plan}
 
@@ -250,6 +261,9 @@ Structure:
 - Prefer using existing utilities over creating new abstractions
 - Prefer inline code over new helper functions for one-time operations
 - Prefer direct solutions over configurable/extensible patterns
+- Prefer brute force for small/bounded n; only introduce caches, indexes,
+  or fancy data structures after a measurement shows the simple version
+  is too slow
 
 ## Anti-Patterns to AVOID
 - Do NOT add abstractions "for future flexibility"
@@ -257,6 +271,9 @@ Structure:
 - Do NOT add configuration options that aren't requested
 - Do NOT refactor unrelated code
 - Do NOT add error handling for impossible scenarios
+- Do NOT add speculative performance optimizations (memoization, caching,
+  custom data structures) without a benchmark proving they're needed —
+  bottlenecks occur in surprising places, so measure before tuning
 
 Constraints:
 - Do NOT implement code yet
