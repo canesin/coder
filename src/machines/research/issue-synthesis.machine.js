@@ -142,8 +142,12 @@ Rules:
 - Use .coder/scratchpad for scratch notes, not \`issues/\`.
 - Do NOT re-add issues prior feedback asked to drop.
 - For new features, prefer brute-force / simple-data-structure for the
-  first issue; if optimization is needed, make it a separate follow-up
-  whose objective names a measurement target (baseline + goal).
+  first issue UNLESS the analysis brief or validation results name an
+  explicit performance or scale requirement the simple version wouldn't
+  meet. Only split optimization into a follow-up when the simple
+  version is already correct for the stated constraints; when you do
+  split, the follow-up's objective must name a measurement target
+  (baseline + goal).
 - Each issue MUST include "testing_strategy" grounded in real test files:
   existing tests to leverage (paths + what they cover), new tests to
   write with expected behavior, and the repo's test framework/conventions.

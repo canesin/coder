@@ -353,7 +353,9 @@ Clarifications from user:
 <user-data field="clarifications">${sanitizeUserData(input.clarifications || "(none provided)")}</user-data>
 
 Scratchpad for notes between drafting passes: ${scratchpadPath}
-(Use it for hypotheses, constraints, and open questions — not \`issues/\`.)
+(**Append** hypotheses, constraints, open questions, and feedback —
+preserve existing notes, never overwrite. Keep temporary notes here,
+not in \`issues/\`.)
 
 Output ONLY markdown suitable for writing directly to ISSUE.md (no
 preamble, no commentary). If you wrote it to disk via a tool, also

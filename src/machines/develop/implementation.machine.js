@@ -132,10 +132,12 @@ Build upon existing correct work. Do not duplicate or revert it.
 ## Step 1: Address Critique
 Update ${paths.plan} to resolve every finding in the critique —
 Critical Issues, Over-Engineering Concerns, Data Structure Review,
-Concerns, and Questions. For each Question, answer it from the
-repo/ISSUE.md or record the assumption you're making in the plan
-before continuing. If the critique says REJECT, revise significantly
-before proceeding.
+Concerns, and Questions. For each Question: answer it only when the
+repo or ISSUE.md gives you an explicit, verifiable answer. When you
+can't, do NOT silently guess — add the question to an **Open
+Questions** section in the plan, record the working assumption you'll
+proceed with, and make it obvious so reviewers can catch it. If the
+critique says REJECT, revise significantly before proceeding.
 
 ## Step 2: Tests First
 ${
