@@ -132,17 +132,17 @@ Build upon existing correct work. Do not duplicate or revert it.
 
 ## Step 1: Address Critique
 Update ${paths.plan} to resolve every finding in the critique —
-${renderCritiqueSectionList("PLANREVIEW.md")}. For each Question:
-answer it only when the repo or ISSUE.md gives you an explicit,
+${renderCritiqueSectionList("PLANREVIEW.md")}. Answer each open
+question only when the repo or ISSUE.md gives you an explicit,
 verifiable answer. When you can't:
-- **Blocking question** (affects required behavior, acceptance
-  criteria, or API/data-shape the implementation must match): STOP.
-  Record the question under an \`## Open Questions (BLOCKING)\`
-  section in ${paths.plan} and do NOT produce an implementation diff.
-  Let the workflow surface the blocker.
-- **Non-blocking question** (style, naming, minor polish): record
-  the question and the working assumption under \`## Open Questions\`
-  in ${paths.plan}, then proceed. Make the assumption obvious so
+- **Blocking** (affects required behavior, acceptance criteria, or
+  API/data-shape the implementation must match): STOP. Record the
+  open item under an \`## Open Questions (BLOCKING)\` section in
+  ${paths.plan} and do NOT produce an implementation diff. Let the
+  workflow surface the blocker.
+- **Non-blocking** (style, naming, minor polish): record the open
+  item and the working assumption under \`## Open Questions\` in
+  ${paths.plan}, then proceed. Make the assumption obvious so
   reviewers can catch it.
 
 If the critique says REJECT, revise significantly before proceeding.

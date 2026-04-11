@@ -111,13 +111,25 @@ export const CONTRACTS = {
     ],
     issueFieldExamples: {
       id: "IDEA-01",
-      priority: "P0|P1|P2|P3",
+      title: "string",
+      objective: "string",
+      problem: "string",
+      changes: ["string"],
+      verification: "string",
+      out_of_scope: ["string"],
       depends_on: ["IDEA-00"],
+      priority: "P0|P1|P2|P3",
+      tags: ["string"],
+      estimated_effort: "string",
+      acceptance_criteria: ["string"],
       testing_strategy: {
         existing_tests: ["path/to/test — what it covers"],
         new_tests: ["description of test to write and expected behavior"],
         test_patterns: "brief note on repo's test framework/conventions",
       },
+      research_questions: ["string"],
+      risks: ["string"],
+      notes: "string",
       references: [
         {
           source: "github|show_hn|docs|other",
@@ -133,12 +145,6 @@ export const CONTRACTS = {
         evidence: ["string"],
         limitations: ["string"],
       },
-      changes: ["string"],
-      out_of_scope: ["string"],
-      tags: ["string"],
-      acceptance_criteria: ["string"],
-      research_questions: ["string"],
-      risks: ["string"],
     },
   },
   "research/spec-architect.json": {
@@ -163,16 +169,21 @@ export const CONTRACTS = {
       "testing_strategy",
     ],
     issueFieldExamples: {
+      title: "string",
+      objective: "string",
+      problem: "string",
+      changes: ["string"],
+      acceptance_criteria: ["string"],
       priority: "P0|P1|P2|P3",
+      domain: "string",
+      depends_on: [],
+      tags: ["string"],
+      estimated_effort: "string",
       testing_strategy: {
         existing_tests: [],
         new_tests: ["string"],
         test_patterns: "string",
       },
-      changes: ["string"],
-      acceptance_criteria: ["string"],
-      depends_on: [],
-      tags: ["string"],
     },
     modeExamples: {
       build: {
@@ -309,15 +320,23 @@ export function renderSectionsWithDescriptions(key, descriptions) {
     .join("\n");
 }
 
-/** Build an example issue object from a contract's issueFields + issueFieldExamples. */
+/**
+ * Build an example issue object from a contract's issueFields +
+ * issueFieldExamples. Throws if any declared issueField is missing an
+ * explicit example — silent fallback to "string" would hide schema
+ * drift for array/object-typed fields.
+ */
 export function buildIssueFieldsExample(key) {
   const entry = CONTRACTS[key];
   if (!entry?.issueFields)
     throw new Error(`Contract ${key} has no issueFields`);
   const examples = entry.issueFieldExamples || {};
-  return Object.fromEntries(
-    entry.issueFields.map((f) => [f, f in examples ? examples[f] : "string"]),
-  );
+  const missing = entry.issueFields.filter((f) => !(f in examples));
+  if (missing.length > 0)
+    throw new Error(
+      `Contract ${key}: issueFields missing from issueFieldExamples: ${missing.join(", ")}`,
+    );
+  return Object.fromEntries(entry.issueFields.map((f) => [f, examples[f]]));
 }
 
 /**
