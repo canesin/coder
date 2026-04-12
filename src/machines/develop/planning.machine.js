@@ -11,6 +11,7 @@ import { z } from "zod";
 import { stripAgentNoise } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { renderSectionsWithDescriptions } from "../prompt-contracts.js";
 import {
   executeWithSessionAuthRetry,
   makeClaudeSessionId,
@@ -232,21 +233,23 @@ code is buggier and n is usually small.
 ## Phase 3: Write ${paths.plan}
 
 Required sections:
-1. **Summary** — one paragraph.
-2. **Approach** — which approach and why, referencing existing patterns.
-3. **Files to Modify** — list each existing file with the specific
-   changes it needs.
-4. **Files to Create** — only when absolutely necessary; prefer
-   modifying existing files. Justify each new file.
-5. **Dependencies** — versions + justification.
-6. **Testing Strategy** — reference ISSUE.md's strategy, list existing
+${renderSectionsWithDescriptions("PLAN.md", {
+  Summary: "one paragraph.",
+  Approach: "which approach and why, referencing existing patterns.",
+  "Files to Modify": `list each existing file with the specific
+   changes it needs.`,
+  "Files to Create": `only when absolutely necessary; prefer
+   modifying existing files. Justify each new file.`,
+  Dependencies: "versions + justification.",
+  "Testing Strategy": `reference ISSUE.md's strategy, list existing
    related tests, describe new test cases (inputs, outputs, edges), and
    specify the test command. For difficulty ≥ 3, add a Red/Green TDD
    subsection listing the failing assertions to write BEFORE code (test
    name + expected failure reason — e.g. "ReferenceError:
    parseConfig is not defined"). For difficulty < 3, test-after is
-   acceptable only when a failing-test-first approach isn't practical.
-7. **Out of Scope** — what this change does NOT include.
+   acceptable only when a failing-test-first approach isn't practical.`,
+  "Out of Scope": "what this change does NOT include.",
+})}
 
 ## House Rules
 - Small scope: 1-3 files, existing utilities over new abstractions,

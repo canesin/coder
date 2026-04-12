@@ -11,6 +11,7 @@ import {
 } from "../../helpers.js";
 import { loadState, saveState } from "../../state/workflow-state.js";
 import { defineMachine } from "../_base.js";
+import { renderReviewFindingsTemplate } from "../prompt-contracts.js";
 import {
   executeWithSessionAuthRetry,
   makeClaudeSessionId,
@@ -147,16 +148,7 @@ Write findings to ${paths.reviewFindings} as markdown. Each finding is a
 minor), **File**, **Lines**, **Issue**, **Suggestion** — like this:
 
 \`\`\`markdown
-# Review Findings — Round ${round}
-
-## Finding 1
-- **Severity**: major
-- **File**: src/foo.js
-- **Lines**: 42-58
-- **Issue**: <what's wrong>
-- **Suggestion**: <how to fix>
-
-## VERDICT: REVISE
+${renderReviewFindingsTemplate("REVIEW_FINDINGS.md", round)}
 \`\`\`
 
 End the file with \`## VERDICT: APPROVED\` or \`## VERDICT: REVISE\` as

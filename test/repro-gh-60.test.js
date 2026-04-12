@@ -36,3 +36,12 @@ test("GH-60: strip CLAUDECODE from runShellSync", async () => {
     else process.env.CLAUDECODE = orig;
   }
 });
+
+test("runShellSync fallback uses login shell (bash -lc)", () => {
+  const res = runShellSync("shopt login_shell", { preferSystemd: false });
+  assert.match(
+    res.stdout,
+    /login_shell\s+on/,
+    "fallback path should use bash -lc so user profile PATH is available",
+  );
+});
